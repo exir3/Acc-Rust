@@ -270,6 +270,31 @@ pub struct Dashboard {
 
 /* ── Validation helpers ─────────────────────────────────────── */
 
+/// Validates and normalizes a user-entered Jalali date for immediate form feedback.
+/// Saving still calls `normalize_date` again, so this command is not a security boundary.
+pub fn validate_voucher_date(input: &str) -> Result<String, String> {
+    normalize_date(input, "تاریخ سند")
+}
+
+fn checked_add(left: i64, right: i64, label: &str) -> Result<i64, String> {
+    left.checked_add(right)
+        .ok_or_else(|| format!("مقدار محاسبه‌شده در بخش «{label}» از محدوده عددی مجاز بیشتر است."))
+}
+
+fn checked_sub(left: i64, right: i64, label: &str) -> Result<i64, String> {
+    left.checked_sub(right)
+        .ok_or_else(|| format!("مقدار محاسبه‌شده در بخش «{label}» از محدوده عددی مجاز بیشتر است."))
+}
+
+fn checked_neg(value: i64, label: &str) -> Result<i64, String> {
+    value.checked_neg()
+        .ok_or_else(|| format!("مقدار محاسبه‌شده در بخش «{label}» از محدوده عددی مجاز بیشتر است."))
+}
+
+fn checked_sum(values: impl IntoIterator<Item = i64>, label: &str) -> Result<i64, String> {
+    values.into_iter().try_fold(0i64, |total, value| checked_add(total, value, label))
+}
+
 fn normalize_date(input: &str, label: &str) -> Result<String, String> {
     let text = normalize_digits(input).trim().replace('-', "/");
     if text.is_empty() {
@@ -419,8 +444,8 @@ impl Database {
             let total = count(conn, "SELECT COUNT(*) FROM vouchers")?;
             Ok((vouchers, total))
         })?;
-        let total_debit = vouchers.iter().map(|v| v.total_debit).sum();
-        let total_credit = vouchers.iter().map(|v| v.total_credit).sum();
+        let total_debit = checked_sum(vouchers.iter().map(|v| v.total_debit), "جمع بدهکار فهرست اسناد")?;
+        let total_credit = checked_sum(vouchers.iter().map(|v| v.total_credit), "جمع بستانکار فهرست اسناد")?;
         Ok(VoucherList {
             vouchers,
             total_count,
@@ -691,8 +716,8 @@ impl Database {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(db::db_error)?;
 
-            let total_debit = rows.iter().map(|r| r.debit).sum();
-            let total_credit = rows.iter().map(|r| r.credit).sum();
+            let total_debit = checked_sum(rows.iter().map(|r| r.debit), "جمع بدهکار دفتر روزنامه")?;
+            let total_credit = checked_sum(rows.iter().map(|r| r.credit), "جمع بستانکار دفتر روزنامه")?;
             let voucher_count = rows
                 .iter()
                 .map(|r| r.voucher_id)
@@ -750,20 +775,28 @@ impl Database {
                 )
                 .map_err(db::db_error)?;
 
-            let (opening_debit, opening_credit): (i64, i64) = conn
-                .query_row(
-                    &format!(
-                        "{TREE}
-                         SELECT COALESCE(SUM(l.debit), 0), COALESCE(SUM(l.credit), 0)
-                           FROM voucher_lines l
-                           JOIN vouchers v ON v.id = l.voucher_id
-                          WHERE l.account_code IN (SELECT code FROM tree)
-                            AND (?2 <> '' AND v.date < ?2)"
-                    ),
-                    params![code, from],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
+            let mut opening_stmt = conn
+                .prepare(&format!(
+                    "{TREE}
+                     SELECT l.debit, l.credit
+                       FROM voucher_lines l
+                       JOIN vouchers v ON v.id = l.voucher_id
+                      WHERE l.account_code IN (SELECT code FROM tree)
+                        AND (?2 <> '' AND v.date < ?2)"
+                ))
                 .map_err(db::db_error)?;
+            let opening_rows = opening_stmt
+                .query_map(params![code, from], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(db::db_error)?;
+            let mut opening_debit = 0i64;
+            let mut opening_credit = 0i64;
+            for row in opening_rows {
+                let (debit, credit) = row.map_err(db::db_error)?;
+                opening_debit = checked_add(opening_debit, debit, "بدهکار افتتاحیه دفتر کل")?;
+                opening_credit = checked_add(opening_credit, credit, "بستانکار افتتاحیه دفتر کل")?;
+            }
 
             let mut stmt = conn
                 .prepare(&format!(
@@ -799,7 +832,7 @@ impl Database {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(db::db_error)?;
 
-            let opening_net = opening_debit - opening_credit;
+            let opening_net = checked_sub(opening_debit, opening_credit, "مانده افتتاحیه دفتر کل")?;
             let mut running = opening_net;
             let mut total_debit = 0i64;
             let mut total_credit = 0i64;
@@ -817,9 +850,9 @@ impl Database {
                 row_account_name,
             ) in raw_rows
             {
-                running += debit - credit;
-                total_debit += debit;
-                total_credit += credit;
+                running = checked_add(running, checked_sub(debit, credit, "گردش ردیف دفتر کل")?, "مانده جاری دفتر کل")?;
+                total_debit = checked_add(total_debit, debit, "جمع بدهکار دفتر کل")?;
+                total_credit = checked_add(total_credit, credit, "جمع بستانکار دفتر کل")?;
                 rows.push(LedgerRow {
                     voucher_id,
                     account_code: row_account_code,
@@ -832,11 +865,15 @@ impl Database {
                     debit,
                     credit,
                     running_debit: running.max(0),
-                    running_credit: (-running).max(0),
+                    running_credit: checked_neg(running, "مانده بستانکار جاری دفتر کل")?.max(0),
                 });
             }
 
-            let closing = opening_net + total_debit - total_credit;
+            let closing = checked_sub(
+                checked_add(opening_net, total_debit, "مانده پایان دوره دفتر کل")?,
+                total_credit,
+                "مانده پایان دوره دفتر کل",
+            )?;
             Ok(LedgerReport {
                 account_code: code,
                 account_name,
@@ -845,11 +882,11 @@ impl Database {
                 from,
                 to,
                 opening_debit: opening_net.max(0),
-                opening_credit: (-opening_net).max(0),
+                opening_credit: checked_neg(opening_net, "مانده بستانکار افتتاحیه دفتر کل")?.max(0),
                 total_debit,
                 total_credit,
                 closing_debit: closing.max(0),
-                closing_credit: (-closing).max(0),
+                closing_credit: checked_neg(closing, "مانده بستانکار پایان دوره دفتر کل")?.max(0),
                 rows,
             })
         })
@@ -863,72 +900,80 @@ impl Database {
         self.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT a.code, a.name, g.name, a.level,
-                            COALESCE(SUM(CASE
-                                WHEN v.date IS NOT NULL AND ?1 <> '' AND v.date < ?1 AND (?2 = '' OR v.date <= ?2)
-                                THEN l.debit ELSE 0 END), 0) AS opening_debit,
-                            COALESCE(SUM(CASE
-                                WHEN v.date IS NOT NULL AND ?1 <> '' AND v.date < ?1 AND (?2 = '' OR v.date <= ?2)
-                                THEN l.credit ELSE 0 END), 0) AS opening_credit,
-                            COALESCE(SUM(CASE
-                                WHEN v.date IS NOT NULL AND (?1 = '' OR v.date >= ?1) AND (?2 = '' OR v.date <= ?2)
-                                THEN l.debit ELSE 0 END), 0) AS period_debit,
-                            COALESCE(SUM(CASE
-                                WHEN v.date IS NOT NULL AND (?1 = '' OR v.date >= ?1) AND (?2 = '' OR v.date <= ?2)
-                                THEN l.credit ELSE 0 END), 0) AS period_credit
+                    "SELECT a.code, a.name, g.name, a.level, v.date, l.debit, l.credit
                        FROM accounts a
                        JOIN account_groups g ON g.code = a.group_code
                        LEFT JOIN voucher_lines l ON l.account_code = a.code
                        LEFT JOIN vouchers v ON v.id = l.voucher_id
-                      GROUP BY a.code
-                      ORDER BY a.code",
+                      ORDER BY a.code, v.date",
                 )
                 .map_err(db::db_error)?;
 
             let raw = stmt
-                .query_map(params![from, to], |row| {
+                .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, i64>(5)?,
-                        row.get::<_, i64>(6)?,
-                        row.get::<_, i64>(7)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
                     ))
                 })
-                .map_err(db::db_error)?
-                .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(db::db_error)?;
 
+            let mut balances: std::collections::BTreeMap<String, (String, String, i64, i64, i64, i64, i64)> =
+                std::collections::BTreeMap::new();
+            for row in raw {
+                let (code, name, group_name, level, date, debit, credit) =
+                    row.map_err(db::db_error)?;
+                let entry = balances
+                    .entry(code)
+                    .or_insert((name, group_name, level, 0, 0, 0, 0));
+                let (Some(date), Some(debit), Some(credit)) = (date, debit, credit) else {
+                    continue;
+                };
+                if !from.is_empty() && date < from {
+                    entry.3 = checked_add(entry.3, debit, "بدهکار افتتاحیه تراز آزمایشی")?;
+                    entry.4 = checked_add(entry.4, credit, "بستانکار افتتاحیه تراز آزمایشی")?;
+                } else if (from.is_empty() || date >= from) && (to.is_empty() || date <= to) {
+                    entry.5 = checked_add(entry.5, debit, "بدهکار دوره تراز آزمایشی")?;
+                    entry.6 = checked_add(entry.6, credit, "بستانکار دوره تراز آزمایشی")?;
+                }
+            }
+
             let mut rows = Vec::new();
-            for (code, name, group_name, level, od, oc, pd, pc) in raw {
+            for (code, (name, group_name, level, od, oc, pd, pc)) in balances {
                 if od == 0 && oc == 0 && pd == 0 && pc == 0 {
                     continue;
                 }
-                let opening_net = od - oc;
-                let closing_net = opening_net + pd - pc;
+                let opening_net = checked_sub(od, oc, "مانده افتتاحیه تراز آزمایشی")?;
+                let closing_net = checked_sub(
+                    checked_add(opening_net, pd, "مانده پایان دوره تراز آزمایشی")?,
+                    pc,
+                    "مانده پایان دوره تراز آزمایشی",
+                )?;
                 rows.push(TrialBalanceRow {
                     account_code: code,
                     account_name: name,
                     group_name,
                     level,
                     opening_debit: opening_net.max(0),
-                    opening_credit: (-opening_net).max(0),
+                    opening_credit: checked_neg(opening_net, "مانده بستانکار افتتاحیه تراز آزمایشی")?.max(0),
                     period_debit: pd,
                     period_credit: pc,
                     closing_debit: closing_net.max(0),
-                    closing_credit: (-closing_net).max(0),
+                    closing_credit: checked_neg(closing_net, "مانده بستانکار پایان دوره تراز آزمایشی")?.max(0),
                 });
             }
 
-            let opening_debit = rows.iter().map(|r| r.opening_debit).sum();
-            let opening_credit = rows.iter().map(|r| r.opening_credit).sum();
-            let period_debit = rows.iter().map(|r| r.period_debit).sum();
-            let period_credit = rows.iter().map(|r| r.period_credit).sum();
-            let closing_debit = rows.iter().map(|r| r.closing_debit).sum();
-            let closing_credit = rows.iter().map(|r| r.closing_credit).sum();
+            let opening_debit = checked_sum(rows.iter().map(|r| r.opening_debit), "جمع بدهکار افتتاحیه تراز آزمایشی")?;
+            let opening_credit = checked_sum(rows.iter().map(|r| r.opening_credit), "جمع بستانکار افتتاحیه تراز آزمایشی")?;
+            let period_debit = checked_sum(rows.iter().map(|r| r.period_debit), "جمع بدهکار دوره تراز آزمایشی")?;
+            let period_credit = checked_sum(rows.iter().map(|r| r.period_credit), "جمع بستانکار دوره تراز آزمایشی")?;
+            let closing_debit = checked_sum(rows.iter().map(|r| r.closing_debit), "جمع بدهکار پایان دوره تراز آزمایشی")?;
+            let closing_credit = checked_sum(rows.iter().map(|r| r.closing_credit), "جمع بستانکار پایان دوره تراز آزمایشی")?;
 
             Ok(TrialBalanceReport {
                 from,
@@ -984,13 +1029,19 @@ impl Database {
             let group_count = count(conn, "SELECT COUNT(*) FROM account_groups")?;
             let voucher_count = count(conn, "SELECT COUNT(*) FROM vouchers")?;
             let line_count = count(conn, "SELECT COUNT(*) FROM voucher_lines")?;
-            let (total_debit, total_credit): (i64, i64) = conn
-                .query_row(
-                    "SELECT COALESCE(SUM(debit), 0), COALESCE(SUM(credit), 0) FROM voucher_lines",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
+            let mut amount_stmt = conn
+                .prepare("SELECT debit, credit FROM voucher_lines")
                 .map_err(db::db_error)?;
+            let amount_rows = amount_stmt
+                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+                .map_err(db::db_error)?;
+            let mut total_debit = 0i64;
+            let mut total_credit = 0i64;
+            for row in amount_rows {
+                let (debit, credit) = row.map_err(db::db_error)?;
+                total_debit = checked_add(total_debit, debit, "جمع بدهکار داشبورد")?;
+                total_credit = checked_add(total_credit, credit, "جمع بستانکار داشبورد")?;
+            }
 
             let mut assets_total = 0i64;
             let mut liabilities_total = 0i64;
@@ -1002,11 +1053,11 @@ impl Database {
             // closing voucher; income and expenses also leave out the
             // voucher that closes the temporary accounts.
             for activity in &account_activities(conn, "", "", false, &[CLOSING_FINAL])? {
-                let net = activity.debit - activity.credit;
+                let net = checked_sub(activity.debit, activity.credit, "مانده حساب داشبورد")?;
                 match classify(&activity.group_type, &activity.account_code) {
-                    AccountClass::Asset => assets_total += net,
-                    AccountClass::Liability => liabilities_total += -net,
-                    AccountClass::Equity => equity_total += -net,
+                    AccountClass::Asset => assets_total = checked_add(assets_total, net, "جمع دارایی داشبورد")?,
+                    AccountClass::Liability => liabilities_total = checked_add(liabilities_total, checked_neg(net, "مانده بدهی داشبورد")?, "جمع بدهی داشبورد")?,
+                    AccountClass::Equity => equity_total = checked_add(equity_total, checked_neg(net, "مانده سرمایه داشبورد")?, "جمع سرمایه داشبورد")?,
                     AccountClass::Income | AccountClass::Expense => {}
                 }
             }
@@ -1017,10 +1068,10 @@ impl Database {
                 false,
                 &[CLOSING_TEMPORARY, CLOSING_FINAL],
             )? {
-                let net = activity.debit - activity.credit;
+                let net = checked_sub(activity.debit, activity.credit, "مانده درآمد و هزینه داشبورد")?;
                 match classify(&activity.group_type, &activity.account_code) {
-                    AccountClass::Income => income_total += -net,
-                    AccountClass::Expense => expense_total += net,
+                    AccountClass::Income => income_total = checked_add(income_total, checked_neg(net, "درآمد داشبورد")?, "جمع درآمد داشبورد")?,
+                    AccountClass::Expense => expense_total = checked_add(expense_total, net, "جمع هزینه داشبورد")?,
                     _ => {}
                 }
             }
@@ -1046,7 +1097,7 @@ impl Database {
                 equity_total,
                 income_total,
                 expense_total,
-                net_profit: income_total - expense_total,
+                net_profit: checked_sub(income_total, expense_total, "سود خالص داشبورد")?,
                 recent,
             })
         })
@@ -1153,8 +1204,8 @@ fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher, String> {
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(db::db_error)?;
 
-    let total_debit = lines.iter().map(|l| l.debit).sum();
-    let total_credit = lines.iter().map(|l| l.credit).sum();
+    let total_debit = checked_sum(lines.iter().map(|l| l.debit), "جمع بدهکار سند")?;
+    let total_credit = checked_sum(lines.iter().map(|l| l.credit), "جمع بستانکار سند")?;
     Ok(Voucher {
         id,
         number,
@@ -1188,12 +1239,15 @@ fn account_activities(
 ) -> Result<Vec<AccountActivity>, String> {
     let skip_a = skip_types.first().copied().unwrap_or("");
     let skip_b = skip_types.get(1).copied().unwrap_or(skip_a);
-    // The filters live in the join condition so accounts with no matching
-    // lines still come back (with zero totals) instead of disappearing.
+    let (from_value, to_value) = if cumulative {
+        ("".to_string(), to.to_string())
+    } else {
+        (from.to_string(), to.to_string())
+    };
+
     let mut stmt = conn
         .prepare(
-            "SELECT a.code, a.name, g.code, g.type,
-                    COALESCE(SUM(l.debit), 0), COALESCE(SUM(l.credit), 0)
+            "SELECT a.code, a.name, g.code, g.type, l.debit, l.credit
                FROM accounts a
                JOIN account_groups g ON g.code = a.group_code
                LEFT JOIN (
@@ -1204,32 +1258,49 @@ fn account_activities(
                      AND v.type <> ?3
                      AND v.type <> ?4
                ) ON l.account_code = a.code
-              GROUP BY a.code
               ORDER BY a.code",
         )
         .map_err(db::db_error)?;
 
-    let (from_value, to_value) = if cumulative {
-        ("".to_string(), to.to_string())
-    } else {
-        (from.to_string(), to.to_string())
-    };
-
-    let rows = stmt
+    let raw = stmt
         .query_map(params![from_value, to_value, skip_a, skip_b], |row| {
-            Ok(AccountActivity {
-                account_code: row.get(0)?,
-                account_name: row.get(1)?,
-                group_code: row.get(2)?,
-                group_type: row.get(3)?,
-                debit: row.get(4)?,
-                credit: row.get(5)?,
-            })
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
         })
-        .map_err(db::db_error)?
-        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(db::db_error)?;
-    Ok(rows)
+
+    let mut activities: Vec<AccountActivity> = Vec::new();
+    for row in raw {
+        let (code, name, group_code, group_type, debit, credit) =
+            row.map_err(db::db_error)?;
+        if let Some(last) = activities
+            .last_mut()
+            .filter(|item| item.account_code.as_str() == code.as_str())
+        {
+            if let Some(debit) = debit {
+                last.debit = checked_add(last.debit, debit, "گردش بدهکار حساب")?;
+            }
+            if let Some(credit) = credit {
+                last.credit = checked_add(last.credit, credit, "گردش بستانکار حساب")?;
+            }
+        } else {
+            activities.push(AccountActivity {
+                account_code: code,
+                account_name: name,
+                group_code,
+                group_type,
+                debit: debit.unwrap_or(0),
+                credit: credit.unwrap_or(0),
+            });
+        }
+    }
+    Ok(activities)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1271,13 +1342,13 @@ fn build_income_statement(
     let mut expenses = Vec::new();
 
     for activity in activities {
-        let net = activity.debit - activity.credit;
+        let net = checked_sub(activity.debit, activity.credit, "مانده حساب صورت سود و زیان")?;
         if net == 0 {
             continue;
         }
         match classify(&activity.group_type, &activity.account_code) {
             AccountClass::Income => {
-                let amount = -net;
+                let amount = checked_neg(net, "مبلغ درآمد")?;
                 if amount != 0 {
                     revenues.push(AmountRow {
                         account_code: activity.account_code,
@@ -1308,11 +1379,11 @@ fn build_income_statement(
         }
     }
 
-    let revenue_total: i64 = revenues.iter().map(|r| r.amount).sum();
-    let cogs_total: i64 = cogs.iter().map(|r| r.amount).sum();
-    let expense_total: i64 = expenses.iter().map(|r| r.amount).sum();
-    let gross_profit = revenue_total - cogs_total;
-    let operating_profit = gross_profit - expense_total;
+    let revenue_total = checked_sum(revenues.iter().map(|r| r.amount), "جمع درآمد صورت سود و زیان")?;
+    let cogs_total = checked_sum(cogs.iter().map(|r| r.amount), "جمع بهای تمام‌شده")?;
+    let expense_total = checked_sum(expenses.iter().map(|r| r.amount), "جمع هزینه صورت سود و زیان")?;
+    let gross_profit = checked_sub(revenue_total, cogs_total, "سود ناخالص")?;
+    let operating_profit = checked_sub(gross_profit, expense_total, "سود عملیاتی")?;
     Ok(IncomeStatementReport {
         from,
         to,
@@ -1339,7 +1410,7 @@ fn build_balance_sheet(
     let mut expenses = 0;
 
     for activity in activities {
-        let net = activity.debit - activity.credit;
+        let net = checked_sub(activity.debit, activity.credit, "مانده حساب ترازنامه")?;
         if net == 0 {
             continue;
         }
@@ -1352,23 +1423,27 @@ fn build_balance_sheet(
             AccountClass::Liability => liabilities.push(AmountRow {
                 account_code: activity.account_code,
                 account_name: activity.account_name,
-                amount: -net,
+                amount: checked_neg(net, "مانده بدهی ترازنامه")?,
             }),
             AccountClass::Equity => equity.push(AmountRow {
                 account_code: activity.account_code,
                 account_name: activity.account_name,
-                amount: -net,
+                amount: checked_neg(net, "مانده سرمایه ترازنامه")?,
             }),
-            AccountClass::Income => revenue += -net,
-            AccountClass::Expense => expenses += net,
+            AccountClass::Income => revenue = checked_add(revenue, checked_neg(net, "درآمد ترازنامه")?, "جمع درآمد ترازنامه")?,
+            AccountClass::Expense => expenses = checked_add(expenses, net, "جمع هزینه ترازنامه")?,
         }
     }
 
-    let assets_total: i64 = assets.iter().map(|r| r.amount).sum();
-    let liabilities_total: i64 = liabilities.iter().map(|r| r.amount).sum();
-    let equity_total: i64 = equity.iter().map(|r| r.amount).sum();
-    let profit = revenue - expenses;
-    let total_liabilities_equity = liabilities_total + equity_total + profit;
+    let assets_total = checked_sum(assets.iter().map(|r| r.amount), "جمع دارایی ترازنامه")?;
+    let liabilities_total = checked_sum(liabilities.iter().map(|r| r.amount), "جمع بدهی ترازنامه")?;
+    let equity_total = checked_sum(equity.iter().map(|r| r.amount), "جمع سرمایه ترازنامه")?;
+    let profit = checked_sub(revenue, expenses, "سود ترازنامه")?;
+    let total_liabilities_equity = checked_add(
+        checked_add(liabilities_total, equity_total, "جمع بدهی و سرمایه ترازنامه")?,
+        profit,
+        "جمع بدهی و سرمایه با سود ترازنامه",
+    )?;
     Ok(BalanceSheetReport {
         as_of,
         assets,
@@ -1385,7 +1460,7 @@ fn build_balance_sheet(
 
 pub fn format_amount(value: i64) -> String {
     let negative = value < 0;
-    let digits = value.abs().to_string();
+    let digits = value.unsigned_abs().to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, ch) in digits.chars().enumerate() {
         if index > 0 && (digits.len() - index) % 3 == 0 {
@@ -1431,6 +1506,13 @@ mod tests {
                 line("410101", 0, amount),
             ],
         )
+    }
+
+    #[test]
+    fn validates_and_normalizes_jalali_voucher_dates() {
+        assert_eq!(validate_voucher_date("۱۴۰۵/۱/۱").unwrap(), "1405/01/01");
+        assert!(validate_voucher_date("1405/13/01").is_err());
+        assert!(validate_voucher_date("1405/02/32").is_err());
     }
 
     #[test]
@@ -1753,12 +1835,22 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_arithmetic_reports_overflow_instead_of_wrapping() {
+        assert!(checked_add(i64::MAX, 1, "آزمون").is_err());
+        assert!(checked_sub(i64::MIN, 1, "آزمون").is_err());
+        assert!(checked_neg(i64::MIN, "آزمون").is_err());
+        assert!(checked_sum([i64::MAX, 1], "آزمون").is_err());
+        assert_eq!(checked_sum([1, 2, 3], "آزمون").unwrap(), 6);
+    }
+
+    #[test]
     fn formats_amounts_with_grouping() {
         assert_eq!(format_amount(0), "0");
         assert_eq!(format_amount(999), "999");
         assert_eq!(format_amount(1_000), "1,000");
         assert_eq!(format_amount(1_234_567), "1,234,567");
         assert_eq!(format_amount(-1_500), "-1,500");
+        assert_eq!(format_amount(i64::MIN), "-9,223,372,036,854,775,808");
     }
     #[test]
     fn closing_vouchers_do_not_hide_income_statement_figures() {

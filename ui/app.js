@@ -69,6 +69,104 @@ const NAV = [
   },
 ];
 
+/*
+ * ساختار منوبار اصلی — برگرفته از رابط سوم برنامه‌ی WebApp.
+ * آیتم‌هایی که `page` دارند به صفحه‌ی موجود در همین برنامه می‌روند،
+ * آیتم‌های `command` به پنجره/عمل موجود وصل می‌شوند و بقیه فعلاً
+ * «در دست ساخت» هستند تا بعداً فرم مربوطه برایشان ساخته شود.
+ */
+const MENU_BAR = [
+  {
+    label: 'اطلاعات پایه',
+    items: [
+      { label: 'تعریف گروه حسابها', icon: '📂', command: 'groups-window' },
+      { label: 'تعریف حسابهای کل، معین و تفصیلی', icon: '📁', page: 'accounts' },
+      { label: 'مرور حسابها', icon: '🔍', page: 'accounts' },
+      { label: 'لیست اسناد حسابداری', icon: '📜', page: 'vouchers' },
+      { label: 'مرتب‌سازی و ادغام اسناد', icon: '🧮' },
+      { label: 'ورود دسته‌جمعی اسناد از اکسل', icon: '📥' },
+      { label: 'خروجی دسته‌جمعی اسناد به اکسل', icon: '📤' },
+      { label: 'حذف دسته‌جمعی اسناد', icon: '🗑️' },
+      { label: 'تغییر وضعیت اسناد (موقت/دائمی)', icon: '🔁' },
+    ],
+  },
+  {
+    label: 'عملیات مالی',
+    items: [
+      { label: 'صدور سند حسابداری', icon: '📝', command: 'new-voucher' },
+    ],
+  },
+  {
+    label: 'گزارشات حسابداری',
+    items: [
+      { label: 'گزارش تراز حساب', icon: '📊', page: 'trial' },
+      { label: 'صورت سود و زیان', icon: '📈', page: 'income' },
+      { label: 'ترازنامه', icon: '⚖️', page: 'balance' },
+      { label: 'کدینگ / چارت حساب‌ها', icon: '🗂️', page: 'accounts' },
+      { label: 'اسناد به تفکیک وضعیت', icon: '🏷️' },
+      { label: 'مرور پیشرفته حساب', icon: '🔎' },
+      { label: 'تحلیل حساب‌ها', icon: '🧠' },
+    ],
+  },
+  {
+    label: 'صورت‌های مالی',
+    items: [
+      { label: 'صورت سود و زیان', icon: '📈', page: 'income' },
+      { label: 'ترازنامه (صورت وضعیت مالی)', icon: '⚖️', page: 'balance' },
+      { label: 'صورت تغییرات حقوق مالکانه', icon: '🏛️' },
+      { label: 'صورت جریان‌های نقدی (استاندارد ۲)', icon: '💵' },
+      { label: 'صورت بهای تمام‌شده کالای فروش‌رفته', icon: '🏭' },
+      { label: 'تخصیص سود و اندوخه', icon: '🪙' },
+      { label: 'گزارش مقایسه‌ای دو دوره', icon: '🔀' },
+    ],
+  },
+  {
+    label: 'دفاتر قانونی',
+    items: [
+      { label: 'دفتر کل / معین / تفصیلی', icon: '📚', page: 'ledger' },
+      { label: 'دفتر روزنامه', icon: '📖', page: 'journal' },
+      { label: 'دفتر معین به تفکیک تاریخ', icon: '🗓️' },
+    ],
+  },
+  {
+    label: 'مدیریت دوره مالی',
+    items: [
+      { label: 'بستن حساب‌ها (ویزارد پایان سال)', icon: '🔒' },
+      { label: 'صدور سند افتتاحیه', icon: '📄' },
+      { label: 'تعریف سال مالی جدید', icon: '📅' },
+    ],
+  },
+  {
+    label: 'حقوق و دستمزد',
+    items: [],
+    empty: 'برای این بخش هنوز گزینه‌ای تعریف نشده است',
+  },
+  {
+    label: 'تنظیمات',
+    size: 'compact',
+    items: [
+      { label: 'تنظیمات برنامه', icon: '⚙️', page: 'settings' },
+      { label: 'تنظیمات گزارش‌ها', icon: '🖨️' },
+      { label: 'نمایش/مخفی‌سازی سایدبار', icon: '👁️', command: 'toggle-sidebar' },
+      { label: 'تغییر تم رنگ سایدبار', icon: '🎨' },
+      { label: 'تغییر تصویر پس‌زمینه', icon: '🖼️' },
+      { label: 'تنظیمات فونت', icon: '🔤' },
+      { label: 'تنظیمات زوم (بزرگ‌نمایی)', icon: '🔍' },
+      { label: 'مدیریت کاربران', icon: '👥' },
+      { label: 'تعریف سال مالی جدید', icon: '📅' },
+    ],
+  },
+  {
+    label: 'راهنما',
+    size: 'small',
+    items: [
+      { label: 'راهنمای نرم‌افزار', icon: '📖', command: 'help' },
+      { label: 'درباره', icon: 'ℹ️', command: 'about' },
+      { label: 'میانبرهای صفحه‌کلید', icon: '⌨️', command: 'shortcuts' },
+    ],
+  },
+];
+
 /* ── Text and number helpers ────────────────────────────────── */
 
 function toFa(value) {
@@ -1696,6 +1794,222 @@ function bindPageCommon(root) {
   });
 }
 
+/* ── Main menu bar ─────────────────────────────────────────── */
+
+let openMenuIndex = null;
+let menuOpenedByHover = false;
+
+function buildMenubar() {
+  const nav = $('#menubarNav');
+  if (!nav) return;
+
+  nav.innerHTML = MENU_BAR.map((menu, menuIndex) => {
+    const menuItems = menu.items.map((item, itemIndex) => {
+      const pending = !item.page && !item.command;
+      return `
+        <button type="button" class="menu-item" role="menuitem"
+          data-item-index="${itemIndex}"
+          ${pending ? 'title="این فرم هنوز ساخته نشده است"' : ''}>
+          <span class="menu-item-icon" aria-hidden="true">${esc(item.icon || '•')}</span>
+          <span class="menu-item-label">${esc(item.label)}</span>
+        </button>`;
+    }).join('');
+
+    const body = menuItems || `
+      <div class="menu-empty" role="status">
+        ${esc(menu.empty || 'برای این بخش هنوز گزینه‌ای تعریف نشده است')}
+      </div>`;
+
+    return `
+      <div class="menu-wrap" data-menu-index="${menuIndex}">
+        <button type="button" class="menu-root" aria-haspopup="menu" aria-expanded="false"
+          data-menu-index="${menuIndex}">
+          ${esc(menu.label)}
+        </button>
+        <div class="menu-dropdown" role="menu" aria-label="${esc(menu.label)}"
+          data-size="${esc(menu.size || 'wide')}" hidden>
+          <div class="menu-list">${body}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function openMenubarMenu(index, { fromHover = false } = {}) {
+  $$('#menubarNav .menu-wrap').forEach((wrap, wrapIndex) => {
+    const isOpen = wrapIndex === index;
+    wrap.classList.toggle('is-open', isOpen);
+    const trigger = $('.menu-root', wrap);
+    if (trigger) trigger.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    const dropdown = $('.menu-dropdown', wrap);
+    if (dropdown) dropdown.hidden = !isOpen;
+  });
+  openMenuIndex = index;
+  menuOpenedByHover = fromHover;
+}
+
+function closeMenubarMenus() {
+  $$('#menubarNav .menu-wrap').forEach((wrap) => {
+    wrap.classList.remove('is-open');
+    const trigger = $('.menu-root', wrap);
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    const dropdown = $('.menu-dropdown', wrap);
+    if (dropdown) dropdown.hidden = true;
+  });
+  openMenuIndex = null;
+  menuOpenedByHover = false;
+}
+
+function notifyPendingMenu(label) {
+  toast(`«${label}» هنوز آماده نیست و در نسخه‌های بعدی اضافه می‌شود.`, 'info');
+  setStatus('این بخش در دست ساخت است.', 'idle');
+}
+
+function runMenuItem(item) {
+  if (item.page) {
+    navigate(item.page);
+    return;
+  }
+  switch (item.command) {
+    case 'groups-window':
+      openGroupsWindow();
+      return;
+    case 'new-voucher':
+      openVoucherWindow();
+      return;
+    case 'toggle-sidebar':
+      toggleSidebarVisibility();
+      return;
+    case 'help':
+      showHelpDialog();
+      return;
+    case 'about':
+      showAboutDialog();
+      return;
+    case 'shortcuts':
+      showShortcutsDialog();
+      return;
+    default:
+      notifyPendingMenu(item.label);
+  }
+}
+
+function bindMenubar() {
+  const nav = $('#menubarNav');
+  if (!nav) return;
+
+  nav.addEventListener('click', (event) => {
+    const trigger = event.target.closest('.menu-root');
+    if (trigger) {
+      const index = Number(trigger.dataset.menuIndex);
+      if (openMenuIndex === index) {
+        // اگر منو با عبور ماوس باز شده، کلیک روی همان عنوان آن را نبندد.
+        if (menuOpenedByHover) menuOpenedByHover = false;
+        else closeMenubarMenus();
+      } else {
+        openMenubarMenu(index);
+      }
+      return;
+    }
+
+    const itemButton = event.target.closest('.menu-item');
+    if (!itemButton) return;
+    const wrap = itemButton.closest('.menu-wrap');
+    const menuIndex = Number(wrap?.dataset.menuIndex);
+    const itemIndex = Number(itemButton.dataset.itemIndex);
+    const entry = MENU_BAR[menuIndex]?.items?.[itemIndex];
+    closeMenubarMenus();
+    if (entry) runMenuItem(entry);
+  });
+
+  // مثل رابط سوم: وقتی یک منو باز است، عبور ماوس روی منوی دیگر آن را باز می‌کند.
+  nav.addEventListener('mouseover', (event) => {
+    if (openMenuIndex === null) return;
+    const wrap = event.target.closest('.menu-wrap');
+    if (!wrap) return;
+    const index = Number(wrap.dataset.menuIndex);
+    if (Number.isInteger(index) && index !== openMenuIndex) {
+      openMenubarMenu(index, { fromHover: true });
+    }
+  });
+
+  document.addEventListener('pointerdown', (event) => {
+    const bar = $('.menubar');
+    if (bar && !bar.contains(event.target)) closeMenubarMenus();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && openMenuIndex !== null) closeMenubarMenus();
+  });
+}
+
+function toggleSidebarVisibility() {
+  const sidebar = $('.sidebar');
+  if (!sidebar) return;
+  const hidden = sidebar.classList.toggle('is-hidden');
+  setStatus(hidden ? 'سایدبار پنهان شد.' : 'سایدبار نمایش داده شد.', 'ok');
+}
+
+function showHelpDialog() {
+  openDialog({
+    title: 'راهنمای نرم‌افزار',
+    body: `
+      <div class="note">
+        <b>دسترسی به بخش‌ها</b><br>
+        از منوبار بالای پنجره، بخش مورد نظر را انتخاب کنید. بخش‌های «اطلاعات پایه»،
+        «گزارشات حسابداری»، «صورت‌های مالی» و «دفاتر قانونی» صفحات موجود را باز می‌کنند
+        و بقیه گزینه‌ها به‌تدریج تکمیل می‌شوند.
+      </div>
+      <div class="note">
+        <b>ثبت سند جدید</b><br>
+        از «عملیات مالی ← صدور سند حسابداری» یا کلید <span dir="ltr">Ctrl + N</span> استفاده کنید.
+      </div>`,
+  });
+}
+
+function showAboutDialog() {
+  openDialog({
+    title: 'درباره',
+    body: `
+      <div class="note">
+        <b>نرم‌افزار حسابداری</b><br>
+        نسخه ${esc(APP_VERSION)}<br>
+        نرم‌افزار حسابداری دسکتاپ با پایگاه داده محلی SQLite.
+      </div>`,
+  });
+}
+
+function showShortcutsDialog() {
+  openDialog({
+    title: 'میانبرهای صفحه‌کلید',
+    body: `
+      <div class="note">
+        <b><span dir="ltr">Ctrl + N</span></b> — صدور سند جدید<br>
+        <b><span dir="ltr">Esc</span></b> — بستن منوها و پنجره‌ها
+      </div>`,
+  });
+}
+
+async function exitApplication() {
+  const confirmed = await confirmDialog(
+    'خروج از برنامه',
+    'آیا از بستن نرم‌افزار مطمئن هستید؟',
+    'خروج',
+    true
+  );
+  if (!confirmed) return;
+
+  try {
+    const tauriWindow = window.__TAURI__ && window.__TAURI__.window;
+    if (tauriWindow && typeof tauriWindow.getCurrentWindow === 'function') {
+      await tauriWindow.getCurrentWindow().close();
+    } else {
+      window.close();
+    }
+  } catch (error) {
+    toast(errorText(error), 'error');
+  }
+}
+
 /* ── Navigation ─────────────────────────────────────────────── */
 
 let navSeq = 0;
@@ -1802,7 +2116,9 @@ async function openGroupsWindow() {
 }
 
 function bindChrome() {
-  $('#btnNewVoucherMenu')?.addEventListener('click', () => openVoucherWindow());
+  $('#btnExitApp')?.addEventListener('click', () => {
+    void exitApplication();
+  });
   $('#btnSideGroups')?.addEventListener('click', () => openGroupsWindow());
 
   $$('[data-quick]').forEach((button) => {
@@ -1854,6 +2170,8 @@ function bindChrome() {
 
 async function init() {
   buildNavigation();
+  buildMenubar();
+  bindMenubar();
   bindChrome();
 
   if (!invoke) {

@@ -56,6 +56,7 @@ const SCHEMA: &str = r#"
         parent_code TEXT REFERENCES accounts(code),
         parent_name TEXT NOT NULL DEFAULT '',
         is_postable INTEGER NOT NULL DEFAULT 1 CHECK(is_postable IN (0, 1)),
+        postable_before_children INTEGER CHECK(postable_before_children IN (0, 1)),
         created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
         updated_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
@@ -90,7 +91,7 @@ const SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_voucher_lines_voucher ON voucher_lines(voucher_id);
     CREATE INDEX IF NOT EXISTS idx_voucher_lines_account ON voucher_lines(account_code);
 
-    INSERT OR IGNORE INTO app_meta(key, value) VALUES ('schema_version', '2');
+    INSERT OR IGNORE INTO app_meta(key, value) VALUES ('schema_version', '3');
 "#;
 
 const DEFAULT_SETTINGS: [(&str, &str); 2] = [
@@ -311,15 +312,33 @@ impl Database {
         self.with_conn(|conn| {
             let existing = conn
                 .query_row(
-                    "SELECT code FROM account_groups WHERE id = ?1",
+                    "SELECT code, type FROM account_groups WHERE id = ?1",
                     params![id],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()
                 .map_err(db_error)?;
-            let existing = existing.ok_or_else(|| "گروه حساب یافت نشد.".to_string())?;
-            if existing != code {
+            let (existing_code, existing_type) =
+                existing.ok_or_else(|| "گروه حساب یافت نشد.".to_string())?;
+            if existing_code != code {
                 return Err("تغییر کد گروه حساب مجاز نیست.".to_string());
+            }
+            if existing_type != group_type {
+                let used_lines: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*)
+                           FROM voucher_lines l
+                           JOIN accounts a ON a.code = l.account_code
+                          WHERE a.group_code = ?1",
+                        params![code],
+                        |row| row.get(0),
+                    )
+                    .map_err(db_error)?;
+                if used_lines > 0 {
+                    return Err(
+                        "نوع این گروه در اسناد ثبت‌شده استفاده شده است؛ تغییر آن می‌تواند گزارش‌های مالی دوره‌های قبل را تغییر دهد.".to_string(),
+                    );
+                }
             }
 
             conn.execute(
@@ -410,7 +429,8 @@ impl Database {
         let parent_code = normalize_code(parent_code);
 
         self.with_conn(|conn| {
-            let group_exists = conn
+            let tx = conn.transaction().map_err(db_error)?;
+            let group_exists = tx
                 .query_row(
                     "SELECT 1 FROM account_groups WHERE code = ?1",
                     params![group_code],
@@ -423,7 +443,7 @@ impl Database {
                 return Err("گروه حساب انتخاب‌شده وجود ندارد.".to_string());
             }
 
-            let duplicate = conn
+            let duplicate = tx
                 .query_row(
                     "SELECT 1 FROM accounts WHERE code = ?1",
                     params![code],
@@ -436,13 +456,13 @@ impl Database {
             }
 
             let (parent_code, parent_name) =
-                resolve_parent(conn, level, &parent_code, &group_code)?;
+                resolve_parent(&tx, level, &parent_code, &group_code)?;
 
             // An account that already carries vouchers cannot also become a
             // heading for sub-accounts: its balance would be counted twice
             // in the ledger of the parent.
             if let Some(parent) = &parent_code {
-                if account_has_lines(conn, parent)? {
+                if account_has_lines(&tx, parent)? {
                     return Err(
                         "حساب بالاتر در اسناد استفاده شده است؛ برای آن زیرحساب تعریف نمی‌شود."
                             .to_string(),
@@ -451,7 +471,7 @@ impl Database {
             }
 
             let postable = level > 1 && is_postable;
-            conn.execute(
+            tx.execute(
                 "INSERT INTO accounts
                     (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -467,20 +487,24 @@ impl Database {
                 ],
             )
             .map_err(db_error)?;
-            let new_id = conn.last_insert_rowid();
+            let new_id = tx.last_insert_rowid();
 
             // The parent is now a heading and can no longer receive vouchers.
             if let Some(parent) = &parent_code {
-                conn.execute(
-                    "UPDATE accounts SET is_postable = 0,
+                tx.execute(
+                    "UPDATE accounts
+                        SET postable_before_children = COALESCE(postable_before_children, is_postable),
+                            is_postable = 0,
                             updated_at = datetime('now', 'localtime')
-                      WHERE code = ?1 AND is_postable = 1",
+                      WHERE code = ?1",
                     params![parent],
                 )
                 .map_err(db_error)?;
             }
 
-            fetch_account(conn, new_id)
+            let account = fetch_account(&tx, new_id)?;
+            tx.commit().map_err(db_error)?;
+            Ok(account)
         })
     }
 
@@ -504,13 +528,14 @@ impl Database {
         self.with_conn(|conn| {
             let existing = conn
                 .query_row(
-                    "SELECT code, level, group_code FROM accounts WHERE id = ?1",
+                    "SELECT code, level, group_code, COALESCE(parent_code, '') FROM accounts WHERE id = ?1",
                     params![id],
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, i64>(1)?,
                             row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
                         ))
                     },
                 )
@@ -518,7 +543,7 @@ impl Database {
                 .map_err(db_error)?
                 .ok_or_else(|| "حساب یافت نشد.".to_string())?;
 
-            let (code, level, old_group) = existing;
+            let (code, level, old_group, old_parent_code) = existing;
 
             let group_exists = conn
                 .query_row(
@@ -547,6 +572,13 @@ impl Database {
                         .to_string(),
                 );
             }
+            let has_history = account_has_lines(conn, &code)?;
+            if has_history && (old_group != group_code || old_parent_code != parent_code) {
+                return Err(
+                    "این حساب در اسناد ثبت‌شده استفاده شده است؛ تغییر گروه یا والد آن می‌تواند طبقه‌بندی و مانده گزارش‌های تاریخی را تغییر دهد. ابتدا حساب اصلاحی یا ساختار جایگزین تعریف کنید."
+                        .to_string(),
+                );
+            }
 
             let (parent_code, parent_name) =
                 resolve_parent(conn, level, &parent_code, &group_code)?;
@@ -561,6 +593,10 @@ impl Database {
                 "UPDATE accounts
                     SET name = ?1, group_code = ?2, nature = ?3,
                         parent_code = ?4, parent_name = ?5, is_postable = ?6,
+                        postable_before_children = CASE
+                            WHEN ?8 = 1 THEN COALESCE(postable_before_children, ?9)
+                            ELSE NULL
+                        END,
                         updated_at = datetime('now', 'localtime')
                   WHERE id = ?7",
                 params![
@@ -570,7 +606,9 @@ impl Database {
                     parent_code,
                     parent_name,
                     i64::from(postable),
-                    id
+                    id,
+                    i64::from(children > 0),
+                    i64::from(is_postable)
                 ],
             )
             .map_err(db_error)?;
@@ -585,17 +623,18 @@ impl Database {
         }
 
         self.with_conn(|conn| {
-            let code = conn
+            let tx = conn.transaction().map_err(db_error)?;
+            let (code, parent_code) = tx
                 .query_row(
-                    "SELECT code FROM accounts WHERE id = ?1",
+                    "SELECT code, COALESCE(parent_code, '') FROM accounts WHERE id = ?1",
                     params![id],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()
                 .map_err(db_error)?
                 .ok_or_else(|| "حساب با این شناسه یافت نشد.".to_string())?;
 
-            let children: i64 = conn
+            let children: i64 = tx
                 .query_row(
                     "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
                     params![code],
@@ -606,12 +645,35 @@ impl Database {
                 return Err("این حساب دارای زیرحساب است؛ ابتدا زیرحساب‌ها را حذف کنید.".to_string());
             }
 
-            if account_has_lines(conn, &code)? {
+            if account_has_lines(&tx, &code)? {
                 return Err("این حساب در اسناد حسابداری استفاده شده و قابل حذف نیست.".to_string());
             }
 
-            conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])
+            tx.execute("DELETE FROM accounts WHERE id = ?1", params![id])
                 .map_err(db_error)?;
+
+            if !parent_code.is_empty() {
+                let remaining_children: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
+                        params![parent_code],
+                        |row| row.get(0),
+                    )
+                    .map_err(db_error)?;
+                if remaining_children == 0 {
+                    tx.execute(
+                        "UPDATE accounts
+                            SET is_postable = COALESCE(postable_before_children, is_postable),
+                                postable_before_children = NULL,
+                                updated_at = datetime('now', 'localtime')
+                          WHERE code = ?1",
+                        params![parent_code],
+                    )
+                    .map_err(db_error)?;
+                }
+            }
+
+            tx.commit().map_err(db_error)?;
             Ok(())
         })
     }
@@ -664,7 +726,7 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
 
     // Bring along data from the previous application versions so an existing
     // chart of accounts does not disappear after the rename.
-    migrate_legacy_database(&data_dir, &path);
+    migrate_legacy_database(&data_dir, &path)?;
 
     let connection =
         Connection::open(&path).map_err(|e| format!("باز کردن پایگاه داده ناموفق بود: {e}"))?;
@@ -677,6 +739,7 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
         )
         .map_err(db_error)?;
     connection.execute_batch(SCHEMA).map_err(db_error)?;
+    apply_schema_migrations(&connection)?;
     seed_default_groups(&connection).map_err(db_error)?;
     seed_default_accounts(&connection).map_err(db_error)?;
     seed_default_settings(&connection).map_err(db_error)?;
@@ -688,9 +751,9 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
 /// old file may still have most of its data in a `-wal` sidecar, so copying
 /// only the main file would silently lose it. `VACUUM INTO` writes a single
 /// consistent file that includes everything the source connection can see.
-fn migrate_legacy_database(data_dir: &Path, destination: &Path) {
+fn migrate_legacy_database(data_dir: &Path, destination: &Path) -> Result<(), String> {
     if destination.exists() {
-        return;
+        return Ok(());
     }
 
     let mut candidates = vec![data_dir.join(LEGACY_DB_FILE_NAME)];
@@ -698,19 +761,80 @@ fn migrate_legacy_database(data_dir: &Path, destination: &Path) {
         candidates.push(parent.join(LEGACY_IDENTIFIER).join(LEGACY_DB_FILE_NAME));
     }
 
-    for source in candidates {
-        if !source.exists() {
-            continue;
-        }
-        if copy_sqlite_database(&source, destination).is_ok() {
-            return;
-        }
-        // A locked or unusual source can still be copied file-by-file.
-        if raw_copy_database(&source, destination).is_ok() {
-            return;
-        }
-        let _ = std::fs::remove_file(destination);
+    let existing: Vec<PathBuf> = candidates.into_iter().filter(|path| path.exists()).collect();
+    if existing.is_empty() {
+        return Ok(());
     }
+
+    let temporary = destination.with_extension("sqlite3.migrating");
+    let mut failures = Vec::new();
+    for source in existing {
+        let _ = std::fs::remove_file(&temporary);
+        match copy_sqlite_database(&source, &temporary) {
+            Ok(()) => {
+                std::fs::rename(&temporary, destination).map_err(|error| {
+                    let _ = std::fs::remove_file(&temporary);
+                    format!("پایگاه داده قدیمی کپی شد اما جایگزینی امن فایل مقصد ناموفق بود: {error}")
+                })?;
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&temporary);
+                failures.push(format!("{}: {}", source.display(), error));
+            }
+        }
+    }
+
+    Err(format!(
+        "انتقال پایگاه داده قدیمی ناموفق بود؛ برای جلوگیری از ساخت پایگاه داده خالی و پنهان‌شدن اطلاعات قبلی، اجرای برنامه متوقف شد. جزئیات: {}",
+        failures.join(" | ")
+    ))
+}
+
+/// Applies additive, versioned schema changes. Migration 3 remembers whether
+/// a parent account was manually postable before its first child was added.
+fn apply_schema_migrations(conn: &Connection) -> Result<(), String> {
+    const CURRENT_VERSION: i64 = 3;
+    let version_text: String = conn
+        .query_row(
+            "SELECT value FROM app_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_error)?;
+    let version = version_text
+        .parse::<i64>()
+        .map_err(|_| "نسخه ساختار پایگاه داده معتبر نیست.".to_string())?;
+    if version > CURRENT_VERSION {
+        return Err(format!(
+            "نسخه پایگاه داده ({}) از نسخه قابل پشتیبانی برنامه جدیدتر است.",
+            version
+        ));
+    }
+
+    {
+        let mut statement = conn.prepare("PRAGMA table_info(accounts)").map_err(db_error)?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(db_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db_error)?;
+        if !columns.iter().any(|column| column == "postable_before_children") {
+            conn.execute(
+                "ALTER TABLE accounts ADD COLUMN postable_before_children INTEGER CHECK(postable_before_children IN (0, 1))",
+                [],
+            )
+            .map_err(db_error)?;
+        }
+        if version < CURRENT_VERSION {
+            conn.execute(
+                "UPDATE app_meta SET value = '3' WHERE key = 'schema_version'",
+                [],
+            )
+            .map_err(db_error)?;
+        }
+    }
+    Ok(())
 }
 
 fn copy_sqlite_database(source: &Path, destination: &Path) -> Result<(), String> {
@@ -722,22 +846,6 @@ fn copy_sqlite_database(source: &Path, destination: &Path) -> Result<(), String>
             params![destination.to_string_lossy().into_owned()],
         )
         .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn raw_copy_database(source: &Path, destination: &Path) -> std::io::Result<()> {
-    std::fs::copy(source, destination)?;
-    for suffix in ["-wal", "-shm"] {
-        let mut from = source.as_os_str().to_os_string();
-        from.push(suffix);
-        let from = PathBuf::from(from);
-        if !from.exists() {
-            continue;
-        }
-        let mut to = destination.as_os_str().to_os_string();
-        to.push(suffix);
-        let _ = std::fs::copy(&from, PathBuf::from(to));
-    }
     Ok(())
 }
 
@@ -1152,6 +1260,14 @@ mod tests {
         assert!(!updated.is_postable);
 
         db.delete_account(created.id).unwrap();
+        let restored_parent = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "120101")
+            .unwrap();
+        assert!(restored_parent.is_postable);
         assert_eq!(db.list_accounts().unwrap().accounts.len(), 27);
     }
 
@@ -1166,6 +1282,78 @@ mod tests {
             .is_err());
         assert!(db
             .create_account("120104", "والد اشتباه", 3, "1", "debtor", "1101", true)
+            .is_err());
+    }
+
+    #[test]
+    fn migrates_schema_v2_to_v3_without_losing_account_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE accounts (id INTEGER PRIMARY KEY, code TEXT NOT NULL);
+             INSERT INTO accounts (code) VALUES ('110101');
+             INSERT INTO app_meta (key, value) VALUES ('schema_version', '2');",
+        )
+        .unwrap();
+
+        apply_schema_migrations(&conn).unwrap();
+        let version: String = conn
+            .query_row("SELECT value FROM app_meta WHERE key = 'schema_version'", [], |row| row.get(0))
+            .unwrap();
+        let column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = 'postable_before_children'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let account_code: String = conn
+            .query_row("SELECT code FROM accounts WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, "3");
+        assert_eq!(column_count, 1);
+        assert_eq!(account_code, "110101");
+    }
+
+    #[test]
+    fn prevents_reclassifying_groups_and_posted_accounts() {
+        let db = test_database();
+        let group = db
+            .list_account_groups()
+            .unwrap()
+            .groups
+            .into_iter()
+            .find(|group| group.code == "1")
+            .unwrap();
+        let account = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110101")
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'سند حسابداری عادی')",
+                [],
+            )
+            .map_err(db_error)?;
+            let voucher_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+                 VALUES (?1, 1, ?2, 1000, 0)",
+                params![voucher_id, account.code],
+            )
+            .map_err(db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(db
+            .update_account_group(group.id, &group.code, &group.name, "بدهی")
+            .is_err());
+        assert!(db
+            .update_account(account.id, &account.name, "4", &account.nature, &account.parent_code, true)
             .is_err());
     }
 
@@ -1192,7 +1380,7 @@ mod tests {
 
             // The source connection stays open with its data in the WAL, which
             // is exactly the situation a plain file copy would get wrong.
-            migrate_legacy_database(&dir, &destination);
+            migrate_legacy_database(&dir, &destination).unwrap();
         }
 
         let copied = Connection::open(&destination).unwrap();

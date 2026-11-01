@@ -147,116 +147,189 @@ input, textarea, select { user-select: text; }
   overflow: hidden;
 }
 
-/* ── Menu bar ─────────────────────────────────────────────────────────── */
+/* ── Menu bar — flat light style (modeled on the WebApp third UI) ───────── */
 .menubar {
   display: flex;
-  align-items: center;
-  gap: 2px;
-  height: 38px;
-  padding: 0 10px;
-  background:
-    radial-gradient(900px 120px at 15% -30%, rgba(47, 123, 235, .34), transparent 70%),
-    linear-gradient(112deg, #08172c 0%, #0e2d52 48%, #0a203c 100%);
-  border-bottom: 0;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 4px;
+  height: 33px;
+  padding: 0 4px;
+  background: #eef1f4;
+  border: 1px solid #cbd2da;
+  border-radius: 3px;
+  color: #1f2937;
+  font-size: 14px;
   flex: 0 0 auto;
   position: relative;
   z-index: 40;
-  color: var(--chrome-text);
-  box-shadow: 0 6px 18px -10px rgba(5, 18, 35, .75);
+  box-shadow: none;
 }
-.menubar::after {
-  content: "";
-  position: absolute;
-  inset-inline: 0;
-  bottom: 0;
-  height: 2px;
-  background: linear-gradient(90deg, #2f7beb 0%, #1fb6aa 38%, #f2c14e 72%, #b5447a 100%);
-  opacity: .9;
+
+.menubar-start {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
 }
 
 .menubar-brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding-inline-end: 13px;
-  margin-inline-end: 5px;
-  border-inline-end: 1px solid rgba(255, 255, 255, .14);
+  gap: 7px;
+  padding-inline: 6px 12px;
+  margin-inline-end: 2px;
+  border-inline-end: 1px solid #d5dbe2;
+  flex: 0 0 auto;
 }
-.brand-ico { width: 20px; height: 20px; filter: drop-shadow(0 3px 6px rgba(0, 0, 0, .35)); }
+.brand-ico { width: 18px; height: 18px; filter: none; }
 .menubar-title {
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: .1px;
   white-space: nowrap;
-  color: #f5f9ff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  color: #1f2937;
+  text-shadow: none;
 }
 
-.menubar-items { display: flex; align-items: center; gap: 1px; }
+.menubar-items {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+}
+
+.menu-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
 
 .menu-root {
-  height: 26px;
-  padding: 0 11px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  cursor: default;
-  font-size: 12.5px;
-  color: #d7e4f7;
-}
-.menu-root:hover { background: rgba(255, 255, 255, .1); color: #ffffff; }
-.menu-root[aria-expanded="true"] {
-  background: rgba(47, 123, 235, .28);
-  border-color: rgba(126, 181, 255, .6);
-  color: #ffffff;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06);
-}
-
-.menubar-end { margin-inline-start: auto; display: flex; align-items: center; gap: 8px; }
-.menubar-version {
-  font-size: 11px;
-  color: var(--chrome-text-2);
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, .07);
-  border: 1px solid rgba(255, 255, 255, .13);
-  font-variant-numeric: tabular-nums;
-}
-
-/* ── Menubar action button (opens the account form) ───────────────────── */
-.menubar-action {
-  height: 26px;
-  margin-inline-start: 10px;
-  padding: 0 12px;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  border: 1px solid rgba(126, 181, 255, .5);
-  border-radius: 5px;
-  background: linear-gradient(135deg, #2f7beb 0%, #1f5fd0 100%);
-  color: #ffffff;
-  cursor: pointer;
-  font-size: 12.5px;
+  gap: 4px;
+  height: auto;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-top-width: 0;
+  border-bottom-width: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #1f2937;
+  font-size: 14px;
   white-space: nowrap;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22);
-  transition: filter .13s, box-shadow .13s;
+  cursor: default;
+  user-select: none;
 }
-.menubar-action:hover { filter: brightness(1.12); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), 0 0 0 2px rgba(47, 123, 235, .25); }
-.menubar-action:active { filter: brightness(.96); }
-.menubar-action .ico { color: #ffffff; }
+.menu-root:hover {
+  background: #dcebf9;
+  border-color: #b3c9e0;
+}
+.menu-root[aria-expanded="true"] {
+  background: #cfe5f8;
+  border-color: #9fc3e4;
+  box-shadow: none;
+}
+.menu-root:focus-visible,
+.menu-item:focus-visible,
+.menubar-leave:focus-visible {
+  outline: 2px solid #2f7beb;
+  outline-offset: -2px;
+}
 
-.menubar-action.soft {
-  background: rgba(255, 255, 255, .08);
-  border-color: rgba(126, 181, 255, .38);
-  color: #dce9fb;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .12);
+.menu-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 60;
+  min-width: 260px;
+  padding: 4px 0;
+  background: #ffffff;
+  border: 1px solid #8e8f8f;
+  border-radius: 3px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .12);
+  overflow: hidden;
 }
-.menubar-action.soft:hover {
-  background: rgba(255, 255, 255, .16);
-  border-color: rgba(126, 181, 255, .6);
-  filter: none;
+.menu-dropdown[data-size="compact"] { min-width: 224px; }
+.menu-dropdown[data-size="small"] { min-width: 200px; }
+/* منوی آخر (راهنما) در لبه‌ی چپ باز شود تا از صفحه بیرون نزند. */
+.menu-wrap:last-child .menu-dropdown {
+  right: auto;
+  left: 0;
 }
-.menubar-action.soft .ico { color: #a9c3e4; }
+
+.menu-list > * + * {
+  border-top: 1px solid #bcb7ad;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: #2d2d2d;
+  font-size: 13.5px;
+  text-align: right;
+  white-space: nowrap;
+  cursor: default;
+}
+.menu-item:hover { background: #dbe7f6; }
+.menu-item-icon {
+  min-width: 26px;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.menu-item-label { padding-inline-start: 2px; }
+.menu-empty {
+  padding: 8px;
+  text-align: center;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.menubar-leave {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-top-width: 0;
+  border-bottom-width: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #b91c1c;
+  font-size: 13.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+.menubar-leave:hover {
+  background: #fdeaea;
+  border-color: #e5b8b8;
+}
+.menubar-leave:active {
+  background: #fbd6d6;
+  border-color: #dc9f9f;
+}
+
+/* سایدبار می‌تواند از منوی «تنظیمات» پنهان/نمایان شود. */
+.sidebar.is-hidden { display: none; }
+
+@media (max-width: 1320px) {
+  .menubar-title { display: none; }
+  .menubar-brand { padding-inline: 5px 8px; }
+}
+@media (max-width: 1180px) {
+  .menu-root { padding: 0 8px; font-size: 13.5px; }
+  .menubar-items { gap: 2px; }
+  .menubar-start { gap: 2px; }
+}
 
 /* ── Account filter form (popup) ──────────────────────────────────────── */
 .form-grid {

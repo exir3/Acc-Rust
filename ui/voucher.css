@@ -149,3 +149,10 @@ body.voucher-page {
   outline-offset: 1px;
 }
 
+
+/* Invalid Jalali dates are highlighted in the same manner as invalid account codes. */
+.vf-date-input.is-invalid {
+  border-color: #c43d4b !important;
+  background-color: #fff7f7;
+  box-shadow: 0 0 0 2px rgba(196, 61, 75, 0.12);
+}

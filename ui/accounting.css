@@ -13,26 +13,6 @@
     linear-gradient(180deg, #eef3fa 0%, #e7eef8 100%);
 }
 
-.accounting-app .menubar {
-  height: 44px;
-  padding: 0 14px;
-}
-
-.accounting-app .menubar-title {
-  font-size: 13.5px;
-  letter-spacing: .2px;
-}
-
-.accounting-app .menubar-items {
-  margin-inline-start: 14px;
-  gap: 2px;
-}
-
-.accounting-app .menu-root {
-  height: 28px;
-  font-size: 12.5px;
-}
-
 .app-shell {
   flex: 1;
   min-height: 0;

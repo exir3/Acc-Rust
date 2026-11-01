@@ -16,6 +16,7 @@ use std::path::Path;
 const MAX_IMPORT_LINES: usize = 500;
 const MAX_LINE_DESCRIPTION: usize = 500;
 const HEADER_SCAN_ROWS: usize = 30;
+const MAX_AMOUNT: i64 = 999_999_999_999_999;
 
 /* ── Shared helpers ─────────────────────────────────────────── */
 
@@ -63,8 +64,18 @@ fn cell_amount(cell: &Data) -> Result<i64, String> {
     match cell {
         Data::Empty => Ok(0),
         Data::Int(value) => Ok(*value),
-        Data::Float(value) if value.fract() == 0.0 => Ok(*value as i64),
-        Data::Float(_) => Err("مبلغ باید عدد صحیح (بدون اعشار) باشد.".to_string()),
+        Data::Float(value)
+            if value.is_finite()
+                && value.fract() == 0.0
+                && value.abs() <= MAX_AMOUNT as f64 =>
+        {
+            Ok(*value as i64)
+        }
+        Data::Float(value) if value.fract() == 0.0 => Err(format!(
+            "مبلغ باید بین صفر و {} ریال باشد.",
+            db::to_fa_digits(MAX_AMOUNT)
+        )),
+        Data::Float(_) => Err("مبلغ باید عدد صحیح و محدود باشد (بدون اعشار).".to_string()),
         _ => {
             let text = cell_text(cell);
             let cleaned: String = db::normalize_digits(&text)
@@ -86,6 +97,31 @@ fn cell_amount(cell: &Data) -> Result<i64, String> {
 /// Asks for a path and writes the voucher as an `.xlsx` file.
 /// `Ok(None)` means the user closed the save dialog.
 pub fn export_voucher(input: &VoucherInput) -> Result<Option<String>, String> {
+    if input.lines.len() > MAX_IMPORT_LINES {
+        return Err(format!(
+            "تعداد ردیف‌های خروجی نمی‌تواند بیشتر از {} باشد.",
+            db::to_fa_digits(MAX_IMPORT_LINES)
+        ));
+    }
+    let mut checked_debit = 0i64;
+    let mut checked_credit = 0i64;
+    for (index, line) in input.lines.iter().enumerate() {
+        let row_no = db::to_fa_digits(index + 1);
+        if line.debit < 0 || line.credit < 0 || line.debit > MAX_AMOUNT || line.credit > MAX_AMOUNT {
+            return Err(format!("مبلغ ردیف {row_no} خارج از محدوده مجاز است."));
+        }
+        if line.debit > 0 && line.credit > 0 {
+            return Err(format!("در ردیف {row_no} نمی‌توان هم‌زمان بدهکار و بستانکار داشت."));
+        }
+        if line.description.chars().count() > MAX_LINE_DESCRIPTION {
+            return Err(format!("شرح ردیف {row_no} بیشتر از {} کاراکتر است.", db::to_fa_digits(MAX_LINE_DESCRIPTION)));
+        }
+        checked_debit = checked_debit.checked_add(line.debit)
+            .ok_or_else(|| "جمع بدهکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
+        checked_credit = checked_credit.checked_add(line.credit)
+            .ok_or_else(|| "جمع بستانکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
+    }
+    let _validated_totals = (checked_debit, checked_credit);
     let number = input.number.unwrap_or(0);
     let file_label = if number > 0 {
         number.to_string()
@@ -254,8 +290,10 @@ fn write_sheet(worksheet: &mut Worksheet, input: &VoucherInput) -> Result<(), St
                 .write_number_with_format(row, 5, line.credit as f64, &amount_format)
                 .map_err(xlsx_error)?;
         }
-        total_debit += line.debit;
-        total_credit += line.credit;
+        total_debit = total_debit.checked_add(line.debit)
+            .ok_or_else(|| "جمع بدهکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
+        total_credit = total_credit.checked_add(line.credit)
+            .ok_or_else(|| "جمع بستانکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
     }
 
     let total_row = header_row + 1 + input.lines.len() as u32;
@@ -370,6 +408,13 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
                 db::to_fa_digits(excel_row)
             ));
         }
+        if debit > MAX_AMOUNT || credit > MAX_AMOUNT {
+            return Err(format!(
+                "مبلغ ردیف {} اکسل نمی‌تواند بیشتر از {} ریال باشد.",
+                db::to_fa_digits(excel_row),
+                db::to_fa_digits(MAX_AMOUNT)
+            ));
+        }
         if debit > 0 && credit > 0 {
             return Err(format!(
                 "در ردیف {} اکسل هم بدهکار و هم بستانکار مقدار دارد.",
@@ -418,6 +463,8 @@ mod tests {
         assert_eq!(cell_amount(&text("")).unwrap(), 0);
         assert_eq!(cell_amount(&Data::Float(4200.0)).unwrap(), 4200);
         assert!(cell_amount(&Data::Float(4.5)).is_err());
+        assert_eq!(cell_amount(&Data::Float(999_999_999_999_999.0)).unwrap(), MAX_AMOUNT);
+        assert!(cell_amount(&Data::Float(1_000_000_000_000_000.0)).is_err());
     }
 
     #[test]

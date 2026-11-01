@@ -134,25 +134,18 @@
   </svg>
 
   <div class="app accounting-app">
-    <!-- ═══ Menu bar ══════════════════════════════════════════════════════ -->
+    <!-- ═══ Menu bar (flat light style, modeled on the WebApp third UI) ═══ -->
     <div class="menubar">
-      <div class="menubar-brand">
-        <svg class="ico brand-ico"><use href="#i-logo" /></svg>
-        <span class="menubar-title">نرم‌افزار حسابداری</span>
+      <div class="menubar-start">
+        <div class="menubar-brand">
+          <svg class="ico brand-ico"><use href="#i-logo" /></svg>
+          <span class="menubar-title">نرم‌افزار حسابداری</span>
+        </div>
+        <nav class="menubar-items" id="menubarNav" aria-label="منوی اصلی"></nav>
       </div>
-      <nav class="menubar-items" aria-label="منوی اصلی">
-        <button class="menu-root" type="button" data-quick="new-voucher">صدور سند</button>
-        <button class="menu-root" type="button" data-quick="journal">دفتر روزنامه</button>
-        <button class="menu-root" type="button" data-quick="trial">تراز آزمایشی</button>
-        <button class="menu-root" type="button" data-quick="settings">تنظیمات</button>
-      </nav>
-      <div class="menubar-end">
-        <span class="menubar-version">نسخه ۵.۰</span>
-        <button class="menubar-action" id="btnNewVoucherMenu" type="button">
-          <svg class="ico"><use href="#i-plus" /></svg>
-          <span>سند جدید</span>
-        </button>
-      </div>
+      <button class="menubar-leave" id="btnExitApp" type="button">
+        <span>خـروج</span>
+      </button>
     </div>
 
     <div class="app-shell">

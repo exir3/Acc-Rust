@@ -144,6 +144,11 @@ fn save_settings(
 /* ── Vouchers ───────────────────────────────────────────────── */
 
 #[tauri::command(async)]
+fn validate_voucher_date(date: String) -> Result<String, String> {
+    vouchers::validate_voucher_date(&date)
+}
+
+#[tauri::command(async)]
 fn next_voucher_number(state: State<'_, AppState>) -> Result<i64, String> {
     state.database.next_voucher_number()
 }
@@ -559,6 +564,7 @@ pub fn run() {
             delete_account,
             get_settings,
             save_settings,
+            validate_voucher_date,
             next_voucher_number,
             list_vouchers,
             get_voucher,

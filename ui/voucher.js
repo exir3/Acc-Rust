@@ -119,6 +119,7 @@ const parseAmount = (value) => BigInt(digitsOnly(value) || '0');
 // Largest amount per line, same as the backend (1e15 − 1 Rials). Beyond it
 // JavaScript numbers lose precision.
 const MAX_AMOUNT_DIGITS = 15;
+const MAX_VOUCHER_LINES = 500;
 
 /* ── Voucher grid ───────────────────────────────────────────── */
 
@@ -128,7 +129,7 @@ function voucherRowTemplate() {
       <td class="vf-rowno"></td>
       <td><input class="vf-code-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="کد حساب" title="برای انتخاب حساب Space یا F4 را بزنید" /></td>
       <td class="vf-detail2" aria-label="تفصیلی 2"></td>
-      <td><input class="vf-desc-input" type="text" dir="rtl" autocomplete="off" aria-label="شرح" /></td>
+      <td><input class="vf-desc-input" type="text" dir="rtl" maxlength="500" autocomplete="off" aria-label="شرح" /></td>
       <td><input class="vf-amount-input vf-debit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بدهکار" /></td>
       <td><input class="vf-amount-input vf-credit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بستانکار" /></td>
     </tr>`;
@@ -146,6 +147,7 @@ function rowHasValue(row) {
 function appendGridRow() {
   const tbody = $('#voucherRows');
   if (!tbody) return null;
+  if (gridRows().filter(rowHasValue).length >= MAX_VOUCHER_LINES) return null;
   tbody.insertAdjacentHTML('beforeend', voucherRowTemplate());
   return tbody.lastElementChild;
 }
@@ -186,7 +188,7 @@ function syncVoucherRowCount() {
   // Enough rows to fill the window, never fewer than the rows already in
   // use, and always one empty row at the end for the next entry.
   const filled = gridRows().filter(rowHasValue).length;
-  const target = Math.max(5, visibleCount, filled + 1);
+  const target = Math.min(MAX_VOUCHER_LINES, Math.max(5, visibleCount, filled + (filled < MAX_VOUCHER_LINES ? 1 : 0)));
 
   while (tbody.children.length < target) {
     tbody.insertAdjacentHTML('beforeend', voucherRowTemplate());
@@ -201,6 +203,8 @@ function syncVoucherRowCount() {
 function ensureTrailingBlank() {
   const tbody = $('#voucherRows');
   if (!tbody) return;
+  const filled = gridRows().filter(rowHasValue).length;
+  if (filled >= MAX_VOUCHER_LINES) return;
   const last = tbody.lastElementChild;
   if (!last || rowHasValue(last)) {
     tbody.insertAdjacentHTML('beforeend', voucherRowTemplate());
@@ -243,12 +247,30 @@ function updateTotals() {
   setAmountCell('#vfRunDiffCredit', running.credit - running.debit);
 }
 
+function accountHierarchy(account) {
+  const chain = [];
+  const seen = new Set();
+  let current = account;
+  while (current && !seen.has(String(current.code))) {
+    seen.add(String(current.code));
+    chain.unshift(current);
+    current = current.parentCode ? accountForCode(current.parentCode) : null;
+  }
+  return chain;
+}
+
 function updateRowAccount(row, final = false) {
   if (!row) return null;
   const input = row.querySelector('.vf-code-input');
   const code = digitsOnly(input?.value || '');
   const account = accountForCode(code);
+  const detailCell = row.querySelector('.vf-detail2');
+  const level4 = account ? accountHierarchy(account).find((item) => Number(item.level) === 4) : null;
 
+  if (detailCell) {
+    detailCell.textContent = level4 ? `${vfFa(level4.code)} — ${level4.name}` : '—';
+    detailCell.title = level4 ? `${level4.code} — ${level4.name}` : '';
+  }
   if (input) {
     input.title = account
       ? `${account.code} — ${account.name}${account.isPostable ? '' : ' (قابل ثبت نیست)'}`
@@ -278,17 +300,17 @@ function updateLedger(row) {
     return;
   }
 
-  const heading = `${vfFa(account.code)} — ${account.name}`;
-  values[0].textContent = heading;
-  values[0].title = heading;
-  if (values[1]) {
-    values[1].textContent = account.parentName || '—';
-    values[1].title = account.parentName || '';
-  }
-  if (values[2]) {
-    values[2].textContent = account.groupName || '—';
-    values[2].title = account.groupName || '';
-  }
+  const hierarchy = accountHierarchy(account);
+  const renderLevel = (levels) => hierarchy
+    .filter((item) => levels.includes(Number(item.level)))
+    .map((item) => `${vfFa(item.code)} — ${item.name}`)
+    .join(' / ') || '—';
+  const headings = [renderLevel([1, 2]), renderLevel([3]), renderLevel([4])];
+  values.forEach((el, index) => {
+    const value = headings[index] || '—';
+    el.textContent = value;
+    el.title = value;
+  });
 }
 
 function refreshFormState() {
@@ -434,6 +456,9 @@ function moveGridFocus(input, row, step) {
     ensureTrailingBlank();
     const nextRow = row.nextElementSibling;
     if (nextRow) nextRow.querySelector('.vf-code-input')?.focus();
+    else if (gridRows().filter(rowHasValue).length >= MAX_VOUCHER_LINES) {
+      toast(`حداکثر ${vfFa(MAX_VOUCHER_LINES)} ردیف برای هر سند مجاز است.`, 'warning');
+    }
   } else {
     const prevRow = row.previousElementSibling;
     if (prevRow) prevRow.querySelector('.vf-credit-input')?.focus();
@@ -445,6 +470,10 @@ function moveGridFocus(input, row, step) {
 function addRow() {
   const tbody = $('#voucherRows');
   if (!tbody) return;
+  if (gridRows().filter(rowHasValue).length >= MAX_VOUCHER_LINES) {
+    toast(`حداکثر ${vfFa(MAX_VOUCHER_LINES)} ردیف برای هر سند مجاز است.`, 'warning');
+    return;
+  }
 
   const last = tbody.lastElementChild;
   let anchor = state.activeRow && state.activeRow.isConnected && state.activeRow.parentElement === tbody
@@ -459,11 +488,16 @@ function addRow() {
   const row = anchor ? anchor.nextElementSibling : tbody.lastElementChild;
   state.activeRow = row;
   ensureTrailingBlank();
+  syncVoucherRowCount();
   refreshFormState();
   row?.querySelector('.vf-code-input')?.focus();
 }
 
 function repeatRow(includeAmounts = false) {
+  if (gridRows().filter(rowHasValue).length >= MAX_VOUCHER_LINES) {
+    toast(`حداکثر ${vfFa(MAX_VOUCHER_LINES)} ردیف برای هر سند مجاز است.`, 'warning');
+    return;
+  }
   const row = state.activeRow && state.activeRow.isConnected ? state.activeRow : null;
   if (!row) {
     toast('ابتدا ردیفی را انتخاب کنید.', 'info');
@@ -490,6 +524,7 @@ function repeatRow(includeAmounts = false) {
 
   state.activeRow = copy;
   ensureTrailingBlank();
+  syncVoucherRowCount();
   refreshFormState();
   copy.querySelector('.vf-debit-input')?.focus();
 }
@@ -608,6 +643,17 @@ function collectDraft() {
 
 function validateDraft(draft) {
   if (!draft.date) return 'تاریخ سند را وارد کنید.';
+  if (draft.lines.length > MAX_VOUCHER_LINES) {
+    return `تعداد ردیف‌های سند نمی‌تواند بیشتر از ${vfFa(MAX_VOUCHER_LINES)} باشد.`;
+  }
+  const dateParts = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(draft.date);
+  if (!dateParts) return 'تاریخ سند باید به شکل ۱۴۰۵/۰۱/۰۱ وارد شود.';
+  const month = Number(dateParts[2]);
+  const day = Number(dateParts[3]);
+  const maxDay = month >= 1 && month <= 6 ? 31 : 30;
+  if (month < 1 || month > 12 || day < 1 || day > maxDay) {
+    return 'ماه یا روز تاریخ سند معتبر نیست.';
+  }
   if (draft.lines.length < 2) return 'سند حسابداری باید حداقل دو ردیف داشته باشد.';
 
   let debit = 0n;
@@ -622,6 +668,10 @@ function validateDraft(draft) {
     if (!line.debit && !line.credit) return `مبلغ ردیف ${rowNo} را وارد کنید.`;
     if (line.debit && line.credit) return `در ردیف ${rowNo} فقط یکی از بدهکار یا بستانکار را وارد کنید.`;
     if (line.debit < 0 || line.credit < 0) return `مبلغ ردیف ${rowNo} نمی‌تواند منفی باشد.`;
+    if (!Number.isSafeInteger(line.debit) || !Number.isSafeInteger(line.credit)
+      || line.debit > 999999999999999 || line.credit > 999999999999999) {
+      return `مبلغ ردیف ${rowNo} باید عدد صحیح و حداکثر ۹۹۹٬۹۹۹٬۹۹۹٬۹۹۹٬۹۹۹ ریال باشد.`;
+    }
     debit += BigInt(line.debit);
     credit += BigInt(line.credit);
   }
@@ -649,14 +699,49 @@ async function saveVoucher(options = {}) {
   }
 
   state.busy = true;
-  setStatus('info', 'در حال ذخیره…');
+  setStatus('info', 'در حال اعتبارسنجی و ذخیره…');
+  try {
+    // The Rust/Jalali calendar implementation is authoritative, including
+    // leap-year validation. This command gives the form early feedback.
+    const normalizedDate = await invoke('validate_voucher_date', { date: draft.date });
+    const dateInput = $('#vfDocDate');
+    if (dateInput && typeof normalizedDate === 'string') dateInput.value = normalizedDate;
+    draft.date = normalizedDate;
+    // The form remains editable while the asynchronous calendar check runs.
+    // Abort rather than saving a stale snapshot if the user changed anything.
+    if (JSON.stringify(collectDraft()) !== JSON.stringify(draft)) {
+      state.busy = false;
+      setStatus('warn', 'فرم تغییر کرده است');
+      toast('اطلاعات فرم هنگام اعتبارسنجی تغییر کرد؛ لطفاً دوباره ذخیره کنید.', 'warning');
+      return null;
+    }
+    dateInput?.classList.remove('is-invalid');
+    dateInput?.removeAttribute('aria-invalid');
+    if (dateInput) dateInput.title = '';
+  } catch (error) {
+    state.busy = false;
+    const dateInput = $('#vfDocDate');
+    dateInput?.classList.add('is-invalid');
+    dateInput?.setAttribute('aria-invalid', 'true');
+    if (dateInput) dateInput.title = errorText(error);
+    setStatus('error', 'تاریخ نامعتبر');
+    toast(errorText(error), 'error');
+    return null;
+  }
+
   try {
     const saved = await invoke('save_voucher', { input: draft });
     state.busy = false;
     loadVoucher(saved);
-    await refreshNextNumber();
+
     if (!options.silent) {
       toast(`سند شماره ${vfFa(saved.number)} ذخیره شد.`, 'ok');
+    }
+    try {
+      await refreshNextNumber();
+    } catch (refreshError) {
+      state.nextNumber = Math.max(state.nextNumber || 1, Number(saved.number) + 1);
+      toast(`سند ذخیره شد؛ دریافت شماره بعدی ناموفق بود: ${errorText(refreshError)}`, 'warning');
     }
     return saved;
   } catch (error) {
@@ -767,9 +852,13 @@ async function navigateNext() {
 async function newVoucher() {
   if (state.busy) return;
   if (!(await guardUnsaved())) return;
-  await refreshNextNumber();
-  startNew(state.nextNumber);
-  toast('سند جدید آماده است.', 'info');
+  try {
+    await refreshNextNumber();
+    startNew(state.nextNumber);
+    toast('سند جدید آماده است.', 'info');
+  } catch (error) {
+    toast(`دریافت شماره سند جدید ناموفق بود: ${errorText(error)}`, 'error');
+  }
 }
 
 async function copyVoucher() {
@@ -826,7 +915,16 @@ async function deleteVoucher() {
   try {
     await invoke('delete_voucher', { id: voucher.id });
     state.busy = false;
-    await refreshNextNumber();
+    // The deletion has committed. Do not report it as failed just because
+    // refreshing the suggested next number has a transient error.
+    try {
+      await refreshNextNumber();
+    } catch (refreshError) {
+      state.nextNumber = Math.max(1, state.nextNumber || Number(voucher.number));
+      startNew(state.nextNumber);
+      toast(`سند شماره ${vfFa(voucher.number)} حذف شد. دریافت شماره بعدی ناموفق بود: ${errorText(refreshError)}`, 'warning');
+      return;
+    }
     startNew(state.nextNumber);
     toast(`سند شماره ${vfFa(voucher.number)} حذف شد.`, 'ok');
   } catch (error) {
@@ -1276,8 +1374,32 @@ function bindDocMeta() {
   }
 
   if (date) {
+    let validationSequence = 0;
     date.addEventListener('input', () => {
-      date.value = toAsciiDigits(date.value).replace(/-/g, '/').replace(/[^\d/]/g, '');
+      validationSequence += 1;
+      date.value = toAsciiDigits(date.value).replace(/-/g, '/').replace(/[^\d/]/g, '').slice(0, 10);
+      date.classList.remove('is-invalid');
+      date.removeAttribute('aria-invalid');
+      date.title = '';
+    });
+    date.addEventListener('blur', async () => {
+      const value = toAsciiDigits(date.value).replace(/-/g, '/').replace(/[^\d/]/g, '');
+      if (!value || !invoke) return;
+      const request = ++validationSequence;
+      try {
+        const normalizedDate = await invoke('validate_voucher_date', { date: value });
+        if (request !== validationSequence || date.value !== value) return;
+        if (typeof normalizedDate === 'string') date.value = normalizedDate;
+        date.classList.remove('is-invalid');
+        date.removeAttribute('aria-invalid');
+        date.title = '';
+      } catch (error) {
+        if (request !== validationSequence || date.value !== value) return;
+        date.classList.add('is-invalid');
+        date.setAttribute('aria-invalid', 'true');
+        date.title = errorText(error);
+        toast(errorText(error), 'error');
+      }
     });
   }
 
@@ -1417,10 +1539,16 @@ async function runVoucherSearch(term) {
     if (request !== searchRequest) return;
     if (normalizeSearch(voucherSearchInput()?.value || '') !== normalizeSearch(wanted)) return;
 
-    let results = Array.isArray(payload?.vouchers) ? payload.vouchers.slice(0, 8) : [];
+    const allResults = Array.isArray(payload?.vouchers) ? payload.vouchers : [];
+    let results;
     if (isVoucherNumberTerm(wanted)) {
-      const exact = results.find((voucher) => String(voucher.number) === digitsOnly(wanted));
-      if (exact) results = [exact, ...results.filter((voucher) => voucher !== exact)];
+      const exactNumber = digitsOnly(wanted);
+      const exact = allResults.find((voucher) => String(voucher.number) === exactNumber);
+      results = exact
+        ? [exact, ...allResults.filter((voucher) => voucher !== exact).slice(0, 7)]
+        : allResults.slice(0, 8);
+    } else {
+      results = allResults.slice(0, 8);
     }
     renderVoucherSearchResults(results);
   } catch (error) {
