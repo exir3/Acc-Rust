@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>نرم‌افزار حسابداری</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="accounting.css" />
+</head>
+<body>
+  <!-- ═══ Icon sprite ═════════════════════════════════════════════════════ -->
+  <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-logo" viewBox="0 0 32 32">
+      <rect x="1" y="1" width="30" height="30" rx="7" fill="#0c3a5a" />
+      <rect x="9" y="4.5" width="14" height="23" rx="3" fill="#fafcff" />
+      <rect x="11.3" y="7" width="9.4" height="5.2" rx="1.2" fill="#092a44" />
+      <rect x="24.3" y="8.3" width="2.4" height=".9" rx=".45" fill="#f2b84b" />
+      <rect x="24.3" y="10.3" width="1.6" height=".9" rx=".45" fill="#f2b84b" />
+      <rect x="12" y="15" width="2.6" height="2.6" rx=".7" fill="#f2b84b" />
+      <rect x="16.2" y="15" width="2.6" height="2.6" rx=".7" fill="#f2b84b" />
+      <rect x="20.4" y="15" width="2.6" height="2.6" rx=".7" fill="#d69a30" />
+      <rect x="12" y="19.6" width="2.6" height="2.6" rx=".7" fill="#f2b84b" />
+      <rect x="16.2" y="19.6" width="2.6" height="2.6" rx=".7" fill="#f2b84b" />
+      <rect x="20.4" y="19.6" width="2.6" height="2.6" rx=".7" fill="#d69a30" />
+    </symbol>
+    <symbol id="i-dashboard" viewBox="0 0 16 16">
+      <rect x="1.8" y="1.8" width="5.2" height="5.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.25" />
+      <rect x="9" y="1.8" width="5.2" height="5.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.25" />
+      <rect x="1.8" y="9" width="5.2" height="5.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.25" />
+      <rect x="9" y="9" width="5.2" height="5.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.25" />
+    </symbol>
+    <symbol id="i-doc" viewBox="0 0 16 16">
+      <path d="M3.4 1.9h5.3l3.9 3.9v8.3H3.4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+      <path d="M8.7 1.9v3.9h3.9M5.6 8.4h4.8M5.6 10.7h4.8M5.6 12.8h3" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-journal" viewBox="0 0 16 16">
+      <rect x="2" y="2.2" width="12" height="11.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.2" />
+      <path d="M2 5.5h12M6.4 5.5v8.3M10.8 5.5v8.3" fill="none" stroke="currentColor" stroke-width="1.05" />
+      <path d="M4.2 8h.01M4.2 10.2h.01M4.2 12.4h.01" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-ledger" viewBox="0 0 16 16">
+      <path d="M3 2.2h9.7c.6 0 1.1.5 1.1 1.1v9.4H3.9c-.6 0-1.1-.5-1.1-1.1V3.3c0-.6.5-1.1 1.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" />
+      <path d="M2.8 11.6h10.9M5.4 5h5.8M5.4 7.2h5.8M5.4 9.4h3.4" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-scale" viewBox="0 0 16 16">
+      <path d="M8 2.6v10.6M4.6 13.4h6.8M2.4 6h11.2" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+      <path d="M2.4 6 4.2 9.8H.6zM13.6 6l1.8 3.8h-3.6z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-trend" viewBox="0 0 16 16">
+      <path d="M1.9 13.7h12.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+      <path d="M2.7 11 6 7.4l2.6 2.3 4.7-5.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-balance" viewBox="0 0 16 16">
+      <path d="M1.8 6.4 8 2.2l6.2 4.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+      <path d="M3.5 7v6M6.6 7v6M9.4 7v6M12.5 7v6M1.8 13.4h12.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-tree" viewBox="0 0 16 16">
+      <rect x="6" y="1.7" width="4" height="3.2" rx=".8" fill="none" stroke="currentColor" stroke-width="1.15" />
+      <rect x="1.4" y="11.1" width="4" height="3.2" rx=".8" fill="none" stroke="currentColor" stroke-width="1.15" />
+      <rect x="10.6" y="11.1" width="4" height="3.2" rx=".8" fill="none" stroke="currentColor" stroke-width="1.15" />
+      <path d="M8 4.9v3.3M3.4 11.1V8.2h9.2v2.9" fill="none" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-folder" viewBox="0 0 16 16">
+      <path d="M1.6 4.2c0-.6.5-1.1 1.1-1.1h3.1l1.4 1.7h6c.6 0 1.1.5 1.1 1.1v6.3c0 .6-.5 1.1-1.1 1.1H2.7c-.6 0-1.1-.5-1.1-1.1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-settings" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.25" />
+      <path d="M8 1.6v1.6M8 12.8v1.6M1.6 8h1.6M12.8 8h1.6M3.5 3.5l1.1 1.1M11.4 11.4l1.1 1.1M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+      <circle cx="8" cy="8" r="6.1" fill="none" stroke="currentColor" stroke-width="1.1" />
+    </symbol>
+    <symbol id="i-plus" viewBox="0 0 16 16">
+      <path d="M8 3.1v9.8M3.1 8h9.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-edit" viewBox="0 0 16 16">
+      <path d="M10.6 2.4 13.6 5.4 5.8 13.2 2.4 13.6 2.8 10.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+      <path d="m9.4 3.6 3 3" fill="none" stroke="currentColor" stroke-width="1.1" />
+    </symbol>
+    <symbol id="i-trash" viewBox="0 0 16 16">
+      <path d="M2.8 4.3h10.4M6.2 2.3h3.6M4.2 4.3l.6 9.2c.1.6.5 1 1.1 1h4.2c.6 0 1-.4 1.1-1l.6-9.2M6.6 7v4.4M9.4 7v4.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-print" viewBox="0 0 16 16">
+      <path d="M4.4 6.2V2.3h7.2v3.9" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" />
+      <rect x="1.9" y="6" width="12.2" height="5.1" rx="1" fill="none" stroke="currentColor" stroke-width="1.25" />
+      <path d="M4.4 9.6h7.2v4.1H4.4z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-search" viewBox="0 0 16 16">
+      <circle cx="6.9" cy="6.9" r="4.5" fill="none" stroke="currentColor" stroke-width="1.3" />
+      <line x1="10.3" y1="10.3" x2="13.9" y2="13.9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-refresh" viewBox="0 0 16 16">
+      <path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+      <path d="M13.3 2v3.1h-3.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 16 16">
+      <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 16 16">
+      <path d="M3.4 8.4 6.4 11.4 12.6 4.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-chevron" viewBox="0 0 16 16">
+      <path d="M6 3.6 10.4 8 6 12.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-info" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2" />
+      <circle cx="8" cy="5.2" r=".9" fill="currentColor" />
+      <path d="M8 7.4v4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-alert" viewBox="0 0 16 16">
+      <path d="M8 2.3 14.4 13.4H1.6z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+      <path d="M8 6.4v3.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+      <circle cx="8" cy="11.6" r=".85" fill="currentColor" />
+    </symbol>
+    <symbol id="i-save" viewBox="0 0 16 16">
+      <path d="M2.2 2.2h9.1l2.5 2.5v9.1H2.2z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" />
+      <path d="M4.9 2.2v3.7h6V2.2M4.9 13.8V9.5h6.2v4.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="i-bank" viewBox="0 0 16 16">
+      <path d="M1.8 6.4 8 2.2l6.2 4.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+      <path d="M3.5 7v6M6.6 7v6M9.4 7v6M12.5 7v6M1.8 13.4h12.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-calendar" viewBox="0 0 16 16">
+      <rect x="2.2" y="3.2" width="11.6" height="10.6" rx="1.1" fill="none" stroke="currentColor" stroke-width="1.2" />
+      <path d="M2.2 6.4h11.6M5.4 1.9v2.6M10.6 1.9v2.6" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+    </symbol>
+    <symbol id="i-coins" viewBox="0 0 16 16">
+      <ellipse cx="8" cy="4.2" rx="5.3" ry="2.2" fill="none" stroke="currentColor" stroke-width="1.2" />
+      <path d="M2.7 4.2v3.2c0 1.2 2.4 2.2 5.3 2.2s5.3-1 5.3-2.2V4.2M2.7 7.4v3.2c0 1.2 2.4 2.2 5.3 2.2s5.3-1 5.3-2.2V7.4" fill="none" stroke="currentColor" stroke-width="1.2" />
+    </symbol>
+    <symbol id="i-warning" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2" />
+      <path d="M8 4.6v4.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+      <circle cx="8" cy="11.4" r=".85" fill="currentColor" />
+    </symbol>
+  </svg>
+
+  <div class="app accounting-app">
+    <!-- ═══ Menu bar ══════════════════════════════════════════════════════ -->
+    <div class="menubar">
+      <div class="menubar-brand">
+        <svg class="ico brand-ico"><use href="#i-logo" /></svg>
+        <span class="menubar-title">نرم‌افزار حسابداری</span>
+      </div>
+      <nav class="menubar-items" aria-label="منوی اصلی">
+        <button class="menu-root" type="button" data-quick="new-voucher">صدور سند</button>
+        <button class="menu-root" type="button" data-quick="journal">دفتر روزنامه</button>
+        <button class="menu-root" type="button" data-quick="trial">تراز آزمایشی</button>
+        <button class="menu-root" type="button" data-quick="settings">تنظیمات</button>
+      </nav>
+      <div class="menubar-end">
+        <span class="menubar-version">نسخه ۵.۰</span>
+        <button class="menubar-action" id="btnNewVoucherMenu" type="button">
+          <svg class="ico"><use href="#i-plus" /></svg>
+          <span>سند جدید</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="app-shell">
+      <!-- ═══ Sidebar ═════════════════════════════════════════════════════ -->
+      <aside class="sidebar" aria-label="منوی بخش‌ها">
+        <div class="side-company">
+          <div class="side-company-eyebrow">واحد اقتصادی</div>
+          <div class="side-company-name" id="sideCompany">در حال بارگذاری…</div>
+          <div class="side-company-meta">
+            <span id="sideFiscalYear">سال مالی —</span>
+            <span class="dot"></span>
+            <span id="sideToday">—</span>
+          </div>
+        </div>
+        <nav class="side-nav" id="sideNav"></nav>
+        <div class="side-footer">
+          <button class="btn" id="btnSideGroups" type="button">
+            <svg class="ico"><use href="#i-folder" /></svg>
+            <span>گروه‌های حساب</span>
+          </button>
+          <div class="db-path" id="dbPath" title="مسیر پایگاه داده"></div>
+        </div>
+      </aside>
+
+      <!-- ═══ Workspace ═══════════════════════════════════════════════════ -->
+      <main class="workspace">
+        <header class="page-head">
+          <div>
+            <div class="crumbs" id="crumbs">حسابداری / <b>داشبورد</b></div>
+            <h1 id="pageTitle">داشبورد</h1>
+          </div>
+          <div class="page-head-actions" id="pageActions"></div>
+        </header>
+        <div class="page-scroll" id="page"></div>
+      </main>
+    </div>
+
+    <footer class="statusbar">
+      <div class="status-start">
+        <span class="status-dot" id="statusDot" data-tone="idle"></span>
+        <span id="statusText">آماده</span>
+      </div>
+      <div class="status-end">
+        <span class="status-cell" id="statusCompany">شرکت: —</span>
+        <span class="status-cell" id="statusFiscal">سال مالی: —</span>
+        <span class="status-cell" id="statusDate">تاریخ: —</span>
+      </div>
+    </footer>
+  </div>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <div class="modal" id="modal" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+      <div class="dialog-head" id="dialogTitle"></div>
+      <button class="dialog-x" id="dialogClose" type="button" title="بستن" aria-label="بستن">
+        <svg class="ico"><use href="#i-close" /></svg>
+      </button>
+      <div class="dialog-body" id="dialogBody"></div>
+      <div class="dialog-foot" id="dialogFoot"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------
+# Hesabdari - files that must NOT be committed
+# ---------------------------------------------------------------
+
+# Build outputs / compiled artifacts
+/cargo-target/
+/src-tauri/target/
+/target/
+/dist/
+
+# Tauri generated schema files
+/src-tauri/gen/schemas/
+
+# Dependencies
+/node_modules/
+
+# Local runtime data (the real database lives in AppData, never here)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Tooling screenshots (OpenChamber)
+/.openchamber/
+
+# Editor and OS files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Rust debug symbols
+*.pdb

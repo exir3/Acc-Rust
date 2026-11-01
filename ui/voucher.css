@@ -1,0 +1,151 @@
+/* ═══════════════════════════════════════════════════════════════
+   Accounting voucher window — standalone page.
+
+   This window is a normal Windows popup: its title bar, frame and
+   buttons come from the OS, so the page fills the whole client area
+   and carries no in-page title bar or modal backdrop.
+   ═══════════════════════════════════════════════════════════════ */
+
+html, body {
+  height: 100%;
+}
+
+body.voucher-page {
+  overflow: hidden;
+  background: #dfe7f1;
+}
+
+.voucher-page .voucher-window {
+  width: 100%;
+  height: 100vh;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  transform: none;
+}
+
+.voucher-page .voucher-form {
+  border-radius: 0;
+}
+
+/* عنوان پنجره برای صفحه‌خوان‌ها؛ تایتل‌بار خود ویندوز نمایش داده می‌شود. */
+.vf-window-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* انتخابگر حساب، دیالوگ داخلی همین پنجره است (بدون جابه‌جایی). */
+.voucher-page .ap-window {
+  transform: none;
+}
+
+.voucher-page .ap-titlebar {
+  cursor: default;
+}
+
+.voucher-page .toast {
+  z-index: 500;
+  bottom: 24px;
+}
+
+/* ── Account code validation ─────────────────────────────────── */
+
+.vf-code-input.is-invalid {
+  background: #fff1f1;
+  box-shadow: inset 0 0 0 1px #d24a4a;
+}
+.vf-code-input.is-invalid:focus {
+  background: #ffe4e4;
+}
+
+/* ── Document status chip ────────────────────────────────────── */
+
+.vf-doc-status {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid #a4b8c9;
+  border-radius: 15px;
+  background: linear-gradient(to bottom, #ffffff, #eef4fa);
+  color: #365067;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9);
+}
+.vf-doc-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, .75);
+}
+.vf-doc-status[data-tone="info"] { border-color: #a9c4e8; background: linear-gradient(to bottom, #f4f9ff, #e4efff); color: #1d4f91; }
+.vf-doc-status[data-tone="ok"] { border-color: #a9d3b8; background: linear-gradient(to bottom, #f3fbf6, #e0f3e7); color: #17653f; }
+.vf-doc-status[data-tone="warn"] { border-color: #e2c58c; background: linear-gradient(to bottom, #fffaf0, #fbefd5); color: #8a5a00; }
+.vf-doc-status[data-tone="error"] { border-color: #e0adb4; background: linear-gradient(to bottom, #fff6f7, #fbe4e7); color: #9f2436; }
+
+/* ── Confirmation dialog ─────────────────────────────────────── */
+
+.vf-confirm {
+  width: min(440px, calc(100vw - 32px));
+  height: auto;
+  min-height: 0;
+}
+.vf-confirm-body {
+  padding: 20px 18px;
+  background: #f0f0f0;
+  color: #1f2937;
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.9;
+  text-align: right;
+}
+.vf-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 18px 16px;
+  background: #f0f0f0;
+  border-radius: 0 0 8px 8px;
+}
+.vf-confirm-actions button {
+  height: 32px;
+  min-width: 92px;
+  padding: 0 16px;
+  border: 1px solid #a4b8c9;
+  border-radius: 4px;
+  background: linear-gradient(to bottom, #ffffff 0%, #f2f7fb 50%, #e4edf5 100%);
+  color: #365067;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.vf-confirm-actions button:hover { border-color: #7fa3c2; background: linear-gradient(to bottom, #ffffff, #eaf4fd); }
+.vf-confirm-actions .vf-confirm-ok {
+  border-color: #b58a3c;
+  background: linear-gradient(to bottom, #fdf6e8, #f3e2bd);
+  color: #744c00;
+}
+.vf-confirm-actions .vf-confirm-ok:hover {
+  border-color: #a2761f;
+  background: linear-gradient(to bottom, #fffbf0, #efd9a8);
+}
+.vf-confirm-actions button:focus-visible {
+  outline: 2px solid #3f7fb8;
+  outline-offset: 1px;
+}
+

@@ -1,0 +1,31 @@
+[package]
+name = "hesabdari"
+version = "5.0.0"
+description = "نرم‌افزار حسابداری"
+authors = ["Hesabdari"]
+edition = "2021"
+rust-version = "1.88"
+
+[lib]
+name = "hesabdari_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = "0.17"
+jalali-calendar = "0.1.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+calamine = "0.37"
+rust_xlsxwriter = "0.102"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+panic = "abort"
+opt-level = "s"

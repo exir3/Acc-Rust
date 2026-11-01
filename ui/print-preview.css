@@ -1,0 +1,359 @@
+/* ============================================================
+   In-app print preview — toolbar, paper sheet and print rules.
+   The report's own <style> elements are injected after this file,
+   so preview overrides use the html.pp-root prefix to win.
+   ============================================================ */
+
+@font-face {
+  font-family: "Vazirmatn FD";
+  src: url("fonts/Vazirmatn-FD-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Vazirmatn FD";
+  src: url("fonts/Vazirmatn-FD-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Vazirmatn FD";
+  src: url("fonts/Vazirmatn-FD-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Vazirmatn FD";
+  src: url("fonts/Vazirmatn-FD-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+html.pp-root {
+  --pp-font: "Vazirmatn FD", "Vazirmatn", "Segoe UI", Tahoma, sans-serif;
+  --pp-navy: #0d2340;
+  --pp-accent: #1f5fd0;
+  --pp-line: #d4deec;
+  --pp-zoom: 1;
+  height: auto;
+  min-height: 100%;
+  background: #dfe5ee;
+  scrollbar-gutter: stable;
+}
+
+html.pp-root body {
+  margin: 0;
+  padding: 76px 0 58px;
+  min-height: 100vh;
+  background: transparent;
+  font-family: var(--pp-font);
+  color: #14223a;
+  overflow-x: auto;
+}
+
+/* ── Preview toolbar ──────────────────────────────────────────────────── */
+#ppToolbar {
+  position: fixed;
+  inset-inline: 0;
+  top: 0;
+  z-index: 900;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 58px;
+  padding: 8px 16px;
+  margin: 0;
+  direction: rtl;
+  color: #eaf2ff;
+  background:
+    radial-gradient(760px 110px at 18% -40%, rgba(47, 123, 235, .5), transparent 70%),
+    linear-gradient(112deg, #08172c 0%, #0e2d52 52%, #0a203c 100%);
+  border: 0;
+  border-bottom: 1px solid #071526;
+  box-shadow: 0 8px 24px -14px rgba(5, 18, 35, .9);
+}
+
+#ppToolbar::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, #2f7beb 0%, #1fb6aa 38%, #f2c14e 72%, #b5447a 100%);
+  opacity: .9;
+}
+
+.pp-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.pp-logo {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  filter: drop-shadow(0 3px 7px rgba(0, 0, 0, .35));
+}
+.pp-titles { min-width: 0; line-height: 1.35; }
+.pp-kicker {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  color: #8fc5ff;
+  margin-bottom: 1px;
+}
+.pp-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42vw;
+}
+.pp-subtitle {
+  font-size: 11px;
+  color: #b9d0ec;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42vw;
+}
+
+.pp-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: auto;
+  flex: 0 0 auto;
+}
+.pp-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  background: rgba(255, 255, 255, .09);
+  color: #dbe9fb;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pp-chip[hidden] { display: none; }
+
+.pp-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.pp-zoom {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, .17);
+  background: rgba(255, 255, 255, .08);
+  overflow: hidden;
+}
+.pp-zoom button {
+  height: 100%;
+  min-width: 28px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: #eaf3ff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+}
+.pp-zoom button:hover { background: rgba(255, 255, 255, .14); }
+.pp-zoom span {
+  min-width: 48px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+  direction: ltr;
+}
+.pp-zoom #ppZoomFit {
+  border-inline-start: 1px solid rgba(255, 255, 255, .15);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 0 10px;
+}
+
+.pp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, .2);
+  background: rgba(255, 255, 255, .08);
+  color: #eaf3ff;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pp-btn svg { width: 14px; height: 14px; flex: 0 0 auto; }
+.pp-btn:hover { background: rgba(255, 255, 255, .16); }
+.pp-btn:active { transform: translateY(1px); }
+.pp-btn:focus-visible { outline: 2px solid #7fc0ff; outline-offset: 1px; }
+.pp-btn:disabled { opacity: .45; cursor: default; }
+
+.pp-btn.pp-primary {
+  border-color: #0b5f42;
+  background: linear-gradient(180deg, #18946a 0%, #0f7b4f 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px -6px rgba(0, 0, 0, .6);
+}
+.pp-btn.pp-primary:hover { background: linear-gradient(180deg, #1baa7a 0%, #0f8556 100%); }
+.pp-btn.pp-ghost { background: transparent; }
+.pp-btn.pp-ghost:hover { background: rgba(255, 255, 255, .12); }
+
+/* ── Paper sheet ──────────────────────────────────────────────────────── */
+#ppSheet {
+  width: var(--pp-w, 210mm);
+  min-height: var(--pp-h, 297mm);
+  margin: 0 auto;
+  padding: var(--pp-pad, 15mm);
+  background: #ffffff;
+  color: #1a1a1a;
+  box-shadow:
+    0 0 0 1px rgba(13, 35, 64, .08),
+    0 18px 42px -18px rgba(13, 35, 64, .45);
+  border-radius: 1px;
+  zoom: var(--pp-zoom, 1);
+}
+
+html.pp-root #ppSheet .report-doc {
+  padding: 0 !important;
+}
+
+/* ── Loading / error ──────────────────────────────────────────────────── */
+.pp-state {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: rgba(223, 229, 238, .92);
+  direction: rtl;
+}
+.pp-state[hidden] { display: none; }
+.pp-state-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  min-width: 280px;
+  max-width: min(440px, 86vw);
+  padding: 24px 30px;
+  background: #ffffff;
+  border: 1px solid var(--pp-line);
+  border-top: 3px solid var(--pp-accent);
+  border-radius: 12px;
+  box-shadow: 0 24px 54px -22px rgba(9, 27, 51, .5);
+  text-align: center;
+}
+.pp-state-card p {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #102a4d;
+  line-height: 1.9;
+}
+.pp-spinner {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 3px solid #dfe8f5;
+  border-top-color: var(--pp-accent);
+  border-inline-end-color: #0d7f7a;
+  animation: pp-spin .8s linear infinite;
+}
+@keyframes pp-spin { to { transform: rotate(360deg); } }
+
+/* ── Status bar ───────────────────────────────────────────────────────── */
+#ppStatus {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 880;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 14px;
+  direction: rtl;
+  background: rgba(13, 35, 64, .94);
+  color: #cfe0f5;
+  border-top: 1px solid #071526;
+  font-size: 10.5px;
+}
+.pp-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #37b98a;
+  box-shadow: 0 0 0 3px rgba(55, 185, 138, .16);
+  flex: 0 0 auto;
+}
+.pp-status-hint { margin-inline-start: auto; color: #8fa9c7; }
+
+/* ── Narrow windows ───────────────────────────────────────────────────── */
+@media (max-width: 1020px) {
+  .pp-subtitle { display: none; }
+  .pp-title { max-width: 30vw; }
+  .pp-meta { display: none; }
+  #ppSave { display: none; }
+}
+@media (max-width: 760px) {
+  .pp-kicker { display: none; }
+  .pp-title { max-width: 26vw; font-size: 12px; }
+  .pp-zoom #ppZoomFit { display: none; }
+  .pp-btn.pp-ghost { padding: 0 8px; }
+}
+
+/* ── Print output ─────────────────────────────────────────────────────── */
+@media print {
+  html.pp-root,
+  html.pp-root body {
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+  html.pp-root #ppToolbar,
+  html.pp-root #ppStatus,
+  html.pp-root .pp-state {
+    display: none !important;
+  }
+  html.pp-root #ppSheet {
+    width: auto !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    zoom: 1 !important;
+  }
+  html.pp-root #ppSheet .report-doc {
+    padding: 0 !important;
+  }
+}
