@@ -1085,6 +1085,33 @@ mod tests {
     }
 
     #[test]
+    fn account_workbook_headers_match_webapp_template() {
+        let mut range = calamine::Range::new((0, 0), (0, 10));
+        for (column, value) in [
+            "کد گروه", "ماهیت", "کد کل", "عنوان کل", "ماهیت کل",
+            "کد معین", "عنوان معین", "ماهیت معین", "کد تفصیلی 1",
+            "عنوان تفصیلی 1", "ماهیت تفصیلی 1",
+        ].iter().enumerate() {
+            range.set_value((0, column as u32), text(value));
+        }
+        let (row, columns) = find_account_columns(&range).expect("WebApp account header row");
+        assert_eq!(row, 0);
+        assert_eq!(columns.group_code, Some(0));
+        assert_eq!(columns.level1_code, Some(2));
+        assert_eq!(columns.level2_code, Some(5));
+        assert_eq!(columns.level3_code, Some(8));
+    }
+
+    #[test]
+    fn account_nature_accepts_webapp_persian_labels_and_parent_fallback() {
+        assert_eq!(account_nature("بستانکار", "debtor").unwrap(), "creditor");
+        assert_eq!(account_nature("بدهکار", "creditor").unwrap(), "debtor");
+        assert_eq!(account_nature("دوگانه", "debtor").unwrap(), "dual");
+        assert_eq!(account_nature("", "creditor").unwrap(), "creditor");
+        assert!(account_nature("نامعتبر", "debtor").is_err());
+    }
+
+    #[test]
     fn amounts_accept_persian_digits_and_separators() {
         assert_eq!(cell_amount(&text("۱٬۲۳۴٬۵۶۷")).unwrap(), 1_234_567);
         assert_eq!(cell_amount(&text("2,500,000")).unwrap(), 2_500_000);
