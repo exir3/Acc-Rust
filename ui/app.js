@@ -81,7 +81,7 @@ const MENU_BAR = [
     label: 'اطلاعات پایه',
     items: [
       { label: 'تعریف گروه حسابها', icon: '📂', command: 'groups-window' },
-      { label: 'تعریف حسابهای کل، معین و تفصیلی', icon: '📁', page: 'accounts' },
+      { label: 'تعریف حسابهای کل، معین و تفصیلی', icon: '📁', command: 'account-definition' },
       { label: 'مرور حسابها', icon: '🔍', page: 'accounts' },
       { label: 'لیست اسناد حسابداری', icon: '📜', page: 'vouchers' },
       { label: 'مرتب‌سازی و ادغام اسناد', icon: '🧮', command: 'reorganize-vouchers' },
@@ -1322,7 +1322,8 @@ function balanceTable(rows, total, totalLabel) {
 
 PAGES.accounts = {
   actions: () => [
-    { label: 'حساب جدید', icon: 'i-plus', primary: true, onClick: () => openAccountDialog(null) },
+    { label: 'تعریف و اصلاح حساب‌ها', icon: 'i-tree', primary: true, onClick: () => window.openAccountDefinitionPopup?.() },
+    { label: 'حساب جدید سریع', icon: 'i-plus', onClick: () => openAccountDialog(null) },
     { label: 'گروه‌ها', icon: 'i-folder', onClick: () => openGroupsWindow() },
     { label: 'به‌روزرسانی', icon: 'i-refresh', onClick: () => navigate('accounts', { force: true }) },
   ],
@@ -2285,6 +2286,9 @@ function runMenuItem(item) {
   switch (item.command) {
     case 'groups-window':
       openGroupsWindow();
+      return;
+    case 'account-definition':
+      window.openAccountDefinitionPopup?.();
       return;
     case 'new-voucher':
       openVoucherWindow();
