@@ -720,6 +720,354 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
     Ok(Some(lines))
 }
 
+
+/* ── Chart of accounts import/export (WebApp-compatible layout) ── */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountImportResult {
+    pub created_count: usize,
+    pub skipped_count: usize,
+    pub errors: Vec<String>,
+}
+
+#[derive(Default)]
+struct AccountImportColumns {
+    group_code: Option<usize>,
+    legacy_nature: Option<usize>,
+    level1_code: Option<usize>,
+    level1_name: Option<usize>,
+    level1_nature: Option<usize>,
+    level2_code: Option<usize>,
+    level2_name: Option<usize>,
+    level2_nature: Option<usize>,
+    level3_code: Option<usize>,
+    level3_name: Option<usize>,
+    level3_nature: Option<usize>,
+}
+
+fn find_account_columns(
+    range: &calamine::Range<Data>,
+) -> Option<(usize, AccountImportColumns)> {
+    for (row_index, row) in range.rows().enumerate().take(HEADER_SCAN_ROWS) {
+        let headers: Vec<String> = row
+            .iter()
+            .map(|cell| normalize_header(&cell_text(cell)))
+            .collect();
+        let find = |aliases: &[&str]| {
+            aliases.iter().find_map(|alias| {
+                let normalized = normalize_header(alias);
+                headers.iter().position(|header| header == &normalized)
+            })
+        };
+        let columns = AccountImportColumns {
+            group_code: find(&["کد گروه", "کدگروه"]),
+            legacy_nature: find(&["ماهیت"]),
+            level1_code: find(&["کد کل", "کدکل"]),
+            level1_name: find(&["عنوان کل", "نام کل", "عنوانکل"]),
+            level1_nature: find(&["ماهیت کل", "ماهیتکل"]),
+            level2_code: find(&["کد معین", "کدمعین"]),
+            level2_name: find(&["عنوان معین", "نام معین", "عنوانمعین"]),
+            level2_nature: find(&["ماهیت معین", "ماهیت‌معین", "ماهیت‌معین"]),
+            level3_code: find(&["کد تفصیلی 1", "کد تفصیلی۱", "کد تفصیلی", "کدتفصیلی1"]),
+            level3_name: find(&["عنوان تفصیلی 1", "عنوان تفصیلی۱", "عنوان تفصیلی", "نام تفصیلی 1"]),
+            level3_nature: find(&["ماهیت تفصیلی 1", "ماهیت تفصیلی۱", "ماهیت تفصیلی"]),
+        };
+        if columns.group_code.is_some()
+            && columns.level1_code.is_some()
+            && columns.level1_name.is_some()
+        {
+            return Some((row_index, columns));
+        }
+    }
+    None
+}
+
+fn account_nature(raw: &str, fallback: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(if fallback.is_empty() {
+            "debtor".to_string()
+        } else {
+            fallback.to_string()
+        });
+    }
+    if value.contains("بستانکار") {
+        Ok("creditor".to_string())
+    } else if value.contains("بدهکار") {
+        Ok("debtor".to_string())
+    } else if value.contains("دوگانه") {
+        Ok("dual".to_string())
+    } else {
+        Err(format!("ماهیت «{value}» معتبر نیست؛ بدهکار، بستانکار یا دوگانه وارد کنید."))
+    }
+}
+
+/// Export the chart in the same 11-column hierarchy layout used by WebApp.
+pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String> {
+    let accounts = database.list_accounts()?.accounts;
+    let by_code: BTreeMap<String, db::Account> = accounts
+        .iter()
+        .cloned()
+        .map(|account| (account.code.clone(), account))
+        .collect();
+
+    let Some(mut path) = rfd::FileDialog::new()
+        .set_title("خروجی اکسل فهرست حساب‌ها")
+        .set_file_name("لیست-حساب‌ها.xlsx")
+        .add_filter("Excel", &["xlsx"])
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx"))
+    {
+        path.set_extension("xlsx");
+    }
+
+    let headers = [
+        "کد گروه",
+        "ماهیت",
+        "کد کل",
+        "عنوان کل",
+        "ماهیت کل",
+        "کد معین",
+        "عنوان معین",
+        "ماهیت معین",
+        "کد تفصیلی 1",
+        "عنوان تفصیلی 1",
+        "ماهیت تفصیلی 1",
+    ];
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.set_name("حساب‌ها").map_err(xlsx_error)?;
+    worksheet.set_right_to_left(true);
+    for (column, header) in headers.iter().enumerate() {
+        worksheet
+            .write_string(0, column as u16, *header)
+            .map_err(xlsx_error)?;
+    }
+
+    // One row per terminal account (up to WebApp's three supported levels).
+    // Repeated parent data is intentional: it makes every row independently importable.
+    let mut terminals: Vec<&db::Account> = accounts
+        .iter()
+        .filter(|account| {
+            account.level <= 3
+                && !accounts.iter().any(|child| {
+                    child.parent_code == account.code && child.level <= 3
+                })
+        })
+        .collect();
+    terminals.sort_by(|a, b| a.code.cmp(&b.code));
+
+    for (index, terminal) in terminals.iter().enumerate() {
+        let mut chain: Vec<&db::Account> = Vec::new();
+        let mut current = Some(*terminal);
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(account) = current {
+            if !visited.insert(account.code.clone()) {
+                return Err(format!("چرخه در ساختار حساب «{}» شناسایی شد.", db::to_fa_digits(&account.code)));
+            }
+            chain.push(account);
+            current = if account.parent_code.is_empty() {
+                None
+            } else {
+                by_code.get(&account.parent_code)
+            };
+        }
+        chain.reverse();
+        if chain.is_empty() || chain[0].level != 1 {
+            continue;
+        }
+        let mut values = vec![String::new(); headers.len()];
+        values[0] = chain[0].group_code.clone();
+        values[1] = chain[0].nature.clone();
+        for account in chain {
+            let offset = match account.level {
+                1 => 2,
+                2 => 5,
+                3 => 8,
+                _ => continue,
+            };
+            values[offset] = account.code.clone();
+            values[offset + 1] = account.name.clone();
+            values[offset + 2] = account.nature.clone();
+        }
+        let row = index as u32 + 1;
+        for (column, value) in values.iter().enumerate() {
+            worksheet
+                .write_string(row, column as u16, value)
+                .map_err(xlsx_error)?;
+        }
+    }
+    worksheet.set_column_width(0, 12).map_err(xlsx_error)?;
+    for column in 1..headers.len() {
+        worksheet
+            .set_column_width(column as u16, if column % 3 == 0 { 28 } else { 16 })
+            .map_err(xlsx_error)?;
+    }
+    worksheet.set_freeze_panes(1, 0).map_err(xlsx_error)?;
+    workbook.save(&path).map_err(xlsx_error)?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+/// Import accounts from the WebApp 11-column workbook. Each hierarchy level is
+/// validated and saved before its children; existing matching accounts are skipped.
+pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportResult>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("ورودی اکسل حساب‌ها")
+        .add_filter("Excel", &["xlsx"])
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+
+    let mut workbook = open_workbook_auto(&path)
+        .map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
+    let range = match workbook.worksheet_range_at(0) {
+        Some(Ok(range)) => range,
+        Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
+        None => return Err("فایل اکسل هیچ کاربرگی ندارد.".to_string()),
+    };
+    if range.height() > 10_001 || range.width() > 50 {
+        return Err("فایل اکسل بیش از حد مجاز است (حداکثر ۱۰٬۰۰۰ ردیف و ۵۰ ستون).".to_string());
+    }
+    let Some((header_row, columns)) = find_account_columns(&range) else {
+        return Err("ستون‌های فایل با قالب حساب‌های WebApp مطابقت ندارد؛ ستون‌های «کد گروه»، «کد کل» و «عنوان کل» الزامی هستند.".to_string());
+    };
+    let read = |row: &[Data], index: Option<usize>| -> String {
+        index
+            .and_then(|column| row.get(column))
+            .map(cell_text)
+            .unwrap_or_default()
+    };
+
+    let mut accounts = database.list_accounts()?.accounts;
+    let groups = database.list_account_groups()?.groups;
+    let group_codes: std::collections::BTreeSet<String> =
+        groups.into_iter().map(|group| group.code).collect();
+    let mut created_count = 0usize;
+    let mut skipped_count = 0usize;
+    let mut errors = Vec::new();
+
+    for (offset, row) in range.rows().skip(header_row + 1).enumerate() {
+        let excel_row = header_row + offset + 2;
+        let group_code = digits_only(&read(row, columns.group_code));
+        let legacy_nature = read(row, columns.legacy_nature);
+        let cells = [
+            (
+                digits_only(&read(row, columns.level1_code)),
+                read(row, columns.level1_name),
+                read(row, columns.level1_nature).if_empty(&legacy_nature),
+            ),
+            (
+                digits_only(&read(row, columns.level2_code)),
+                read(row, columns.level2_name),
+                read(row, columns.level2_nature),
+            ),
+            (
+                digits_only(&read(row, columns.level3_code)),
+                read(row, columns.level3_name),
+                read(row, columns.level3_nature),
+            ),
+        ];
+        if cells.iter().all(|cell| cell.0.is_empty() && cell.1.trim().is_empty()) {
+            continue;
+        }
+        let row_result = (|| -> Result<(usize, usize), String> {
+            if group_code.is_empty() || !group_codes.contains(&group_code) {
+                return Err(format!("کد گروه «{}» در ردیف اکسل معتبر نیست.", db::to_fa_digits(&group_code)));
+            }
+            if cells[0].1.trim().is_empty() {
+                return Err("عنوان حساب کل خالی است.".to_string());
+            }
+            let first_empty = cells.iter().position(|cell| cell.1.trim().is_empty());
+            if let Some(empty_at) = first_empty {
+                if cells.iter().skip(empty_at + 1).any(|cell| !cell.1.trim().is_empty()) {
+                    return Err("سطوح حساب باید به‌ترتیب و بدون فاصله تکمیل شوند.".to_string());
+                }
+            }
+            let mut parent_code = String::new();
+            let mut parent_nature = "debtor".to_string();
+            let mut row_created = 0usize;
+            let mut row_skipped = 0usize;
+            for (level_index, (raw_code, raw_name, raw_nature)) in cells.iter().enumerate() {
+                if raw_name.trim().is_empty() {
+                    break;
+                }
+                let level = level_index as i64 + 1;
+                if raw_code.is_empty() {
+                    return Err(format!("کد سطح {} خالی است؛ کدها باید در فایل مشخص باشند.", level));
+                }
+                let name = raw_name.split_whitespace().collect::<Vec<_>>().join(" ");
+                if name.chars().count() > 255 {
+                    return Err(format!("نام حساب «{}» بیش از ۲۵۵ کاراکتر است.", name));
+                }
+                if level > 1 && !raw_code.starts_with(&parent_code) {
+                    return Err(format!("کد «{}» با کد حساب بالاتر «{}» آغاز نمی‌شود.", db::to_fa_digits(raw_code), db::to_fa_digits(&parent_code)));
+                }
+                let nature = account_nature(raw_nature, &parent_nature)?;
+                if let Some(existing) = accounts.iter().find(|account| account.code == *raw_code) {
+                    if existing.level != level
+                        || existing.group_code != group_code
+                        || existing.parent_code != parent_code
+                        || existing.name != name
+                        || existing.nature != nature
+                    {
+                        return Err(format!("کد «{}» قبلاً با مشخصات متفاوت ثبت شده است.", db::to_fa_digits(raw_code)));
+                    }
+                    skipped_count += 1;
+                    row_skipped += 1;
+                    parent_code = raw_code.clone();
+                    parent_nature = nature;
+                    continue;
+                }
+                let account = database.create_account(
+                    raw_code,
+                    &name,
+                    level,
+                    &group_code,
+                    &nature,
+                    &parent_code,
+                    level > 1,
+                )?;
+                accounts.push(account);
+                created_count += 1;
+                row_created += 1;
+                parent_code = raw_code.clone();
+                parent_nature = nature;
+            }
+            Ok((row_created, row_skipped))
+        })();
+        if let Err(error) = row_result {
+            errors.push(format!("ردیف {}: {}", db::to_fa_digits(excel_row), error));
+            if errors.len() >= 200 {
+                errors.push("ادامه خطاها برای جلوگیری از مصرف بیش از حد حافظه ثبت نشد.".to_string());
+                break;
+            }
+        }
+    }
+
+    Ok(Some(AccountImportResult {
+        created_count,
+        skipped_count,
+        errors,
+    }))
+}
+
+trait EmptyFallback {
+    fn if_empty(self, fallback: &str) -> String;
+}
+impl EmptyFallback for String {
+    fn if_empty(self, fallback: &str) -> String {
+        if self.trim().is_empty() { fallback.to_string() } else { self }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
