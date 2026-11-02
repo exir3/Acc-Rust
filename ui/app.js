@@ -1519,7 +1519,7 @@ function openAccountDialog(account) {
   const requestedLevel = Number(state.accountFilters.level);
   const level = account
     ? Number(account.level)
-    : requestedLevel || Math.min(4, hierarchy.length + 1);
+    : requestedLevel || Math.min(3, hierarchy.length + 1);
   const initialParentCode = account?.parentCode || (level > 1 ? hierarchy[level - 2]?.code || '' : '');
   const initialGroupCode = account?.groupCode || state.accountFilters.group || (level > 1
     ? hierarchy[level - 2]?.groupCode || groups[0]?.code
@@ -1544,7 +1544,7 @@ function openAccountDialog(account) {
         <div class="field">
           <label for="acctLevel">سطح حساب</label>
           <select id="acctLevel" class="input" ${isEdit ? 'disabled' : ''}>
-            ${[1, 2, 3, 4].map((value) => `<option value="${value}"${Number(level) === value ? ' selected' : ''}>${levelLabel(value)}</option>`).join('')}
+            ${(isEdit ? [Number(account.level)] : [1, 2, 3]).map((value) => `<option value="${value}"${Number(level) === value ? ' selected' : ''}>${levelLabel(value)}</option>`).join('')}
           </select>
         </div>
         <div class="field wide">
