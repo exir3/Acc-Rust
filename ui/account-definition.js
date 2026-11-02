@@ -190,7 +190,18 @@
       }finally{state.busy=false;}
     };
     const close = () => {overlay.remove();document.removeEventListener('keydown',keys,true);};
-    const keys = e => {if(e.key==='Escape'){e.preventDefault();close();}if(e.key==='F2'&&state.mode!=='view'){e.preventDefault();form.requestSubmit();}};
+    const keys = e => {
+      if(e.key==='Escape'){e.preventDefault();close();return;}
+      if(e.key==='F2'&&state.mode!=='view'){e.preventDefault();form.requestSubmit();return;}
+      if(e.key==='Tab'){
+        const focusable=Array.from(overlay.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),[tabindex]:not([tabindex="-1"])'))
+          .filter(el=>!el.hidden&&el.getClientRects().length>0);
+        if(!focusable.length)return;
+        const first=focusable[0],last=focusable[focusable.length-1];
+        if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+        else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+      }
+    };
     $('[data-close]').addEventListener('click',close);
     $('[data-new]').addEventListener('click',startNew);
     $('[data-edit]').addEventListener('click',()=>edit(getSelected()));
