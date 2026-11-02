@@ -26,6 +26,7 @@ const state = {
   databasePath: '',
   filters: {},
   accountFilters: { search: '', group: '', level: '' },
+  accountDrillPath: [],
   voucherCount: 0,
   refreshOnFocus: false,
   ready: false,
@@ -83,8 +84,8 @@ const MENU_BAR = [
       { label: 'تعریف حسابهای کل، معین و تفصیلی', icon: '📁', page: 'accounts' },
       { label: 'مرور حسابها', icon: '🔍', page: 'accounts' },
       { label: 'لیست اسناد حسابداری', icon: '📜', page: 'vouchers' },
-      { label: 'مرتب‌سازی و ادغام اسناد', icon: '🧮' },
-      { label: 'ورود دسته‌جمعی اسناد از اکسل', icon: '📥' },
+      { label: 'مرتب‌سازی و ادغام اسناد', icon: '🧮', command: 'reorganize-vouchers' },
+      { label: 'ورود دسته‌جمعی اسناد از اکسل', icon: '📥', command: 'bulk-voucher-import' },
       { label: 'خروجی دسته‌جمعی اسناد به اکسل', icon: '📤' },
       { label: 'حذف دسته‌جمعی اسناد', icon: '🗑️' },
       { label: 'تغییر وضعیت اسناد (موقت/دائمی)', icon: '🔁' },
@@ -222,6 +223,57 @@ function icon(name) {
 
 function levelLabel(level) {
   return ({ 1: 'کل', 2: 'معین', 3: 'تفصیلی ۱', 4: 'تفصیلی ۲' })[Number(level)] || '—';
+}
+
+function accountPathTo(accounts, account) {
+  const path = [];
+  const visited = new Set();
+  let current = account;
+  while (current && !visited.has(current.code)) {
+    visited.add(current.code);
+    path.unshift(current.code);
+    current = current.parentCode
+      ? accounts.find((item) => item.code === current.parentCode)
+      : null;
+  }
+  return path;
+}
+
+function nextAccountCode(accounts, level, parentCode = '') {
+  const sameLevel = accounts.filter((account) => Number(account.level) === level);
+  const siblings = sameLevel.filter((account) =>
+    level === 1 ? !account.parentCode : account.parentCode === parentCode
+  );
+  const width = level === 1
+    ? Math.max(4, ...sameLevel.map((account) => String(account.code).length))
+    : Math.max(
+      2,
+      ...sameLevel.map((account) => String(account.code).length - String(account.parentCode || '').length)
+    );
+  const prefix = level === 1 ? '' : parentCode;
+  const used = new Set(accounts.map((account) => String(account.code)));
+  const suffixes = siblings
+    .map((account) => String(account.code).slice(prefix.length))
+    .filter((suffix) => /^\d+$/.test(suffix))
+      .map(BigInt);
+    const minimum = level === 1 ? 10n ** BigInt(width - 1) : 1n;
+    const maximum = 10n ** BigInt(width) - 1n;
+    const next = (suffixes.length ? suffixes.reduce((max, value) => value > max ? value : max, minimum - 1n) : minimum - 1n) + 1n;
+    const ranges = [
+      [next, maximum],
+      [minimum, next - 1n < maximum ? next - 1n : maximum],
+    ];
+    for (const [start, end] of ranges) {
+      let suffix = start;
+      let checked = 0;
+      while (suffix <= end && checked <= accounts.length) {
+        const code = `${prefix}${suffix.toString().padStart(width, '0')}`;
+        if (!used.has(code)) return code;
+        suffix += 1n;
+        checked += 1;
+      }
+  }
+    return '';
 }
 
 function natureLabel(nature) {
@@ -1287,17 +1339,38 @@ function renderAccounts(data) {
   const { accounts, groups } = data;
   const filters = state.accountFilters;
   const groupOptions = groups.map((g) => `<option value="${esc(g.code)}"${g.code === filters.group ? ' selected' : ''}>${toFa(g.code)} — ${esc(g.name)}</option>`).join('');
+  const drillChain = [];
+  for (const code of state.accountDrillPath) {
+    const expectedLevel = drillChain.length + 1;
+    const parent = drillChain[drillChain.length - 1];
+    const node = accounts.find((account) => account.code === code);
+    if (!node || Number(node.level) !== expectedLevel || (node.parentCode || '') !== (parent?.code || '')) break;
+    drillChain.push(node);
+  }
+  if (drillChain.length !== state.accountDrillPath.length) {
+    state.accountDrillPath = drillChain.map((account) => account.code);
+  }
+  const currentParent = drillChain[drillChain.length - 1] || null;
+  const search = normalizeSearch(filters.search);
+  const hasGlobalFilter = Boolean(search || filters.group || filters.level);
   const filtered = accounts.filter((account) => {
-    const q = normalizeSearch(filters.search);
+    if (!hasGlobalFilter && (currentParent
+      ? account.parentCode !== currentParent.code
+      : Number(account.level) !== 1)) return false;
+    if (search || filters.group || filters.level) {
+      if (filters.group && account.groupCode !== filters.group) return false;
+      if (filters.level && Number(account.level) !== Number(filters.level)) return false;
+    }
     const haystack = normalizeSearch(`${account.code} ${account.name} ${account.groupName} ${account.parentName}`);
-    if (q && !haystack.includes(q)) return false;
-    if (filters.group && account.groupCode !== filters.group) return false;
-    if (filters.level && Number(account.level) !== Number(filters.level)) return false;
+    if (search && !haystack.includes(search)) return false;
     return true;
   });
 
-  const rows = filtered.map((account) => `
+  const rows = filtered.map((account, index) => {
+    const hasChildren = accounts.some((child) => child.parentCode === account.code);
+    return `
     <tr>
+      <td class="center row-index">${toFa(index + 1)}</td>
       <td class="center mono">${toFa(account.code)}</td>
       <td class="desc-cell"><b>${esc(account.name)}</b></td>
       <td class="center"><span class="level-pill ${levelClass(account.level)}">${levelLabel(account.level)}</span></td>
@@ -1306,10 +1379,19 @@ function renderAccounts(data) {
       <td class="muted">${esc(account.parentName) || '—'}</td>
       <td class="center">${account.isPostable ? badge('قابل ثبت', 'ok') : badge('غیرقابل ثبت', 'neutral')}</td>
       <td class="center nowrap">
+        ${hasChildren ? `<button type="button" class="btn btn-sm account-drill-btn" data-drill-account="${esc(account.code)}" title="نمایش زیرحساب‌ها">${icon('i-chevron')}</button>` : ''}
         <button type="button" class="btn btn-sm" data-edit-account="${account.id}" title="ویرایش حساب">${icon('i-edit')}</button>
         <button type="button" class="btn btn-sm" data-delete-account="${account.id}" data-account-label="${esc(account.name)}" data-account-code="${esc(account.code)}" title="حذف حساب">${icon('i-trash')}</button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
+  const pathButtons = [
+    `<button type="button" class="account-path-btn" data-account-path="" ${drillChain.length === 0 ? 'aria-current="location" disabled' : ''}>حساب‌های کل</button>`,
+    ...drillChain.map((account, index) => {
+      const path = drillChain.slice(0, index + 1).map((item) => item.code).join(',');
+      return `<span aria-hidden="true">‹</span><button type="button" class="account-path-btn" data-account-path="${esc(path)}" ${index === drillChain.length - 1 ? 'aria-current="location" disabled' : ''}>${toFa(account.code)} - ${esc(account.name)}</button>`;
+    }),
+  ].join('');
 
   return `
   <form class="filter-bar" data-filter="accountFilters">
@@ -1335,16 +1417,21 @@ function renderAccounts(data) {
     <button class="btn" type="button" data-reset>${icon('i-refresh')}<span>بازنشانی</span></button>
   </form>
 
+  <nav class="account-browser-path" aria-label="مسیر حساب‌ها">
+    <div class="account-path-items">${pathButtons}</div>
+    <div class="account-path-meta">${hasGlobalFilter ? 'نتایج فیلتر در همه سطح‌ها' : `سطح ${levelLabel(currentParent ? Number(currentParent.level) + 1 : 1)}`} · ${toFa(filtered.length)} حساب</div>
+  </nav>
+
   <div class="card">
     <div class="section-head">
       <h2>${icon('i-tree')} نمودار حساب‌ها</h2>
-      <span class="badge" data-tone="info">${toFa(filtered.length)} از ${toFa(accounts.length)} حساب</span>
+      <span class="badge" data-tone="info">${toFa(filtered.length)} حساب در این سطح</span>
     </div>
     ${filtered.length ? `
       <div class="table-wrap">
         <table class="data-table">
           <thead><tr>
-            <th style="width:96px">کد حساب</th><th>نام حساب</th><th style="width:92px">سطح</th>
+            <th style="width:52px">ردیف</th><th style="width:96px">کد حساب</th><th>نام حساب</th><th style="width:92px">سطح</th>
             <th style="width:180px">گروه</th><th style="width:92px">ماهیت</th>
             <th style="width:180px">حساب بالاتر</th><th style="width:96px">ثبت سند</th><th style="width:104px">عملیات</th>
           </tr></thead>
@@ -1352,14 +1439,41 @@ function renderAccounts(data) {
         </table>
       </div>` : `<div class="empty-state">
         ${icon('i-tree')}
-        <b>حسابی با این فیلتر یافت نشد</b>
-        <span>فیلترها را تغییر دهید یا حساب جدیدی تعریف کنید.</span>
+        <b>${hasGlobalFilter ? 'حسابی با این فیلتر یافت نشد' : currentParent ? 'زیرحسابی در این سطح تعریف نشده است' : 'حساب کلی تعریف نشده است'}</b>
+        <span>${hasGlobalFilter ? 'فیلترها را تغییر دهید یا بازنشانی کنید.' : 'برای ایجاد حساب در این سطح، حساب جدید را تعریف کنید.'}</span>
         <button type="button" class="btn btn-primary" data-new-account>${icon('i-plus')}<span>حساب جدید</span></button>
       </div>`}
   </div>`;
 }
 
 function bindAccounts(root) {
+  root.querySelectorAll('[data-account-path]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.accountDrillPath = button.dataset.accountPath ? button.dataset.accountPath.split(',') : [];
+      navigate('accounts', { force: true });
+    });
+  });
+  root.querySelectorAll('[data-drill-account]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const account = state.accounts.find((item) => item.code === button.dataset.drillAccount);
+      state.accountDrillPath = account ? accountPathTo(state.accounts, account) : [];
+      state.accountFilters = { ...state.accountFilters, search: '', level: '' };
+      navigate('accounts', { force: true });
+    });
+  });
+  root.querySelectorAll('tbody tr').forEach((row) => {
+    row.addEventListener('dblclick', (event) => {
+      if (event.target.closest('button')) return;
+      const codeCell = row.querySelector('.mono');
+      const code = codeCell ? toEn(codeCell.textContent) : '';
+      const hasChildren = state.accounts.some((account) => account.parentCode === code);
+      if (!hasChildren) return;
+      const account = state.accounts.find((item) => item.code === code);
+      state.accountDrillPath = account ? accountPathTo(state.accounts, account) : [];
+      state.accountFilters = { ...state.accountFilters, search: '', level: '' };
+      navigate('accounts', { force: true });
+    });
+  });
   // «حساب جدید» buttons are wired once by bindPageCommon.
   root.querySelectorAll('[data-edit-account]').forEach((button) => {
     const id = Number(button.dataset.editAccount);
@@ -1398,18 +1512,29 @@ function openAccountDialog(account) {
     return;
   }
 
-  const groupOptions = groups.map((g) => `<option value="${esc(g.code)}"${account && account.groupCode === g.code ? ' selected' : ''}>${toFa(g.code)} — ${esc(g.name)} (${esc(g.type)})</option>`).join('');
-  const level = account ? Number(account.level) : 2;
+  const hierarchy = state.accountDrillPath
+    .map((code) => state.accounts.find((item) => item.code === code))
+    .filter(Boolean);
+  const requestedLevel = Number(state.accountFilters.level);
+  const level = account
+    ? Number(account.level)
+    : requestedLevel || Math.min(4, hierarchy.length + 1);
+  const initialParentCode = account?.parentCode || (level > 1 ? hierarchy[level - 2]?.code || '' : '');
+  const initialGroupCode = account?.groupCode || state.accountFilters.group || (level > 1
+    ? hierarchy[level - 2]?.groupCode || groups[0]?.code
+    : groups[0]?.code);
+  const groupOptions = groups.map((g) => `<option value="${esc(g.code)}"${initialGroupCode === g.code ? ' selected' : ''}>${toFa(g.code)} — ${esc(g.name)} (${esc(g.type)})</option>`).join('');
   const nature = account ? account.nature : 'debtor';
+  const suggestedCode = account?.code || nextAccountCode(state.accounts, level, initialParentCode);
 
   const dialog = openDialog({
     title: isEdit ? 'ویرایش حساب' : 'تعریف حساب جدید',
-    wide: false,
+    wide: true,
     body: `
       <form id="acctForm" class="acct-form" autocomplete="off">
         <div class="field">
           <label for="acctCode">کد حساب <span class="req">*</span></label>
-          <input id="acctCode" class="input mono" type="text" inputmode="numeric" value="${esc(account?.code || '')}" ${isEdit ? 'readonly' : ''} placeholder="مثلاً ۱۱۰۱۰۲" />
+          <input id="acctCode" class="input mono" type="text" inputmode="numeric" maxlength="50" value="${esc(toFa(suggestedCode))}" ${isEdit ? 'readonly' : ''} placeholder="کد پیشنهادی بر اساس حساب بالاتر" />
         </div>
         <div class="field wide">
           <label for="acctName">نام حساب <span class="req">*</span></label>
@@ -1447,8 +1572,7 @@ function openAccountDialog(account) {
         <div class="form-error" id="acctError" hidden></div>
       </form>
       <div class="form-note">
-        کد حساب پس از ثبت قابل تغییر نیست. حساب سطح کل برای ثبت در سند قابل استفاده نیست؛
-        برای هر سطح پایین‌تر، انتخاب حساب بالاتر هم‌گروه الزامی است.
+        کد پیشنهادی از روی آخرین هم‌سطح تولید می‌شود و برای حساب‌های پایین‌تر با کد حساب بالاتر آغاز می‌شود. کد حساب پس از ثبت قابل تغییر نیست؛ گروه حساب سطوح پایین‌تر از حساب بالاتر گرفته می‌شود.
       </div>`,
     actions: [
       {
@@ -1484,22 +1608,31 @@ function openAccountDialog(account) {
     if (currentLevel <= 1) {
       parentSelect.innerHTML = '<option value="">— حساب سطح کل است —</option>';
       parentSelect.disabled = true;
+      if (groupSelect) groupSelect.disabled = false;
       if (postable) postable.checked = false;
       if (postable) postable.disabled = true;
+      if (!isEdit && codeInput) codeInput.value = toFa(nextAccountCode(state.accounts, currentLevel));
       return;
     }
     parentSelect.disabled = false;
+    if (groupSelect) groupSelect.disabled = !isEdit;
     if (postable) postable.disabled = false;
     const candidates = state.accounts.filter((a) => Number(a.level) === currentLevel - 1 && a.groupCode === groupCode);
-    const previous = account && Number(account.level) === currentLevel ? account.parentCode : parentSelect.value;
+    const previous = parentSelect.value || (account && Number(account.level) === currentLevel
+      ? account.parentCode
+      : initialParentCode);
     parentSelect.innerHTML = candidates.length
       ? `<option value="">— انتخاب حساب بالاتر —</option>${candidates.map((a) => `<option value="${esc(a.code)}"${a.code === previous ? ' selected' : ''}>${toFa(a.code)} — ${esc(a.name)}</option>`).join('')}`
       : '<option value="">— حسابی در سطح بالاتر وجود ندارد —</option>';
     if (candidates.length && !parentSelect.value) parentSelect.value = candidates[0].code;
+    if (!isEdit && codeInput) codeInput.value = toFa(nextAccountCode(state.accounts, currentLevel, parentSelect.value));
   };
 
   levelSelect?.addEventListener('change', refreshParents);
   groupSelect?.addEventListener('change', refreshParents);
+  parentSelect?.addEventListener('change', () => {
+    if (!isEdit && codeInput) codeInput.value = toFa(nextAccountCode(state.accounts, Number(levelSelect?.value || level), parentSelect.value));
+  });
   refreshParents();
   if (account?.parentCode && parentSelect) parentSelect.value = account.parentCode;
 
@@ -1631,7 +1764,7 @@ function renderGroups(groups) {
 
 PAGES.settings = {
   actions: () => [
-    { label: 'ذخیره تنظیمات', icon: 'i-save', primary: true, onClick: () => $('#settingsForm')?.requestSubmit() },
+    { label: 'ویرایش مشخصات', icon: 'i-edit', primary: true, onClick: () => openSettingsDialog() },
   ],
   load: async () => {
     const settings = await invoke('get_settings');
@@ -1651,23 +1784,23 @@ function renderSettings(settings) {
       <div class="section-head">
         <h2>${icon('i-settings')} مشخصات واحد اقتصادی</h2>
       </div>
-      <form id="settingsForm" class="settings-form" autocomplete="off">
-        <div class="field">
-          <label for="setCompany">نام شرکت / واحد اقتصادی <span class="req">*</span></label>
-          <input id="setCompany" class="input" name="companyName" type="text" value="${esc(settings.companyName)}" placeholder="نام شرکت" />
-        </div>
-        <div class="field">
-          <label for="setFiscal">سال مالی</label>
-          <input id="setFiscal" class="input" name="fiscalYear" type="text" value="${esc(settings.fiscalYear)}" placeholder="۱۴۰۵" />
-        </div>
-        <div class="form-error" id="settingsError" hidden></div>
-        <div class="form-actions">
-          <button class="btn btn-primary" type="submit">${icon('i-save')}<span>ذخیره تنظیمات</span></button>
-        </div>
-      </form>
+      <dl class="info-list">
+        <div><dt>نام شرکت / واحد اقتصادی</dt><dd>${esc(settings.companyName || '—')}</dd></div>
+        <div><dt>سال مالی</dt><dd>${esc(settings.fiscalYear || '—')}</dd></div>
+      </dl>
+      <div class="form-actions">
+        <button type="button" class="btn btn-primary" data-edit-settings>${icon('i-edit')}<span>ویرایش مشخصات</span></button>
+      </div>
       <div class="form-note">
         نام شرکت در سرصفحه همه گزارش‌ها و در نوار وضعیت نمایش داده می‌شود.
         سال مالی به گزارش‌های چاپی اضافه می‌شود.
+      </div>
+      <div class="section-head">
+        <h2>${icon('i-panel')} نوار کناری</h2>
+      </div>
+      <p class="form-note">نمایش نوار کناری را برای فضای کاری بیشتر روشن یا خاموش کنید.</p>
+      <div class="form-actions">
+        <button type="button" class="btn" data-sidebar-toggle aria-pressed="false"></button>
       </div>
     </div>
 
@@ -1691,7 +1824,33 @@ function renderSettings(settings) {
 }
 
 function bindSettings(root) {
-  const form = $('#settingsForm', root);
+  root.querySelector('[data-edit-settings]')?.addEventListener('click', () => openSettingsDialog());
+  const sidebar = $('.sidebar');
+  updateSidebarToggleButton(!!sidebar?.classList.contains('is-hidden'));
+  root.querySelector('[data-sidebar-toggle]')?.addEventListener('click', toggleSidebarVisibility);
+}
+
+function openSettingsDialog() {
+  const settings = state.settings || {};
+  const dialog = openDialog({
+    title: 'ویرایش مشخصات واحد اقتصادی',
+    body: `
+      <form id="settingsForm" class="settings-form" autocomplete="off">
+        <div class="field">
+          <label for="setCompany">نام شرکت / واحد اقتصادی <span class="req">*</span></label>
+          <input id="setCompany" class="input" name="companyName" type="text" value="${esc(settings.companyName)}" placeholder="نام شرکت" />
+        </div>
+        <div class="field">
+          <label for="setFiscal">سال مالی</label>
+          <input id="setFiscal" class="input" name="fiscalYear" type="text" value="${esc(settings.fiscalYear)}" placeholder="۱۴۰۵" />
+        </div>
+        <div class="form-error" id="settingsError" hidden></div>
+        <div class="form-actions">
+          <button class="btn btn-primary" type="submit">${icon('i-save')}<span>ذخیره تنظیمات</span></button>
+        </div>
+      </form>`,
+  });
+  const form = dialog?.body.querySelector('#settingsForm');
   if (!form) return;
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -1712,6 +1871,7 @@ function bindSettings(root) {
       const saved = await invoke('save_settings', { companyName, fiscalYear });
       state.settings = saved;
       updateBranding(saved);
+      closeDialog();
       toast('تنظیمات ذخیره شد.', 'ok');
       await navigate('settings', { force: true });
     } catch (error) {
@@ -1864,6 +2024,259 @@ function notifyPendingMenu(label) {
   setStatus('این بخش در دست ساخت است.', 'idle');
 }
 
+function openReorganizeVouchers() {
+  if (!invoke) {
+    toast('مرتب‌سازی و ادغام اسناد فقط در نسخه دسکتاپ ممکن است.', 'error');
+    return;
+  }
+
+  const operations = {
+    'merge-then-sort': 'ابتدا ادغام، سپس مرتب‌سازی',
+    merge: 'فقط ادغام اسناد عادی هم‌تاریخ',
+    sort: 'فقط مرتب‌سازی بر اساس تاریخ',
+  };
+  const dialog = openDialog({
+    title: 'مرتب‌سازی و ادغام اسناد',
+    wide: true,
+    body: `
+      <div class="form-grid">
+        <label class="field">
+          <span>عملیات</span>
+          <select class="input" id="reorganizeOperation">
+            ${Object.entries(operations).map(([value, label]) => `<option value="${value}"${value === 'merge-then-sort' ? ' selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </label>
+        <div class="note" id="reorganizeDescription">اسناد عادی هم‌تاریخ ادغام می‌شوند و سپس شماره‌ها بر اساس تاریخ بازچینی می‌شوند.</div>
+      </div>
+      <div id="reorganizePreview" class="reorganize-preview"></div>`,
+    actions: [],
+  });
+  if (!dialog) return;
+
+  let preview = null;
+  let busy = false;
+  const operationInput = dialog.body.querySelector('#reorganizeOperation');
+  const description = dialog.body.querySelector('#reorganizeDescription');
+  const previewArea = dialog.body.querySelector('#reorganizePreview');
+
+  const setInitialActions = () => dialog.setActions([
+    {
+      label: 'پیش‌نمایش تغییرات',
+      primary: true,
+      icon: 'i-search',
+      onClick: runPreview,
+    },
+  ]);
+
+  const runPreview = async () => {
+    if (busy) return;
+    busy = true;
+    const operation = operationInput.value;
+    preview = null;
+    operationInput.disabled = true;
+    previewArea.innerHTML = '<div class="note">در حال تحلیل اسناد…</div>';
+    dialog.setActions([]);
+    try {
+      preview = await invoke('preview_voucher_reorganization', { operation });
+      const mergeGroups = preview.mergeGroups || [];
+      const unbalancedGroups = preview.unbalancedGroups || [];
+      const changes = preview.numberChanges || [];
+      const noChanges = mergeGroups.length === 0 && changes.length === 0;
+      const mergeRows = mergeGroups.slice(0, 20).map((group) => `
+        <tr>
+          <td>${esc(group.date)}</td>
+          <td>${group.sourceVoucherNumbers.map(toFa).join('، ')}</td>
+          <td>${toFa(group.keepVoucherNumber)}</td>
+          <td>${toFa(group.lineCount)}</td>
+        </tr>`).join('');
+      const changeRows = changes.slice(0, 20).map((change) => `
+        <tr>
+          <td>${esc(change.date)}</td>
+          <td>${toFa(change.oldNumber)}</td>
+          <td>${toFa(change.newNumber)}</td>
+        </tr>`).join('');
+      const unbalancedRows = unbalancedGroups.slice(0, 10).map((group) => `
+        <li>${esc(group.date)}: ${group.sourceVoucherNumbers.map(toFa).join('، ')}</li>`).join('');
+      previewArea.innerHTML = `
+        <div class="info-list">
+          <div><dt>تعداد اسناد</dt><dd>${toFa(preview.totalVouchers)}</dd></div>
+          <div><dt>پس از ادغام</dt><dd>${toFa(preview.totalVouchersAfter)}</dd></div>
+          <div><dt>گروه‌های قابل ادغام</dt><dd>${toFa(mergeGroups.length)}</dd></div>
+          <div><dt>اسناد حذف‌شونده در ادغام</dt><dd>${toFa(preview.removedVoucherCount)}</dd></div>
+          <div><dt>تغییر شماره</dt><dd>${toFa(changes.length)}</dd></div>
+        </div>
+        ${noChanges ? '<div class="note">تغییری برای این عملیات پیدا نشد.</div>' : ''}
+        ${unbalancedGroups.length ? `<div class="note" data-tone="danger">${toFa(unbalancedGroups.length)} گروه هم‌تاریخ تراز نیستند و ادغام نمی‌شوند.<ul>${unbalancedRows}</ul></div>` : ''}
+        ${mergeGroups.length ? `
+          <h3 class="reorganize-section-title">گروه‌های ادغام (${toFa(mergeGroups.length)})</h3>
+          <div class="reorganize-table-wrap"><table><thead><tr><th>تاریخ</th><th>شماره اسناد</th><th>شماره باقی‌مانده</th><th>ردیف</th></tr></thead><tbody>${mergeRows}</tbody></table></div>
+          ${mergeGroups.length > 20 ? `<div class="form-note">${toFa(mergeGroups.length - 20)} گروه دیگر در فهرست نمایش داده نشده است.</div>` : ''}` : ''}
+        ${changes.length ? `
+          <h3 class="reorganize-section-title">نمونه تغییر شماره‌ها (${toFa(changes.length)})</h3>
+          <div class="reorganize-table-wrap"><table><thead><tr><th>تاریخ</th><th>شماره فعلی</th><th>شماره جدید</th></tr></thead><tbody>${changeRows}</tbody></table></div>
+          ${changes.length > 20 ? `<div class="form-note">${toFa(changes.length - 20)} تغییر دیگر در فهرست نمایش داده نشده است.</div>` : ''}` : ''}
+        ${mergeGroups.length ? '<label class="reorganize-confirm"><input id="reorganizeConfirmMerge" type="checkbox"><span>ادغام اسناد و حذف سرآیندهای تکراری را تأیید می‌کنم.</span></label>' : ''}
+        <div class="note" data-reorganize-error hidden></div>`;
+
+      dialog.setActions([
+        {
+          label: 'تأیید و اجرا',
+          primary: true,
+          icon: 'i-check',
+          id: 'reorganizeApply',
+          onClick: async (currentDialog, button) => {
+            if (!preview || busy) return;
+            if (preview.mergeGroups.length && !currentDialog.body.querySelector('#reorganizeConfirmMerge')?.checked) return;
+            busy = true;
+            button.disabled = true;
+            try {
+              const result = await invoke('apply_voucher_reorganization', {
+                operation: preview.operation,
+                planToken: preview.planToken,
+              });
+              currentDialog.close();
+              const parts = [];
+              if (result.mergedGroupCount) parts.push(`${toFa(result.mergedGroupCount)} گروه ادغام شد`);
+              if (result.removedVoucherCount) parts.push(`${toFa(result.removedVoucherCount)} سند حذف شد`);
+              if (result.renumberedCount) parts.push(`${toFa(result.renumberedCount)} شماره بازچینی شد`);
+              toast(parts.length ? `${parts.join('، ')}.` : 'تغییری لازم نبود.', 'ok');
+              await navigate('vouchers', { force: true });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              const errorBox = currentDialog.body.querySelector('[data-reorganize-error]');
+              if (errorBox) {
+                errorBox.textContent = message;
+                errorBox.hidden = false;
+                errorBox.dataset.tone = 'danger';
+              }
+              const requiresMergeConfirmation = preview.mergeGroups.length > 0;
+              const mergeConfirmed = Boolean(currentDialog.body.querySelector('#reorganizeConfirmMerge')?.checked);
+              button.disabled = requiresMergeConfirmation && !mergeConfirmed;
+            } finally {
+              busy = false;
+            }
+          },
+        },
+        { label: 'پیش‌نمایش مجدد', icon: 'i-refresh', onClick: runPreview },
+      ]);
+
+      const applyButton = dialog.foot.querySelector('#reorganizeApply');
+      const confirmMerge = dialog.body.querySelector('#reorganizeConfirmMerge');
+      if (applyButton) applyButton.disabled = noChanges || mergeGroups.length > 0;
+      confirmMerge?.addEventListener('change', () => {
+        if (applyButton) applyButton.disabled = noChanges || !confirmMerge.checked;
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      previewArea.innerHTML = `<div class="note" data-tone="danger">${esc(message)}</div>`;
+      setInitialActions();
+    } finally {
+      operationInput.disabled = false;
+      busy = false;
+    }
+  };
+
+  operationInput.addEventListener('change', () => {
+    preview = null;
+    previewArea.innerHTML = '';
+    const descriptions = {
+      'merge-then-sort': 'اسناد عادی هم‌تاریخ ادغام می‌شوند و سپس شماره‌ها بر اساس تاریخ بازچینی می‌شوند.',
+      merge: 'فقط اسناد عادی با تاریخ یکسان ادغام می‌شوند؛ شماره‌ی سند باقی‌مانده تغییر نمی‌کند.',
+      sort: 'شماره‌ی تمام اسناد بر اساس تاریخ، به‌صورت متوالی بازچینی می‌شود.',
+    };
+    description.textContent = descriptions[operationInput.value];
+    setInitialActions();
+  });
+  setInitialActions();
+}
+
+function openBulkVoucherImport() {
+  if (!invoke) {
+    toast('ورود دسته‌جمعی اکسل فقط در نسخه دسکتاپ ممکن است.', 'error');
+    return;
+  }
+
+  const dialog = openDialog({
+    title: 'ورود دسته‌جمعی اسناد از اکسل',
+    wide: true,
+    body: '<div class="note">فایل اکسل با ستون‌های سند، تاریخ، کد کل، کد معین، شرح، بدهکار و بستانکار را انتخاب کنید.</div>',
+    actions: [],
+  });
+  if (!dialog) return;
+
+  let selecting = false;
+  const selectFile = async () => {
+    if (selecting) return;
+    selecting = true;
+    dialog.body.innerHTML = '<div class="note">فایل در حال بررسی و اسناد در حال اعتبارسنجی هستند…</div>';
+    dialog.setActions([]);
+    try {
+      const preview = await invoke('analyze_bulk_voucher_excel');
+      if (!preview) {
+        dialog.body.innerHTML = '<div class="note">انتخاب فایل لغو شد.</div>';
+        dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, onClick: selectFile }]);
+        return;
+      }
+
+      const conflicts = Number(preview.numberConflictCount) || 0;
+      dialog.body.innerHTML = `
+        <div class="note">فایل «${esc(preview.fileName)}» آماده‌ی ورود است. شماره اسناد حفظ می‌شود.</div>
+        <dl class="info-list">
+          <div><dt>تعداد سند</dt><dd>${toFa(preview.voucherCount)}</dd></div>
+          <div><dt>تعداد ردیف</dt><dd>${toFa(preview.lineCount)}</dd></div>
+          <div><dt>حساب‌های جدید</dt><dd>${toFa(preview.newAccountCount)}</dd></div>
+          <div><dt>شماره‌های تکراری</dt><dd>${toFa(conflicts)}</dd></div>
+        </dl>
+        ${conflicts ? `<label class="bulk-import-renumber"><input id="bulkImportRenumber" type="checkbox"><span>برای ${toFa(conflicts)} سند دارای شماره‌ی تکراری، شماره‌ی آزاد جدید اختصاص بده</span></label>` : ''}
+        <div class="note" data-import-error hidden></div>`;
+
+      dialog.setActions([
+        {
+          id: 'bulkImportCommit',
+          label: 'تأیید و ثبت اسناد',
+          primary: true,
+          icon: 'i-check',
+          onClick: async (currentDialog, button) => {
+            const renumberConflicts = Boolean(currentDialog.body.querySelector('#bulkImportRenumber')?.checked);
+            button.disabled = true;
+            try {
+              const count = await invoke('commit_bulk_voucher_excel', { renumberConflicts });
+              currentDialog.close();
+              toast(`${toFa(count)} سند با موفقیت وارد شد.`, 'ok');
+              await navigate('vouchers', { force: true });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              const errorBox = currentDialog.body.querySelector('[data-import-error]');
+              if (errorBox) {
+                errorBox.textContent = message;
+                errorBox.hidden = false;
+                errorBox.dataset.tone = 'danger';
+              }
+              button.disabled = false;
+            }
+          },
+        },
+        { id: 'bulkImportReselect', label: 'انتخاب فایل دیگر', icon: 'i-refresh', onClick: selectFile },
+      ]);
+
+      const commitButton = dialog.foot.querySelector('#bulkImportCommit');
+      const renumberCheckbox = dialog.body.querySelector('#bulkImportRenumber');
+      if (commitButton && conflicts > 0) commitButton.disabled = true;
+      renumberCheckbox?.addEventListener('change', () => {
+        if (commitButton) commitButton.disabled = conflicts > 0 && !renumberCheckbox.checked;
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      dialog.body.innerHTML = `<div class="note" data-tone="danger">${esc(message)}</div>`;
+      dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, onClick: selectFile }]);
+    } finally {
+      selecting = false;
+    }
+  };
+
+  dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, icon: 'i-doc', onClick: selectFile }]);
+}
+
 function runMenuItem(item) {
   if (item.page) {
     navigate(item.page);
@@ -1875,6 +2288,12 @@ function runMenuItem(item) {
       return;
     case 'new-voucher':
       openVoucherWindow();
+      return;
+    case 'bulk-voucher-import':
+      openBulkVoucherImport();
+      return;
+    case 'reorganize-vouchers':
+      openReorganizeVouchers();
       return;
     case 'toggle-sidebar':
       toggleSidebarVisibility();
@@ -1946,7 +2365,15 @@ function toggleSidebarVisibility() {
   const sidebar = $('.sidebar');
   if (!sidebar) return;
   const hidden = sidebar.classList.toggle('is-hidden');
+  updateSidebarToggleButton(hidden);
   setStatus(hidden ? 'سایدبار پنهان شد.' : 'سایدبار نمایش داده شد.', 'ok');
+}
+
+function updateSidebarToggleButton(hidden) {
+  const button = $('[data-sidebar-toggle]');
+  if (!button) return;
+  button.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+  button.innerHTML = `${icon('i-panel')}<span>${hidden ? 'نمایش نوار کناری' : 'مخفی کردن نوار کناری'}</span>`;
 }
 
 function showHelpDialog() {

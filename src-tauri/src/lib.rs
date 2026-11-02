@@ -28,6 +28,10 @@ pub struct AppState {
     pending_voucher: Mutex<Option<Option<i64>>>,
     /// Local SQLite database.
     database: db::Database,
+    /// Parsed workbook awaiting the user's bulk-import confirmation.
+    bulk_voucher_import: Mutex<Option<excel::BulkVoucherImport>>,
+    /// Reorganization preview awaiting explicit confirmation.
+    reorganization_preview: Mutex<Option<(String, String)>>,
 }
 
 fn report_meta(state: &State<'_, AppState>) -> Result<report::ReportMeta, String> {
@@ -192,6 +196,60 @@ fn export_voucher_excel(input: VoucherInput) -> Result<Option<String>, String> {
 #[tauri::command(async)]
 fn import_voucher_excel() -> Result<Option<Vec<vouchers::VoucherLineInput>>, String> {
     excel::import_voucher()
+}
+
+#[tauri::command(async)]
+fn analyze_bulk_voucher_excel(
+    state: State<'_, AppState>,
+) -> Result<Option<excel::BulkVoucherPreview>, String> {
+    *lock(&state.bulk_voucher_import) = None;
+    let Some(import) = excel::import_vouchers()? else {
+        return Ok(None);
+    };
+    let preview = state.database.preview_bulk_import(&import)?;
+    *lock(&state.bulk_voucher_import) = Some(import);
+    Ok(Some(preview))
+}
+
+#[tauri::command(async)]
+fn commit_bulk_voucher_excel(
+    renumber_conflicts: bool,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let import = lock(&state.bulk_voucher_import)
+        .clone()
+        .ok_or_else(|| "ابتدا فایل اکسل را انتخاب و تحلیل کنید.".to_string())?;
+    let imported_count = state.database.import_vouchers(import, renumber_conflicts)?;
+    *lock(&state.bulk_voucher_import) = None;
+    Ok(imported_count)
+}
+
+#[tauri::command(async)]
+fn preview_voucher_reorganization(
+    operation: String,
+    state: State<'_, AppState>,
+) -> Result<vouchers::VoucherReorganizationPreview, String> {
+    *lock(&state.reorganization_preview) = None;
+    let preview = state.database.preview_voucher_reorganization(&operation)?;
+    *lock(&state.reorganization_preview) = Some((operation, preview.plan_token.clone()));
+    Ok(preview)
+}
+
+#[tauri::command(async)]
+fn apply_voucher_reorganization(
+    operation: String,
+    plan_token: String,
+    state: State<'_, AppState>,
+) -> Result<vouchers::VoucherReorganizationResult, String> {
+    let expected = lock(&state.reorganization_preview).clone();
+    if expected.as_ref() != Some(&(operation.clone(), plan_token.clone())) {
+        return Err("پیش‌نمایش منقضی یا نامعتبر است؛ دوباره پیش‌نمایش بگیرید.".to_string());
+    }
+    let result = state
+        .database
+        .apply_voucher_reorganization(&operation, &plan_token)?;
+    *lock(&state.reorganization_preview) = None;
+    Ok(result)
 }
 
 /* ── Reports ────────────────────────────────────────────────── */
@@ -405,6 +463,7 @@ fn show_preview_window(app: &AppHandle, doc: report::PrintDoc) -> Result<(), Str
     let window = builder
         .build()
         .map_err(|e| format!("باز کردن پنجره پیش‌نمایش ناموفق بود: {e}"))?;
+    let _ = window.maximize();
     let _ = window.set_focus();
     Ok(())
 }
@@ -480,15 +539,17 @@ fn open_account_groups_window(app: AppHandle) -> Result<(), String> {
     )
     .title("تعریف گروه حساب‌ها")
     .decorations(true)
+    .minimizable(false)
+    .maximizable(false)
     .resizable(true);
 
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
-        let width = (logical.width * 0.523).clamp(722.0, 903.0);
-        let height = (logical.height * 0.741).clamp(570.0, 779.0);
+        let width = (logical.width * 0.523).clamp(722.0, 903.0) * 0.9;
+        let height = (logical.height * 0.741).clamp(570.0, 779.0) * 0.95;
         builder = builder.inner_size(width, height);
     } else {
-        builder = builder.inner_size(830.0, 684.0);
+        builder = builder.inner_size(747.0, 650.0);
     }
 
     if let Some(main) = app.get_webview_window("main") {
@@ -498,7 +559,7 @@ fn open_account_groups_window(app: AppHandle) -> Result<(), String> {
     }
 
     let window = builder
-        .min_inner_size(722.0, 532.0)
+        .min_inner_size(650.0, 505.0)
         .center()
         .build()
         .map_err(|e| format!("باز کردن فرم گروه حساب ناموفق بود: {e}"))?;
@@ -572,6 +633,10 @@ pub fn run() {
             delete_voucher,
             export_voucher_excel,
             import_voucher_excel,
+            analyze_bulk_voucher_excel,
+            commit_bulk_voucher_excel,
+            preview_voucher_reorganization,
+            apply_voucher_reorganization,
             get_journal,
             get_ledger,
             get_trial_balance,

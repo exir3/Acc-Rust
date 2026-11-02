@@ -149,6 +149,113 @@ body.voucher-page {
   outline-offset: 1px;
 }
 
+/* ── Account ledger dialog ───────────────────────────────────── */
+
+.account-ledger-modal {
+  z-index: 370;
+  padding: 16px;
+  background: rgba(2, 6, 23, .56);
+}
+.ledger-window {
+  width: min(1120px, 100%);
+  height: min(760px, calc(100vh - 32px));
+  background: #e8eef5;
+}
+.ledger-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  padding: 14px;
+  background: #eef3f8;
+}
+.ledger-account-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+.ledger-account-line strong { color: #173b60; font-size: 13px; }
+.ledger-filters {
+  display: grid;
+  grid-template-columns: minmax(130px, 170px) minmax(130px, 170px) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #c8d5e3;
+  border-radius: 4px;
+  background: #f9fbfd;
+}
+.ledger-field { min-width: 0; display: grid; gap: 4px; color: #52657a; font-size: 11px; }
+.ledger-field input {
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid #b7c7d7;
+  border-radius: 3px;
+  background: #fff;
+  color: #182b3d;
+  font: inherit;
+  font-size: 12px;
+}
+.ledger-field input:focus { outline: 2px solid #6aa2d8; outline-offset: 1px; }
+.ledger-field input.is-invalid { border-color: #c43d4b; background: #fff7f7; }
+.ledger-filter-actions { display: flex; gap: 5px; }
+.ledger-filter-actions .ap-tool { height: 32px; }
+.ledger-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.ledger-stat {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 9px 11px;
+  border: 1px solid #c8d5e3;
+  border-radius: 4px;
+  background: #fff;
+}
+.ledger-stat span { color: #63758a; font-size: 10px; }
+.ledger-stat strong { overflow: hidden; color: #183c5e; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-meta { color: #61758b; font-size: 11px; }
+.ledger-message { min-height: 17px; color: #51677e; font-size: 11px; }
+.ledger-message[data-tone="error"] { color: #ad2935; }
+.ledger-table-scroll { flex: 1; min-height: 120px; overflow: auto; border: 1px solid #b9c9d8; background: #fff; }
+.ledger-table { width: 100%; border-collapse: collapse; table-layout: fixed; color: #23384d; font-size: 11px; }
+.ledger-table th, .ledger-table td { padding: 7px 8px; border-bottom: 1px solid #e0e7ef; text-align: right; }
+.ledger-table th { position: sticky; top: 0; z-index: 1; background: #dce8f3; color: #294b6b; font-weight: 700; white-space: nowrap; }
+.ledger-table th:nth-child(1) { width: 95px; }
+.ledger-table th:nth-child(2) { width: 70px; }
+.ledger-table th:nth-child(n+4) { width: 125px; }
+.ledger-table .ledger-description { overflow-wrap: anywhere; }
+.ledger-table .nowrap, .ledger-table .center, .ledger-table .money { white-space: nowrap; }
+.ledger-table .center { text-align: center; }
+.ledger-table .money { direction: ltr; text-align: left; font-variant-numeric: tabular-nums; }
+.ledger-table .debit { color: #a44a25; }
+.ledger-table .credit { color: #18734b; }
+.ledger-table .ledger-opening-row { background: #f3f7fb; font-weight: 700; }
+.ledger-voucher-link { padding: 0; border: 0; background: transparent; color: #145ca8; font: inherit; text-decoration: underline; cursor: pointer; }
+.ledger-voucher-link:hover { color: #0b3d72; }
+.ledger-table tfoot { position: sticky; bottom: 0; background: #e8eff6; font-weight: 700; }
+.ledger-table tfoot td { border-top: 1px solid #b8c8d8; border-bottom: 0; }
+.ledger-table .ledger-total-label { text-align: right; }
+.ledger-toolbar { flex: 0 0 auto; padding: 7px 10px; background: #dce6f0; border-top: 1px solid #bdcddd; }
+.ledger-toolbar .ap-toolbar-group { justify-content: flex-start; }
+.ledger-toolbar .ap-tool { height: 30px; }
+.ledger-window :is(button, input):focus-visible { outline: 2px solid #1f5fd0; outline-offset: 1px; }
+
+@media (max-width: 760px) {
+  .account-ledger-modal { padding: 8px; }
+  .ledger-window { height: calc(100vh - 16px); }
+  .ledger-content { padding: 9px; }
+  .ledger-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ledger-search { grid-column: 1 / -1; }
+  .ledger-filter-actions { grid-column: 1 / -1; }
+  .ledger-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ledger-table { min-width: 850px; }
+}
+
 
 /* Invalid Jalali dates are highlighted in the same manner as invalid account codes. */
 .vf-date-input.is-invalid {

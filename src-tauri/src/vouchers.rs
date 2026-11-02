@@ -6,6 +6,8 @@
 use crate::db::{self, normalize_digits, Database};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub const VOUCHER_TYPES: [&str; 4] = [
     "سند حسابداری عادی",
@@ -16,7 +18,7 @@ pub const VOUCHER_TYPES: [&str; 4] = [
 
 const MAX_DESCRIPTION: usize = 1000;
 const MAX_LINE_DESCRIPTION: usize = 500;
-const MAX_LINES: usize = 500;
+const MAX_LINES: usize = 1000;
 
 /// Largest amount accepted on one line (1e15 Rials). It stays below 2^53 so
 /// the UI, which holds numbers as JavaScript doubles, never loses precision,
@@ -59,6 +61,253 @@ pub struct VoucherInput {
     pub description: String,
     #[serde(default)]
     pub lines: Vec<VoucherLineInput>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherMergePreview {
+    pub date: String,
+    pub source_voucher_numbers: Vec<i64>,
+    pub keep_voucher_number: i64,
+    pub line_count: usize,
+    pub total_debit: i64,
+    pub total_credit: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherNumberChange {
+    pub old_number: i64,
+    pub new_number: i64,
+    pub date: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherReorganizationPreview {
+    pub operation: String,
+    pub total_vouchers: usize,
+    pub total_vouchers_after: usize,
+    pub merge_groups: Vec<VoucherMergePreview>,
+    pub unbalanced_groups: Vec<VoucherMergePreview>,
+    pub removed_voucher_count: usize,
+    pub number_changes: Vec<VoucherNumberChange>,
+    pub plan_token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherReorganizationResult {
+    pub operation: String,
+    pub merged_group_count: usize,
+    pub removed_voucher_count: usize,
+    pub renumbered_count: usize,
+}
+
+#[derive(Debug, Clone, Hash)]
+struct ReorganizationVoucher {
+    id: i64,
+    number: i64,
+    date: String,
+    voucher_type: String,
+    description: String,
+}
+
+#[derive(Debug, Clone, Hash)]
+struct ReorganizationLine {
+    id: i64,
+    voucher_id: i64,
+    row_no: i64,
+    account_code: String,
+    description: String,
+    debit: i64,
+    credit: i64,
+}
+
+#[derive(Debug, Clone, Hash)]
+struct ReorganizationSnapshot {
+    vouchers: Vec<ReorganizationVoucher>,
+    lines: Vec<ReorganizationLine>,
+}
+
+#[derive(Debug, Clone)]
+struct ReorganizationMergeGroup {
+    keep_id: i64,
+    source_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct ReorganizationPlan {
+    preview: VoucherReorganizationPreview,
+    merge_groups: Vec<ReorganizationMergeGroup>,
+    number_changes: Vec<(i64, VoucherNumberChange)>,
+}
+
+fn validate_reorganization_operation(operation: &str) -> Result<(), String> {
+    if matches!(operation, "sort" | "merge" | "merge-then-sort") {
+        Ok(())
+    } else {
+        Err("عملیات مرتب‌سازی یا ادغام معتبر نیست.".to_string())
+    }
+}
+
+fn read_reorganization_snapshot(conn: &Connection) -> Result<ReorganizationSnapshot, String> {
+    let vouchers = conn
+        .prepare("SELECT id, number, date, type, description FROM vouchers ORDER BY id")
+        .map_err(db::db_error)?
+        .query_map([], |row| {
+            Ok(ReorganizationVoucher {
+                id: row.get(0)?,
+                number: row.get(1)?,
+                date: row.get(2)?,
+                voucher_type: row.get(3)?,
+                description: row.get(4)?,
+            })
+        })
+        .map_err(db::db_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db::db_error)?;
+    let lines = conn
+        .prepare(
+            "SELECT id, voucher_id, row_no, account_code, description, debit, credit FROM voucher_lines ORDER BY id",
+        )
+        .map_err(db::db_error)?
+        .query_map([], |row| {
+            Ok(ReorganizationLine {
+                id: row.get(0)?,
+                voucher_id: row.get(1)?,
+                row_no: row.get(2)?,
+                account_code: row.get(3)?,
+                description: row.get(4)?,
+                debit: row.get(5)?,
+                credit: row.get(6)?,
+            })
+        })
+        .map_err(db::db_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db::db_error)?;
+    Ok(ReorganizationSnapshot { vouchers, lines })
+}
+
+fn build_reorganization_plan(
+    operation: &str,
+    snapshot: &ReorganizationSnapshot,
+) -> Result<ReorganizationPlan, String> {
+    validate_reorganization_operation(operation)?;
+    let do_merge = operation != "sort";
+    let do_sort = operation != "merge";
+    let mut lines_by_voucher = BTreeMap::<i64, Vec<&ReorganizationLine>>::new();
+    for line in &snapshot.lines {
+        lines_by_voucher.entry(line.voucher_id).or_default().push(line);
+    }
+
+    let mut grouped = BTreeMap::<(String, String), Vec<&ReorganizationVoucher>>::new();
+    if do_merge {
+        for voucher in snapshot
+            .vouchers
+            .iter()
+            .filter(|voucher| voucher.voucher_type == VOUCHER_TYPES[0])
+        {
+            let date = validate_voucher_date(&voucher.date)?;
+            grouped
+                .entry((date, voucher.voucher_type.clone()))
+                .or_default()
+                .push(voucher);
+        }
+    }
+
+    let mut merge_groups = Vec::new();
+    let mut unbalanced_groups = Vec::new();
+    let mut merge_plan = Vec::new();
+    let mut removed_ids = HashSet::new();
+    for ((date, _), mut vouchers) in grouped {
+        if vouchers.len() < 2 {
+            continue;
+        }
+        vouchers.sort_by_key(|voucher| (voucher.number, voucher.id));
+        let all_lines: Vec<&ReorganizationLine> = vouchers
+            .iter()
+            .flat_map(|voucher| lines_by_voucher.get(&voucher.id).into_iter().flatten().copied())
+            .collect();
+        let total_debit = checked_sum(all_lines.iter().map(|line| line.debit), "جمع بدهکار گروه ادغام")?;
+        let total_credit = checked_sum(all_lines.iter().map(|line| line.credit), "جمع بستانکار گروه ادغام")?;
+        let balanced = total_debit > 0
+            && total_debit == total_credit
+            && all_lines.iter().all(|line| {
+                line.debit >= 0
+                    && line.credit >= 0
+                    && ((line.debit > 0) ^ (line.credit > 0))
+            });
+        let preview = VoucherMergePreview {
+            date,
+            source_voucher_numbers: vouchers.iter().map(|voucher| voucher.number).collect(),
+            keep_voucher_number: vouchers[0].number,
+            line_count: all_lines.len(),
+            total_debit,
+            total_credit,
+        };
+        if !balanced {
+            unbalanced_groups.push(preview);
+            continue;
+        }
+        let keep_id = vouchers[0].id;
+        let source_ids: Vec<i64> = vouchers.iter().skip(1).map(|voucher| voucher.id).collect();
+        removed_ids.extend(source_ids.iter().copied());
+        merge_plan.push(ReorganizationMergeGroup {
+            keep_id,
+            source_ids,
+        });
+        merge_groups.push(preview);
+    }
+
+    let mut number_changes = Vec::new();
+    if do_sort {
+        let mut remaining: Vec<(&ReorganizationVoucher, String)> = snapshot
+            .vouchers
+            .iter()
+            .filter(|voucher| !removed_ids.contains(&voucher.id))
+            .map(|voucher| Ok((voucher, validate_voucher_date(&voucher.date)?)))
+            .collect::<Result<_, String>>()?;
+        remaining.sort_by(|(left, left_date), (right, right_date)| {
+            left_date
+                .cmp(right_date)
+                .then_with(|| left.number.cmp(&right.number))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        for (index, (voucher, date)) in remaining.into_iter().enumerate() {
+            let new_number = i64::try_from(index + 1)
+                .map_err(|_| "تعداد اسناد از محدوده شماره‌گذاری مجاز بیشتر است.".to_string())?;
+            if voucher.number != new_number {
+                let change = VoucherNumberChange {
+                    old_number: voucher.number,
+                    new_number,
+                    date,
+                };
+                number_changes.push((voucher.id, change));
+            }
+        }
+    }
+
+    let mut hasher = DefaultHasher::new();
+    operation.hash(&mut hasher);
+    snapshot.hash(&mut hasher);
+    let plan_token = format!("{:016x}", hasher.finish());
+    let removed_voucher_count = removed_ids.len();
+    let preview = VoucherReorganizationPreview {
+        operation: operation.to_string(),
+        total_vouchers: snapshot.vouchers.len(),
+        total_vouchers_after: snapshot.vouchers.len() - removed_voucher_count,
+        merge_groups,
+        unbalanced_groups,
+        removed_voucher_count,
+        number_changes: number_changes.iter().map(|(_, change)| change.clone()).collect(),
+        plan_token,
+    };
+    Ok(ReorganizationPlan {
+        preview,
+        merge_groups: merge_plan,
+        number_changes,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -455,6 +704,102 @@ impl Database {
         })
     }
 
+    pub fn preview_voucher_reorganization(
+        &self,
+        operation: &str,
+    ) -> Result<VoucherReorganizationPreview, String> {
+        validate_reorganization_operation(operation)?;
+        self.with_conn(|conn| {
+            let snapshot = read_reorganization_snapshot(conn)?;
+            Ok(build_reorganization_plan(operation, &snapshot)?.preview)
+        })
+    }
+
+    pub fn apply_voucher_reorganization(
+        &self,
+        operation: &str,
+        plan_token: &str,
+    ) -> Result<VoucherReorganizationResult, String> {
+        validate_reorganization_operation(operation)?;
+        if plan_token.is_empty() {
+            return Err("پیش‌نمایش منقضی یا نامعتبر است؛ دوباره پیش‌نمایش بگیرید.".to_string());
+        }
+        let operation = operation.to_string();
+        let plan_token = plan_token.to_string();
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(db::db_error)?;
+            let snapshot = read_reorganization_snapshot(&tx)?;
+            let plan = build_reorganization_plan(&operation, &snapshot)?;
+            if plan.preview.plan_token != plan_token {
+                return Err("اسناد پس از پیش‌نمایش تغییر کرده‌اند؛ پیش‌نمایش جدید بگیرید.".to_string());
+            }
+
+            let mut removed_voucher_count = 0;
+            for group in &plan.merge_groups {
+                let mut next_row: i64 = tx
+                    .query_row(
+                        "SELECT COALESCE(MAX(row_no), 0) FROM voucher_lines WHERE voucher_id = ?1",
+                        params![group.keep_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(db::db_error)?;
+                for source_id in &group.source_ids {
+                    let mut statement = tx
+                        .prepare("SELECT id FROM voucher_lines WHERE voucher_id = ?1 ORDER BY row_no, id")
+                        .map_err(db::db_error)?;
+                    let source_lines = statement
+                        .query_map(params![source_id], |row| row.get::<_, i64>(0))
+                        .map_err(db::db_error)?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .map_err(db::db_error)?;
+                    drop(statement);
+                    for line_id in source_lines {
+                        next_row = next_row.checked_add(1)
+                            .ok_or_else(|| "شماره ردیف‌های سند از محدوده مجاز بیشتر است.".to_string())?;
+                        tx.execute(
+                            "UPDATE voucher_lines SET voucher_id = ?1, row_no = ?2 WHERE id = ?3",
+                            params![group.keep_id, next_row, line_id],
+                        )
+                        .map_err(db::db_error)?;
+                    }
+                    tx.execute("DELETE FROM vouchers WHERE id = ?1", params![source_id])
+                        .map_err(db::db_error)?;
+                    removed_voucher_count += 1;
+                }
+                tx.execute(
+                    "UPDATE vouchers SET updated_at = datetime('now', 'localtime') WHERE id = ?1",
+                    params![group.keep_id],
+                )
+                .map_err(db::db_error)?;
+            }
+
+            for (index, (voucher_id, _)) in plan.number_changes.iter().enumerate() {
+                let temporary_number = i64::MIN + index as i64;
+                tx.execute(
+                    "UPDATE vouchers SET number = ?1 WHERE id = ?2",
+                    params![temporary_number, voucher_id],
+                )
+                .map_err(db::db_error)?;
+            }
+            for (voucher_id, change) in &plan.number_changes {
+                tx.execute(
+                    "UPDATE vouchers SET number = ?1, updated_at = datetime('now', 'localtime') WHERE id = ?2",
+                    params![change.new_number, voucher_id],
+                )
+                .map_err(db::db_error)?;
+            }
+
+            let result = VoucherReorganizationResult {
+                operation,
+                merged_group_count: plan.merge_groups.len(),
+                removed_voucher_count,
+                renumbered_count: plan.number_changes.len(),
+            };
+            tx.commit().map_err(db::db_error)?;
+            Ok(result)
+        })
+    }
+
     pub fn get_voucher(&self, number: i64) -> Result<Option<Voucher>, String> {
         if number <= 0 {
             return Ok(None);
@@ -648,6 +993,249 @@ impl Database {
 
             tx.commit().map_err(db::db_error)?;
             fetch_voucher_by_id(conn, voucher_id)
+        })
+    }
+
+    pub fn preview_bulk_import(
+        &self,
+        import: &crate::excel::BulkVoucherImport,
+    ) -> Result<crate::excel::BulkVoucherPreview, String> {
+        let file_name = import.file_name.clone();
+        let account_codes: Vec<String> = import.accounts.iter().map(|account| account.code.clone()).collect();
+        let numbers: Vec<i64> = import.vouchers.iter().filter_map(|voucher| voucher.number).collect();
+        let voucher_count = import.vouchers.len();
+        let line_count = import.vouchers.iter().map(|voucher| voucher.lines.len()).sum();
+        let account_count = account_codes.len();
+        self.with_conn(move |conn| {
+            let mut new_account_count = 0;
+            for code in account_codes {
+                let exists = conn
+                    .query_row("SELECT 1 FROM accounts WHERE code = ?1", params![db::normalize_code(&code)], |_| Ok(()))
+                    .optional()
+                    .map_err(db::db_error)?
+                    .is_some();
+                if !exists {
+                    new_account_count += 1;
+                }
+            }
+            let mut number_conflict_count = 0;
+            for number in numbers {
+                let exists = conn
+                    .query_row("SELECT 1 FROM vouchers WHERE number = ?1", params![number], |_| Ok(()))
+                    .optional()
+                    .map_err(db::db_error)?
+                    .is_some();
+                if exists {
+                    number_conflict_count += 1;
+                }
+            }
+            Ok(crate::excel::BulkVoucherPreview {
+                file_name,
+                voucher_count,
+                line_count,
+                account_count,
+                new_account_count,
+                number_conflict_count,
+            })
+        })
+    }
+
+    pub fn import_vouchers(
+        &self,
+        import: crate::excel::BulkVoucherImport,
+        renumber_conflicts: bool,
+    ) -> Result<usize, String> {
+        if import.vouchers.is_empty() {
+            return Err("فایلی برای ورود وجود ندارد.".to_string());
+        }
+
+        let mut prepared = Vec::with_capacity(import.vouchers.len());
+        let mut numbers = HashSet::new();
+        for input in import.vouchers {
+            let date = normalize_date(&input.date, "تاریخ سند")?;
+            let voucher_type = validate_voucher_type(&input.voucher_type)?;
+            let description = validate_description(&input.description, "شرح سند", MAX_DESCRIPTION)?;
+            let number = input.number.unwrap_or(0);
+            if number <= 0 || !numbers.insert(number) {
+                return Err(format!("شماره سند {} نامعتبر یا تکراری است.", db::to_fa_digits(number)));
+            }
+            if input.lines.len() > MAX_LINES {
+                return Err(format!("تعداد ردیف‌های سند {} از حد مجاز بیشتر است.", db::to_fa_digits(number)));
+            }
+
+            let mut lines = Vec::with_capacity(input.lines.len());
+            for line in input.lines {
+                let account_code = db::normalize_code(&line.account_code);
+                let line_description = validate_description(
+                    &line.description,
+                    "شرح ردیف",
+                    MAX_LINE_DESCRIPTION,
+                )?;
+                if account_code.is_empty() {
+                    return Err(format!("کد حساب در سند {} خالی است.", db::to_fa_digits(number)));
+                }
+                if line.debit < 0 || line.credit < 0 || line.debit > MAX_AMOUNT || line.credit > MAX_AMOUNT {
+                    return Err(format!("مبلغ سند {} خارج از محدوده مجاز است.", db::to_fa_digits(number)));
+                }
+                if (line.debit == 0 && line.credit == 0) || (line.debit > 0 && line.credit > 0) {
+                    return Err(format!("مبلغ ردیف سند {} نامعتبر است.", db::to_fa_digits(number)));
+                }
+                lines.push(VoucherLineInput {
+                    account_code,
+                    description: line_description,
+                    debit: line.debit,
+                    credit: line.credit,
+                });
+            }
+            if lines.len() < 2 {
+                return Err(format!("سند {} باید حداقل دو ردیف داشته باشد.", db::to_fa_digits(number)));
+            }
+            let total_debit = checked_sum(lines.iter().map(|line| line.debit), "جمع بدهکار سند")?;
+            let total_credit = checked_sum(lines.iter().map(|line| line.credit), "جمع بستانکار سند")?;
+            if total_debit == 0 || total_debit != total_credit {
+                return Err(format!("سند {} تراز نیست.", db::to_fa_digits(number)));
+            }
+            prepared.push((number, date, voucher_type, description, lines));
+        }
+
+        let mut accounts = import.accounts;
+        accounts.sort_by_key(|account| account.level);
+        let imported_count = prepared.len();
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(db::db_error)?;
+            let incoming_numbers: HashSet<i64> = prepared.iter().map(|item| item.0).collect();
+            let mut used_numbers = HashSet::new();
+            {
+                let mut statement = tx.prepare("SELECT number FROM vouchers").map_err(db::db_error)?;
+                let rows = statement.query_map([], |row| row.get::<_, i64>(0)).map_err(db::db_error)?;
+                for row in rows {
+                    used_numbers.insert(row.map_err(db::db_error)?);
+                }
+            }
+            let mut next_number = used_numbers.iter().copied().max().unwrap_or(0);
+            for account in accounts {
+                let code = db::normalize_code(&account.code);
+                let name = account.name.split_whitespace().collect::<Vec<_>>().join(" ");
+                let parent_code = db::normalize_code(&account.parent_code);
+                let group_code = db::normalize_code(&account.group_code);
+                if code.is_empty()
+                    || code.len() > 20
+                    || !code.chars().all(|ch| ch.is_ascii_digit())
+                    || name.is_empty()
+                    || name.chars().count() > 255
+                    || !matches!(account.level, 1 | 2)
+                {
+                    return Err("اطلاعات یکی از حساب‌های فایل اکسل معتبر نیست.".to_string());
+                }
+                let exists = tx
+                    .query_row("SELECT 1 FROM accounts WHERE code = ?1", params![code], |_| Ok(()))
+                    .optional()
+                    .map_err(db::db_error)?
+                    .is_some();
+                if exists {
+                    continue;
+                }
+                let group_exists = tx
+                    .query_row("SELECT 1 FROM account_groups WHERE code = ?1", params![group_code], |_| Ok(()))
+                    .optional()
+                    .map_err(db::db_error)?
+                    .is_some();
+                if !group_exists {
+                    return Err(format!("گروه حساب {} برای حساب {} پیدا نشد.", group_code, code));
+                }
+
+                let parent_name = if account.level == 1 {
+                    if !parent_code.is_empty() {
+                        return Err("حساب کل فایل اکسل نباید حساب بالاتر داشته باشد.".to_string());
+                    }
+                    String::new()
+                } else {
+                    if parent_code.is_empty() || !code.starts_with(&parent_code) || code.len() <= parent_code.len() {
+                        return Err(format!("ساختار حساب {} در فایل اکسل معتبر نیست.", db::to_fa_digits(&code)));
+                    }
+                    let parent = tx
+                        .query_row(
+                            "SELECT name, level, group_code FROM accounts WHERE code = ?1",
+                            params![parent_code],
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+                        )
+                        .optional()
+                        .map_err(db::db_error)?
+                        .ok_or_else(|| format!("حساب بالاتر {} برای {} پیدا نشد.", db::to_fa_digits(&parent_code), db::to_fa_digits(&code)))?;
+                    if parent.1 != 1 || parent.2 != group_code {
+                        return Err(format!("گروه یا سطح حساب بالاتر {} با حساب {} سازگار نیست.", db::to_fa_digits(&parent_code), db::to_fa_digits(&code)));
+                    }
+                    let parent_has_lines = tx
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM voucher_lines WHERE account_code = ?1)",
+                            params![parent_code],
+                            |row| row.get::<_, bool>(0),
+                        )
+                        .map_err(db::db_error)?;
+                    if parent_has_lines {
+                        return Err(format!("حساب بالاتر {} در اسناد استفاده شده و نمی‌توان برای آن زیرحساب ساخت.", db::to_fa_digits(&parent_code)));
+                    }
+                    tx.execute(
+                        "UPDATE accounts SET postable_before_children = COALESCE(postable_before_children, is_postable), is_postable = 0 WHERE code = ?1",
+                        params![parent_code],
+                    )
+                    .map_err(db::db_error)?;
+                    parent.0
+                };
+                let parent_code_value = if parent_code.is_empty() { None } else { Some(parent_code) };
+                tx.execute(
+                    "INSERT INTO accounts (code, name, level, group_code, nature, parent_code, parent_name, is_postable) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![code, name, account.level, group_code, account.nature, parent_code_value, parent_name, i64::from(account.level == 2)],
+                )
+                .map_err(db::db_error)?;
+            }
+
+            for (number, date, voucher_type, description, lines) in prepared {
+                for line in &lines {
+                    let account = tx
+                        .query_row(
+                            "SELECT name, is_postable FROM accounts WHERE code = ?1",
+                            params![line.account_code],
+                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                        )
+                        .optional()
+                        .map_err(db::db_error)?
+                        .ok_or_else(|| format!("حساب با کد {} یافت نشد.", db::to_fa_digits(&line.account_code)))?;
+                    if account.1 == 0 {
+                        return Err(format!("حساب «{}» قابل ثبت نیست؛ حساب کل یا حساب غیرقابل ثبت انتخاب شده است.", account.0));
+                    }
+                }
+                let mut stored_number = number;
+                if used_numbers.contains(&number) {
+                    if !renumber_conflicts {
+                        return Err(format!("شماره سند {} از قبل در برنامه وجود دارد.", db::to_fa_digits(number)));
+                    }
+                    loop {
+                        next_number = next_number.checked_add(1)
+                            .ok_or_else(|| "شماره سند بعدی از محدوده عددی مجاز بیشتر است.".to_string())?;
+                        if !used_numbers.contains(&next_number) && !incoming_numbers.contains(&next_number) {
+                            stored_number = next_number;
+                            break;
+                        }
+                    }
+                }
+                used_numbers.insert(stored_number);
+                tx.execute(
+                    "INSERT INTO vouchers (number, date, type, description) VALUES (?1, ?2, ?3, ?4)",
+                    params![stored_number, date, voucher_type, description],
+                )
+                .map_err(db::db_error)?;
+                let voucher_id = tx.last_insert_rowid();
+                for (index, line) in lines.iter().enumerate() {
+                    tx.execute(
+                        "INSERT INTO voucher_lines (voucher_id, row_no, account_code, description, debit, credit) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![voucher_id, index as i64 + 1, line.account_code, line.description, line.debit, line.credit],
+                    )
+                    .map_err(db::db_error)?;
+                }
+            }
+            tx.commit().map_err(db::db_error)?;
+            Ok(imported_count)
         })
     }
 
@@ -1590,6 +2178,110 @@ mod tests {
         assert_eq!(dashboard.assets_total, 1_000_000);
         assert_eq!(dashboard.net_profit, 1_000_000);
         assert_eq!(dashboard.recent.len(), 1);
+    }
+
+    #[test]
+    fn bulk_import_is_atomic_and_supports_large_vouchers() {
+        let db = db::memory_database();
+        let source_accounts = |general_code: &str, subsidiary_code: &str| {
+            vec![
+                crate::excel::ImportedAccount {
+                    code: general_code.to_string(),
+                    name: "حساب کل آزمایشی".to_string(),
+                    parent_code: String::new(),
+                    group_code: "1".to_string(),
+                    level: 1,
+                    nature: "debtor".to_string(),
+                },
+                crate::excel::ImportedAccount {
+                    code: subsidiary_code.to_string(),
+                    name: "حساب معین آزمایشی".to_string(),
+                    parent_code: general_code.to_string(),
+                    group_code: "1".to_string(),
+                    level: 2,
+                    nature: "debtor".to_string(),
+                },
+            ]
+        };
+        let make_import = |number, general_code: &str, subsidiary_code: &str, lines| {
+            crate::excel::BulkVoucherImport {
+                file_name: "آزمایشی.xlsx".to_string(),
+                accounts: source_accounts(general_code, subsidiary_code),
+                vouchers: vec![VoucherInput {
+                    id: None,
+                    number: Some(number),
+                    date: "1405/01/01".to_string(),
+                    voucher_type: VOUCHER_TYPES[0].to_string(),
+                    description: String::new(),
+                    lines,
+                }],
+            }
+        };
+
+        let mut large_lines = vec![line("901101", 618, 0)];
+        large_lines.extend((0..618).map(|_| line("110101", 0, 1)));
+        assert_eq!(db.import_vouchers(make_import(1, "901", "901101", large_lines), false).unwrap(), 1);
+        assert_eq!(db.get_voucher(1).unwrap().unwrap().lines.len(), 619);
+
+        let conflicting = make_import(
+            1,
+            "902",
+            "902101",
+            vec![line("902101", 100, 0), line("110101", 0, 100)],
+        );
+        assert!(db.import_vouchers(conflicting.clone(), false).is_err());
+        assert!(!db.list_accounts().unwrap().accounts.iter().any(|account| account.code == "902"));
+
+        assert_eq!(db.import_vouchers(conflicting, true).unwrap(), 1);
+        assert!(db.get_voucher(2).unwrap().is_some());
+        assert!(db.list_accounts().unwrap().accounts.iter().any(|account| account.code == "902101"));
+    }
+
+    #[test]
+    fn reorganize_preview_merges_then_sorts_by_date() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/02", 1_000)).unwrap();
+        db.save_voucher(cash_sale("1405/01/01", 2_000)).unwrap();
+        db.save_voucher(cash_sale("1405/01/02", 500)).unwrap();
+        let mut opening = cash_sale("1405/01/02", 750);
+        opening.voucher_type = VOUCHER_TYPES[1].to_string();
+        db.save_voucher(opening).unwrap();
+
+        let preview = db.preview_voucher_reorganization("merge-then-sort").unwrap();
+        assert_eq!(preview.total_vouchers, 4);
+        assert_eq!(preview.total_vouchers_after, 3);
+        assert_eq!(preview.merge_groups.len(), 1);
+        assert_eq!(preview.merge_groups[0].source_voucher_numbers, vec![1, 3]);
+        assert_eq!(preview.merge_groups[0].line_count, 4);
+        assert_eq!(preview.number_changes.len(), 3);
+
+        let result = db
+            .apply_voucher_reorganization("merge-then-sort", &preview.plan_token)
+            .unwrap();
+        assert_eq!(result.merged_group_count, 1);
+        assert_eq!(result.removed_voucher_count, 1);
+        assert_eq!(result.renumbered_count, 3);
+        assert_eq!(db.get_voucher(1).unwrap().unwrap().date, "1405/01/01");
+        let merged = db.get_voucher(2).unwrap().unwrap();
+        assert_eq!(merged.date, "1405/01/02");
+        assert_eq!(merged.lines.len(), 4);
+        assert_eq!(merged.total_debit, 1_500);
+        assert_eq!(db.get_voucher(3).unwrap().unwrap().voucher_type, VOUCHER_TYPES[1]);
+        assert!(db.get_voucher(4).unwrap().is_none());
+    }
+
+    #[test]
+    fn reorganize_rejects_a_stale_preview() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/02", 1_000)).unwrap();
+        let preview = db.preview_voucher_reorganization("sort").unwrap();
+        db.save_voucher(cash_sale("1405/01/01", 500)).unwrap();
+
+        assert!(db
+            .apply_voucher_reorganization("sort", &preview.plan_token)
+            .unwrap_err()
+            .contains("تغییر کرده‌اند"));
+        assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 2);
     }
 
     #[test]

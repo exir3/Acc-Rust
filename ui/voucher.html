@@ -443,6 +443,74 @@
     </div>
   </div>
 
+  <div class="modal account-ledger-modal" id="accountLedgerModal" hidden>
+    <section class="ap-window ledger-window" role="dialog" aria-modal="true" aria-labelledby="accountLedgerTitle">
+      <div class="ap-titlebar">
+        <button class="ap-close" id="btnAccountLedgerClose" type="button" title="بستن (Esc)" aria-label="بستن گردش حساب">
+          <svg class="ico"><use href="#i-close" /></svg>
+        </button>
+        <span class="ap-title" id="accountLedgerTitle">گردش حساب</span>
+      </div>
+
+      <div class="ledger-content">
+        <div class="ledger-account-line">
+          <span>حساب</span>
+          <strong id="accountLedgerAccount">—</strong>
+        </div>
+        <form class="ledger-filters" id="accountLedgerFilters">
+          <label class="ledger-field" for="accountLedgerFrom">
+            <span>از تاریخ</span>
+            <input id="accountLedgerFrom" type="text" inputmode="numeric" maxlength="10" placeholder="۱۴۰۵/۰۱/۰۱" autocomplete="off" />
+          </label>
+          <label class="ledger-field" for="accountLedgerTo">
+            <span>تا تاریخ</span>
+            <input id="accountLedgerTo" type="text" inputmode="numeric" maxlength="10" placeholder="۱۴۰۵/۱۲/۲۹" autocomplete="off" />
+          </label>
+          <label class="ledger-field ledger-search" for="accountLedgerSearch">
+            <span>جستجو در شرح، شماره سند و مبلغ</span>
+            <input id="accountLedgerSearch" type="search" autocomplete="off" />
+          </label>
+          <div class="ledger-filter-actions">
+            <button class="ap-tool ap-tool-select" type="submit">
+              <svg class="ico"><use href="#i-play" /></svg><span>نمایش گردش</span>
+            </button>
+            <button class="ap-tool" id="accountLedgerReset" type="button">
+              <svg class="ico"><use href="#i-refresh" /></svg><span>بازنشانی</span>
+            </button>
+          </div>
+        </form>
+
+        <div class="ledger-summary" id="accountLedgerSummary" aria-label="خلاصه گردش حساب"></div>
+        <div class="ledger-meta" id="accountLedgerMeta"></div>
+        <div class="ledger-message" id="accountLedgerMessage" role="status" aria-live="polite"></div>
+        <div class="ledger-table-scroll">
+          <table class="ledger-table">
+            <thead><tr>
+              <th>تاریخ</th><th>سند</th><th>شرح سند</th>
+              <th>بدهکار</th><th>بستانکار</th><th>مانده بدهکار</th><th>مانده بستانکار</th>
+            </tr></thead>
+            <tbody id="accountLedgerRows"></tbody>
+            <tfoot id="accountLedgerFoot"></tfoot>
+          </table>
+        </div>
+      </div>
+
+      <div class="ledger-toolbar" role="toolbar" aria-label="عملیات گردش حساب">
+        <div class="ap-toolbar-group">
+          <button type="button" class="ap-tool" id="accountLedgerRefresh" title="به‌روزرسانی گردش">
+            <svg class="ico"><use href="#i-refresh" /></svg><span>به‌روزرسانی</span>
+          </button>
+          <button type="button" class="ap-tool" id="accountLedgerExport" title="خروجی قابل استفاده در صفحه‌گسترده">
+            <svg class="ico"><use href="#i-doc" /></svg><span>خروجی CSV</span>
+          </button>
+          <button type="button" class="ap-tool" id="accountLedgerPrint" title="پیش‌نمایش چاپ">
+            <svg class="ico"><use href="#i-print" /></svg><span>چاپ</span>
+          </button>
+        </div>
+      </div>
+    </section>
+  </div>
+
   <!-- ═══ Confirmation dialog ═══════════════════════════════════════════ -->
   <div class="modal" id="vfConfirmModal" hidden>
     <div class="ap-window vf-confirm" role="alertdialog" aria-modal="true" aria-labelledby="vfConfirmTitle" aria-describedby="vfConfirmText">

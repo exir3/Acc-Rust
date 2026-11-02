@@ -456,7 +456,7 @@ impl Database {
             }
 
             let (parent_code, parent_name) =
-                resolve_parent(&tx, level, &parent_code, &group_code)?;
+                resolve_parent(&tx, &code, level, &parent_code, &group_code)?;
 
             // An account that already carries vouchers cannot also become a
             // heading for sub-accounts: its balance would be counted twice
@@ -581,7 +581,7 @@ impl Database {
             }
 
             let (parent_code, parent_name) =
-                resolve_parent(conn, level, &parent_code, &group_code)?;
+                resolve_parent(conn, &code, level, &parent_code, &group_code)?;
             let postable = level > 1 && is_postable && children == 0;
             if !postable && level > 1 && children == 0 && account_has_lines(conn, &code)? {
                 return Err(
@@ -1029,6 +1029,7 @@ fn account_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
 
 fn resolve_parent(
     conn: &Connection,
+    code: &str,
     level: i64,
     parent_code: &str,
     group_code: &str,
@@ -1061,6 +1062,9 @@ fn resolve_parent(
     }
     if parent.2 != group_code {
         return Err("حساب بالاتر باید به همان گروه حساب تعلق داشته باشد.".to_string());
+    }
+    if !code.starts_with(parent_code) || code.len() <= parent_code.len() {
+        return Err("کد حساب باید با کد حساب بالاتر آغاز شود.".to_string());
     }
 
     Ok((Some(parent_code.to_string()), parent.0))
@@ -1282,6 +1286,9 @@ mod tests {
             .is_err());
         assert!(db
             .create_account("120104", "والد اشتباه", 3, "1", "debtor", "1101", true)
+            .is_err());
+        assert!(db
+            .create_account("130101", "کد با والد ناسازگار", 2, "1", "debtor", "1201", true)
             .is_err());
     }
 

@@ -278,6 +278,9 @@ input, textarea, select { user-select: text; }
   cursor: default;
 }
 .menu-item:hover { background: #dbe7f6; }
+.menu-dropdown .menu-item { cursor: default; }
+.menu-dropdown .menu-item:hover,
+.menu-dropdown .menu-item.focused { background: #c5d9f0; color: #173c68; }
 .menu-item-icon {
   min-width: 26px;
   text-align: center;
@@ -1919,7 +1922,7 @@ input, textarea, select { user-select: text; }
 }
 .vf-col-rowno { width: 40px; }
 .vf-col-code { width: 120px; }
-.vf-col-detail { width: 120px; }
+.vf-col-detail { width: 108px; }
 .vf-col-desc { width: auto; }
 .vf-col-amount { width: 150px; }
 
@@ -1972,8 +1975,7 @@ input, textarea, select { user-select: text; }
   font-family: var(--font);
   font-size: 13px;
 }
-.vf-grid input:focus { background: #fffbd8; }
-/* No focus ring on grid cells; the pale-yellow fill marks the active cell. */
+.vf-grid input:focus { background: transparent; }
 .vf-grid input:focus-visible,
 .vf-grid input:focus-within { outline: none; outline-offset: 0; }
 .vf-code-input { text-align: center; direction: ltr; font-variant-numeric: tabular-nums; }
