@@ -129,6 +129,18 @@ fn delete_account(id: i64, state: State<'_, AppState>) -> Result<(), String> {
     state.database.delete_account(id)
 }
 
+#[tauri::command(async)]
+fn export_account_excel(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    excel::export_accounts(&state.database)
+}
+
+#[tauri::command(async)]
+fn import_account_excel(
+    state: State<'_, AppState>,
+) -> Result<Option<excel::AccountImportResult>, String> {
+    excel::import_accounts(&state.database)
+}
+
 /* ── Settings ───────────────────────────────────────────────── */
 
 #[tauri::command(async)]
@@ -623,6 +635,8 @@ pub fn run() {
             create_account,
             update_account,
             delete_account,
+            export_account_excel,
+            import_account_excel,
             get_settings,
             save_settings,
             validate_voucher_date,

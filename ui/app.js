@@ -81,7 +81,7 @@ const MENU_BAR = [
     label: 'اطلاعات پایه',
     items: [
       { label: 'تعریف گروه حسابها', icon: '📂', command: 'groups-window' },
-      { label: 'تعریف حسابهای کل، معین و تفصیلی', icon: '📁', page: 'accounts' },
+      { label: 'تعریف حسابهای کل، معین و تفصیلی', icon: '📁', command: 'account-definition' },
       { label: 'مرور حسابها', icon: '🔍', page: 'accounts' },
       { label: 'لیست اسناد حسابداری', icon: '📜', page: 'vouchers' },
       { label: 'مرتب‌سازی و ادغام اسناد', icon: '🧮', command: 'reorganize-vouchers' },
@@ -1322,7 +1322,8 @@ function balanceTable(rows, total, totalLabel) {
 
 PAGES.accounts = {
   actions: () => [
-    { label: 'حساب جدید', icon: 'i-plus', primary: true, onClick: () => openAccountDialog(null) },
+    { label: 'تعریف و اصلاح حساب‌ها', icon: 'i-tree', primary: true, onClick: () => window.openAccountDefinitionPopup?.() },
+    { label: 'حساب جدید سریع', icon: 'i-plus', onClick: () => openAccountDialog(null) },
     { label: 'گروه‌ها', icon: 'i-folder', onClick: () => openGroupsWindow() },
     { label: 'به‌روزرسانی', icon: 'i-refresh', onClick: () => navigate('accounts', { force: true }) },
   ],
@@ -1518,7 +1519,7 @@ function openAccountDialog(account) {
   const requestedLevel = Number(state.accountFilters.level);
   const level = account
     ? Number(account.level)
-    : requestedLevel || Math.min(4, hierarchy.length + 1);
+    : requestedLevel || Math.min(3, hierarchy.length + 1);
   const initialParentCode = account?.parentCode || (level > 1 ? hierarchy[level - 2]?.code || '' : '');
   const initialGroupCode = account?.groupCode || state.accountFilters.group || (level > 1
     ? hierarchy[level - 2]?.groupCode || groups[0]?.code
@@ -1543,7 +1544,7 @@ function openAccountDialog(account) {
         <div class="field">
           <label for="acctLevel">سطح حساب</label>
           <select id="acctLevel" class="input" ${isEdit ? 'disabled' : ''}>
-            ${[1, 2, 3, 4].map((value) => `<option value="${value}"${Number(level) === value ? ' selected' : ''}>${levelLabel(value)}</option>`).join('')}
+            ${(isEdit ? [Number(account.level)] : [1, 2, 3]).map((value) => `<option value="${value}"${Number(level) === value ? ' selected' : ''}>${levelLabel(value)}</option>`).join('')}
           </select>
         </div>
         <div class="field wide">
@@ -2285,6 +2286,9 @@ function runMenuItem(item) {
   switch (item.command) {
     case 'groups-window':
       openGroupsWindow();
+      return;
+    case 'account-definition':
+      window.openAccountDefinitionPopup?.();
       return;
     case 'new-voucher':
       openVoucherWindow();
