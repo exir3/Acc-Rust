@@ -1158,10 +1158,10 @@ fn validate_name(input: &str, label: &str) -> Result<String, String> {
 }
 
 fn validate_level(input: i64) -> Result<i64, String> {
-    if (1..=4).contains(&input) {
+    if (1..=3).contains(&input) {
         Ok(input)
     } else {
-        Err("سطح حساب باید بین ۱ تا ۴ باشد.".to_string())
+        Err("سطح حساب جدید باید یکی از سطوح کل، معین یا تفصیلی ۱ باشد.".to_string())
     }
 }
 
