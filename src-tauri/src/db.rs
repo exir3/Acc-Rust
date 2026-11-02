@@ -4,12 +4,16 @@
 //! live in one local database. SQLite is bundled with the executable, so the
 //! application is fully usable offline after installation.
 
-use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{
+    backup::Backup, params, Connection, OpenFlags, OptionalExtension, TransactionBehavior,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
+
+use crate::vouchers::MAX_VOUCHER_NUMBER;
 
 pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
 const CURRENT_SCHEMA_VERSION: i64 = 3;
@@ -154,9 +158,9 @@ const DEFAULT_ACCOUNTS: [(&str, &str, i64, &str, &str, &str, bool); 27] = [
         false,
     ),
     ("110101", "صندوق مرکزی", 2, "1", "debtor", "1101", true),
-    ("110201", "بانک ملت", 2, "1", "debtor", "1102", true),
+    ("110201", "بانک ملت", 2, "1", "debtor", "1102", false),
     ("110202", "بانک ملی ایران", 2, "1", "debtor", "1102", true),
-    ("120101", "بدهکاران تجاری", 2, "1", "debtor", "1201", true),
+    ("120101", "بدهکاران تجاری", 2, "1", "debtor", "1201", false),
     ("130101", "مواد اولیه", 2, "1", "debtor", "1301", true),
     (
         "210101",
@@ -165,7 +169,7 @@ const DEFAULT_ACCOUNTS: [(&str, &str, i64, &str, &str, &str, bool); 27] = [
         "4",
         "creditor",
         "2101",
-        true,
+        false,
     ),
     (
         "220101",
@@ -439,7 +443,10 @@ impl Database {
         let group_type = validate_type(group_type)?;
 
         self.with_conn(|conn| {
-            let existing = conn
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db_error)?;
+            let existing = tx
                 .query_row(
                     "SELECT code, type FROM account_groups WHERE id = ?1",
                     params![id],
@@ -453,7 +460,7 @@ impl Database {
                 return Err("تغییر کد گروه حساب مجاز نیست.".to_string());
             }
             if existing_type != group_type {
-                let used_lines: i64 = conn
+                let used_lines: i64 = tx
                     .query_row(
                         "SELECT COUNT(*)
                            FROM voucher_lines l
@@ -470,14 +477,16 @@ impl Database {
                 }
             }
 
-            conn.execute(
+            tx.execute(
                 "UPDATE account_groups
                     SET name = ?1, type = ?2, updated_at = datetime('now', 'localtime')
                   WHERE id = ?3",
                 params![name, group_type, id],
             )
             .map_err(db_error)?;
-            fetch_group(conn, id)
+            let group = fetch_group(&tx, id)?;
+            tx.commit().map_err(db_error)?;
+            Ok(group)
         })
     }
 
@@ -950,13 +959,19 @@ fn migrate_legacy_database(data_dir: &Path, destination: &Path) -> Result<(), St
         candidates.push(parent.join(LEGACY_IDENTIFIER).join(LEGACY_DB_FILE_NAME));
     }
 
-    let existing: Vec<PathBuf> = candidates
+    let mut existing: Vec<PathBuf> = candidates
         .into_iter()
         .filter(|path| path.exists())
         .collect();
     if existing.is_empty() {
         return Ok(());
     }
+    // Prefer the most recently written database; a stale copy in the old
+    // identifier folder must not win over newer data in the app data folder.
+    existing.sort_by(|left, right| {
+        let modified = |path: &Path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+        modified(right).cmp(&modified(left))
+    });
 
     let temporary = destination.with_extension("sqlite3.migrating");
     let mut failures = Vec::new();
@@ -1055,6 +1070,19 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
     if integrity != "ok" {
         return Err(format!("سلامت فایل SQLite تأیید نشد: {integrity}"));
     }
+    let unexpected_trigger: Option<String> = conn
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db_error)?;
+    if let Some(name) = unexpected_trigger {
+        return Err(format!(
+            "فایل پشتیبان دارای trigger ناشناخته «{name}» است و قابل بازیابی نیست."
+        ));
+    }
     let version: String = conn
         .query_row(
             "SELECT value FROM app_meta WHERE key = 'schema_version'",
@@ -1086,7 +1114,262 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
             ));
         }
     }
+
+    const REQUIRED_COLUMNS: [(&str, &[&str]); 6] = [
+        ("app_meta", &["key", "value"]),
+        ("settings", &["key", "value"]),
+        (
+            "account_groups",
+            &["id", "code", "name", "type", "created_at", "updated_at"],
+        ),
+        (
+            "accounts",
+            &[
+                "id",
+                "code",
+                "name",
+                "level",
+                "group_code",
+                "nature",
+                "parent_code",
+                "parent_name",
+                "is_postable",
+                "postable_before_children",
+                "created_at",
+                "updated_at",
+            ],
+        ),
+        (
+            "vouchers",
+            &[
+                "id",
+                "number",
+                "date",
+                "type",
+                "description",
+                "created_at",
+                "updated_at",
+            ],
+        ),
+        (
+            "voucher_lines",
+            &[
+                "id",
+                "voucher_id",
+                "row_no",
+                "account_code",
+                "description",
+                "debit",
+                "credit",
+            ],
+        ),
+    ];
+    for (table, required) in REQUIRED_COLUMNS {
+        let columns = backup_table_columns(conn, table)?;
+        for column in required {
+            if !columns.iter().any(|name| name == column) {
+                return Err(format!(
+                    "فایل انتخاب‌شده پشتیبان معتبر نیست؛ ستون {table}.{column} وجود ندارد."
+                ));
+            }
+        }
+    }
+
+    {
+        let mut statement = conn.prepare("PRAGMA foreign_key_check").map_err(db_error)?;
+        let mut rows = statement.query([]).map_err(db_error)?;
+        if let Some(row) = rows.next().map_err(db_error)? {
+            let table: String = row.get(0).map_err(db_error)?;
+            let row_id: i64 = row.get(1).map_err(db_error)?;
+            return Err(format!(
+                "فایل پشتیبان رابطه کلید خارجی نامعتبر دارد (جدول {table}، ردیف {row_id})."
+            ));
+        }
+    }
+
+    if let Some(code) = backup_first_text(
+        conn,
+        "SELECT code FROM account_groups
+          WHERE code = '' OR length(code) > 50 OR code GLOB '*[^0-9]*'
+          LIMIT 1",
+    )? {
+        return Err(format!("کد گروه «{code}» در فایل پشتیبان معتبر نیست."));
+    }
+    if let Some(code) = backup_first_text(
+        conn,
+        "SELECT code FROM account_groups
+          WHERE type NOT IN ('دارایی', 'بدهی', 'سرمایه', 'درآمد', 'هزینه', 'سایر')
+          LIMIT 1",
+    )? {
+        return Err(format!(
+            "نوع گروه «{code}» در فایل پشتیبان معتبر نیست."
+        ));
+    }
+
+    if let Some(code) = backup_first_text(
+        conn,
+        "SELECT code FROM accounts
+          WHERE code = '' OR length(code) > 20 OR code GLOB '*[^0-9]*'
+          LIMIT 1",
+    )? {
+        return Err(format!("کد حساب «{code}» در فایل پشتیبان معتبر نیست."));
+    }
+    if let Some(code) = backup_first_text(
+        conn,
+        "SELECT code FROM accounts
+          WHERE level NOT BETWEEN 1 AND 4
+             OR is_postable NOT IN (0, 1)
+             OR nature NOT IN ('debtor', 'creditor', 'dual')
+          LIMIT 1",
+    )? {
+        return Err(format!(
+            "سطح، ماهیت یا وضعیت ثبت حساب «{code}» در فایل پشتیبان معتبر نیست."
+        ));
+    }
+    if let Some(code) = backup_first_text(
+        conn,
+        "SELECT code FROM accounts
+          WHERE (level = 1 AND parent_code IS NOT NULL AND parent_code <> '')
+             OR (level > 1 AND (parent_code IS NULL OR parent_code = ''))
+          LIMIT 1",
+    )? {
+        return Err(format!(
+            "حساب «{code}» در فایل پشتیبان حساب بالاتر معتبری ندارد."
+        ));
+    }
+    if let Some(code) = backup_first_text(
+        conn,
+        "SELECT a.code
+           FROM accounts a
+           JOIN accounts p ON p.code = a.parent_code
+          WHERE a.level <> p.level + 1
+             OR a.group_code <> p.group_code
+             OR a.code NOT LIKE p.code || '%'
+             OR length(a.code) <= length(p.code)
+          LIMIT 1",
+    )? {
+        return Err(format!(
+            "ساختار حساب «{code}» با حساب بالاتر آن در فایل پشتیبان سازگار نیست."
+        ));
+    }
+
+    if let Some(number) = backup_first_text(
+        conn,
+        &format!(
+            "SELECT CAST(number AS TEXT) FROM vouchers
+              WHERE number <= 0 OR number > {MAX_VOUCHER_NUMBER}
+              LIMIT 1"
+        ),
+    )? {
+        return Err(format!(
+            "شماره سند «{number}» در فایل پشتیبان خارج از محدوده مجاز است."
+        ));
+    }
+    if let Some(number) = backup_first_text(
+        conn,
+        "SELECT CAST(number AS TEXT) FROM vouchers
+          GROUP BY number HAVING COUNT(*) > 1
+          LIMIT 1",
+    )? {
+        return Err(format!("شماره سند «{number}» در فایل پشتیبان تکراری است."));
+    }
+
+    {
+        let mut statement = conn
+            .prepare("SELECT number, date, type, description FROM vouchers ORDER BY id")
+            .map_err(db_error)?;
+        let mut rows = statement.query([]).map_err(db_error)?;
+        while let Some(row) = rows.next().map_err(db_error)? {
+            let number: i64 = row.get(0).map_err(db_error)?;
+            let date: String = row.get(1).map_err(db_error)?;
+            let voucher_type: String = row.get(2).map_err(db_error)?;
+            let description: String = row.get(3).map_err(db_error)?;
+            let shown_number = to_fa_digits(number.to_string());
+            if crate::vouchers::validate_voucher_date(&date).is_err() {
+                return Err(format!(
+                    "تاریخ سند شماره {shown_number} در فایل پشتیبان معتبر نیست."
+                ));
+            }
+            if !crate::vouchers::VOUCHER_TYPES.contains(&voucher_type.as_str()) {
+                return Err(format!(
+                    "نوع سند شماره {shown_number} در فایل پشتیبان معتبر نیست."
+                ));
+            }
+            if description.chars().count() > crate::vouchers::MAX_DESCRIPTION {
+                return Err(format!(
+                    "شرح سند شماره {shown_number} در فایل پشتیبان بیش از حد مجاز است."
+                ));
+            }
+        }
+    }
+
+    if let Some(line) = backup_first_text(
+        conn,
+        "SELECT CAST(id AS TEXT) FROM voucher_lines
+          WHERE account_code = '' OR length(account_code) > 20
+             OR account_code GLOB '*[^0-9]*'
+          LIMIT 1",
+    )? {
+        return Err(format!(
+            "کد حساب ردیف {line} در فایل پشتیبان معتبر نیست."
+        ));
+    }
+    if let Some(line) = backup_first_text(
+        conn,
+        &format!(
+            "SELECT CAST(id AS TEXT) FROM voucher_lines
+              WHERE row_no <= 0
+                 OR debit < 0 OR credit < 0
+                 OR debit > {} OR credit > {}
+                 OR (debit > 0 AND credit > 0)
+                 OR (debit = 0 AND credit = 0)
+                 OR length(description) > {}
+              LIMIT 1",
+            crate::vouchers::MAX_AMOUNT,
+            crate::vouchers::MAX_AMOUNT,
+            crate::vouchers::MAX_LINE_DESCRIPTION
+        ),
+    )? {
+        return Err(format!(
+            "مبلغ، شماره ردیف یا شرح ردیف {line} در فایل پشتیبان معتبر نیست."
+        ));
+    }
+    if let Some(number) = backup_first_text(
+        conn,
+        "SELECT CAST(v.number AS TEXT)
+           FROM vouchers v
+           LEFT JOIN voucher_lines l ON l.voucher_id = v.id
+          GROUP BY v.id
+         HAVING COUNT(l.id) < 2
+             OR COALESCE(SUM(l.debit), 0) = 0
+             OR COALESCE(SUM(l.debit), 0) <> COALESCE(SUM(l.credit), 0)
+          LIMIT 1",
+    )? {
+        return Err(format!(
+            "سند شماره {number} در فایل پشتیبان تراز نیست یا ردیف کافی ندارد."
+        ));
+    }
+
     Ok(())
+}
+
+fn backup_table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+        .map_err(db_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db_error)?;
+    Ok(columns)
+}
+
+fn backup_first_text(conn: &Connection, sql: &str) -> Result<Option<String>, String> {
+    conn.query_row(sql, [], |row| row.get::<_, Option<String>>(0))
+        .optional()
+        .map_err(db_error)
+        .map(Option::flatten)
 }
 
 fn unique_sibling_path(path: &Path, suffix: &str) -> PathBuf {
@@ -1232,7 +1515,10 @@ fn list_accounts(conn: &mut Connection) -> Result<Vec<Account>, String> {
         .prepare(
             "SELECT a.id, a.code, a.name, a.level, a.group_code, g.name, g.type,
                     a.nature, COALESCE(a.parent_code, ''), COALESCE(p.name, ''),
-                    a.is_postable, a.created_at, a.updated_at
+                    CASE WHEN EXISTS(
+                        SELECT 1 FROM accounts child WHERE child.parent_code = a.code
+                    ) THEN 0 ELSE a.is_postable END,
+                    a.created_at, a.updated_at
                FROM accounts a
                JOIN account_groups g ON g.code = a.group_code
                LEFT JOIN accounts p ON p.code = a.parent_code
@@ -1261,7 +1547,10 @@ fn fetch_account(conn: &Connection, id: i64) -> Result<Account, String> {
     conn.query_row(
         "SELECT a.id, a.code, a.name, a.level, a.group_code, g.name, g.type,
                 a.nature, COALESCE(a.parent_code, ''), COALESCE(p.name, ''),
-                a.is_postable, a.created_at, a.updated_at
+                CASE WHEN EXISTS(
+                    SELECT 1 FROM accounts child WHERE child.parent_code = a.code
+                ) THEN 0 ELSE a.is_postable END,
+                a.created_at, a.updated_at
            FROM accounts a
            JOIN account_groups g ON g.code = a.group_code
            LEFT JOIN accounts p ON p.code = a.parent_code
@@ -1547,6 +1836,41 @@ mod tests {
     }
 
     #[test]
+    fn legacy_parent_is_reported_non_postable_without_changing_stored_flag() {
+        let db = test_database();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE accounts SET is_postable = 1 WHERE code = '110201'",
+                [],
+            )
+            .map_err(db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let parent = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110201")
+            .unwrap();
+        let stored_flag = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT is_postable FROM accounts WHERE code = '110201'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(db_error)
+            })
+            .unwrap();
+
+        assert!(!parent.is_postable);
+        assert_eq!(stored_flag, 1);
+    }
+
+    #[test]
     fn database_backup_restores_data_and_keeps_a_safety_copy() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1606,6 +1930,112 @@ mod tests {
             .any(|item| item.code == "90"));
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_validation_rejects_inconsistent_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        apply_schema_migrations(&conn).unwrap();
+        seed_default_groups(&conn).unwrap();
+        seed_default_accounts(&conn).unwrap();
+        seed_default_settings(&conn).unwrap();
+        validate_backup_connection(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO vouchers (number, date, type)
+             VALUES (1, '1405/13/01', 'سند حسابداری عادی')",
+            [],
+        )
+        .unwrap();
+        assert!(validate_backup_connection(&conn)
+            .unwrap_err()
+            .contains("تاریخ"));
+        conn.execute("DELETE FROM vouchers", []).unwrap();
+
+        conn.execute(
+            "INSERT INTO vouchers (number, date, type)
+             VALUES (1, '1405/01/01', 'سند حسابداری عادی')",
+            [],
+        )
+        .unwrap();
+        let voucher_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+             VALUES (?1, 1, '110101', 1000, 0)",
+            params![voucher_id],
+        )
+        .unwrap();
+        assert!(validate_backup_connection(&conn)
+            .unwrap_err()
+            .contains("تراز"));
+        conn.execute("DELETE FROM voucher_lines", []).unwrap();
+
+        conn.execute(
+            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+             VALUES (?1, 1, '999999', 1000, 0)",
+            params![voucher_id],
+        )
+        .unwrap();
+        assert!(validate_backup_connection(&conn)
+            .unwrap_err()
+            .contains("کلید خارجی"));
+    }
+
+    #[test]
+    fn backup_validation_rejects_unexpected_triggers() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        apply_schema_migrations(&conn).unwrap();
+        seed_default_groups(&conn).unwrap();
+        seed_default_accounts(&conn).unwrap();
+        seed_default_settings(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER unexpected_voucher_trigger AFTER INSERT ON vouchers
+             BEGIN UPDATE settings SET value = 'changed' WHERE key = 'company_name'; END;",
+        )
+        .unwrap();
+
+        assert!(validate_backup_connection(&conn)
+            .unwrap_err()
+            .contains("trigger ناشناخته"));
+    }
+
+    #[test]
+    fn legacy_migration_prefers_the_most_recent_database() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("hesabdari-legacy-{stamp}"));
+        let data_dir = root.join("app-data");
+        let old_dir = root.join(LEGACY_IDENTIFIER);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&old_dir).unwrap();
+        let destination = data_dir.join(DB_FILE_NAME);
+
+        let write = |path: &Path, value: &str| {
+            let conn = Connection::open(path).unwrap();
+            conn.execute_batch("CREATE TABLE sample (value TEXT NOT NULL);")
+                .unwrap();
+            conn.execute("INSERT INTO sample (value) VALUES (?1)", params![value])
+                .unwrap();
+        };
+        write(&old_dir.join(LEGACY_DB_FILE_NAME), "قدیمی");
+        std::thread::sleep(Duration::from_millis(30));
+        write(&data_dir.join(LEGACY_DB_FILE_NAME), "جدید");
+
+        migrate_legacy_database(&data_dir, &destination).unwrap();
+        let copied = Connection::open(&destination).unwrap();
+        let value: String = copied
+            .query_row("SELECT value FROM sample", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "جدید");
+
+        drop(copied);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -918,12 +918,21 @@ async function navigateNext() {
 async function newVoucher() {
   if (state.busy) return;
   if (!(await guardUnsaved())) return;
+  const draftSnapshot = JSON.stringify(collectDraft());
+  state.busy = true;
   try {
     await refreshNextNumber();
+    if (JSON.stringify(collectDraft()) !== draftSnapshot) {
+      state.dirty = true;
+      toast('فرم هنگام دریافت شماره تغییر کرد؛ اطلاعات حفظ شد و سند جدید باز نشد.', 'warning');
+      return;
+    }
     startNew(state.nextNumber);
     toast('سند جدید آماده است.', 'info');
   } catch (error) {
     toast(`دریافت شماره سند جدید ناموفق بود: ${errorText(error)}`, 'error');
+  } finally {
+    state.busy = false;
   }
 }
 
@@ -934,15 +943,24 @@ async function copyVoucher() {
     return;
   }
   const draft = collectDraft();
+  const draftSnapshot = JSON.stringify(draft);
   if (!draft.lines.length) {
     toast('سندی برای کپی وجود ندارد.', 'info');
     return;
   }
 
+  state.busy = true;
   try {
     await refreshNextNumber();
   } catch (error) {
     toast(errorText(error), 'error');
+    return;
+  } finally {
+    state.busy = false;
+  }
+  if (JSON.stringify(collectDraft()) !== draftSnapshot) {
+    state.dirty = true;
+    toast('فرم هنگام دریافت شماره تغییر کرد؛ اطلاعات حفظ شد و کپی ساخته نشد.', 'warning');
     return;
   }
 
@@ -1834,6 +1852,10 @@ async function importVoucherFromExcel() {
 
 async function exportVoucherToExcel() {
   if (state.busy) return;
+  if (state.overflowVoucherLines) {
+    toast('خروجی سند بزرگ از فرم محدودشده ممکن نیست؛ برای جلوگیری از فایل ناقص، عملیات متوقف شد.', 'error');
+    return;
+  }
   if (!invoke) {
     toast('خروجی اکسل فقط در نسخه دسکتاپ ممکن است.', 'error');
     return;
@@ -2384,25 +2406,39 @@ async function openVoucherTransfer(mode) {
     source = await saveVoucher({ silent: true });
     if (!source) return;
   }
+  const draftSnapshot = JSON.stringify(collectDraft());
+  state.busy = true;
+  let next;
   try {
-    const next = await invoke('next_voucher_number');
-    state.transfer.mode = mode; state.transfer.source = source;
-    state.transfer.selectedIds = new Set();
-    const target = $('#vfTransferTarget'); if (target) target.value = String(next);
-    const title = $('#vfTransferTitle'), modeLabel = $('#vfTransferModeLabel');
-    if (title) title.textContent = mode === 'move' ? 'انتقال ردیف‌های سند به سند دیگر' : 'کپی ردیف‌های سند به سند دیگر';
-    if (modeLabel) modeLabel.textContent = mode === 'move'
-      ? 'حالت عملیات: انتقال (حذف از مبدأ پس از تأیید)'
-      : 'حالت عملیات: کپی (سند مبدأ حفظ می‌شود)';
-    renderVoucherTransferRows();
-    const modal = $('#vfTransferModal');
-    transferReturnFocus = document.activeElement;
-    const main = $('.voucher-window');
-    transferMainWasInert = Boolean(main?.inert);
-    modal.hidden = false;
-    if (main) main.inert = true;
-    target?.focus(); target?.select();
-  } catch (error) { toast(errorText(error), 'error'); }
+    next = await invoke('next_voucher_number');
+  } catch (error) {
+    toast(errorText(error), 'error');
+    return;
+  } finally {
+    state.busy = false;
+  }
+  if (JSON.stringify(collectDraft()) !== draftSnapshot) {
+    state.dirty = true;
+    toast('فرم هنگام آماده‌سازی انتقال تغییر کرد؛ اطلاعات حفظ شد و عملیات باز نشد.', 'warning');
+    return;
+  }
+
+  state.transfer.mode = mode; state.transfer.source = source;
+  state.transfer.selectedIds = new Set();
+  const target = $('#vfTransferTarget'); if (target) target.value = String(next);
+  const title = $('#vfTransferTitle'), modeLabel = $('#vfTransferModeLabel');
+  if (title) title.textContent = mode === 'move' ? 'انتقال ردیف‌های سند به سند دیگر' : 'کپی ردیف‌های سند به سند دیگر';
+  if (modeLabel) modeLabel.textContent = mode === 'move'
+    ? 'حالت عملیات: انتقال (حذف از مبدأ پس از تأیید)'
+    : 'حالت عملیات: کپی (سند مبدأ حفظ می‌شود)';
+  renderVoucherTransferRows();
+  const modal = $('#vfTransferModal');
+  transferReturnFocus = document.activeElement;
+  const main = $('.voucher-window');
+  transferMainWasInert = Boolean(main?.inert);
+  modal.hidden = false;
+  if (main) main.inert = true;
+  target?.focus(); target?.select();
 }
 function closeVoucherTransfer() {
   if (state.busy) return;
@@ -2789,37 +2825,87 @@ async function refreshNextNumber() {
   state.nextNumber = Number(value) > 0 ? Number(value) : 1;
 }
 
+let queuedVoucherRequest;
+let hasQueuedVoucherRequest = false;
+let handlingVoucherRequest = false;
+
+async function drainVoucherRequest() {
+  if (!hasQueuedVoucherRequest || handlingVoucherRequest || state.busy || !state.ready) return;
+  const number = queuedVoucherRequest;
+  queuedVoucherRequest = undefined;
+  hasQueuedVoucherRequest = false;
+  await handleVoucherRequest(number);
+}
+
+async function handleVoucherRequest(number) {
+  if (handlingVoucherRequest || state.busy) {
+    queuedVoucherRequest = number;
+    hasQueuedVoucherRequest = true;
+    return;
+  }
+  handlingVoucherRequest = true;
+  try {
+    if (!(await guardUnsaved())) return;
+    const draftSnapshot = JSON.stringify(collectDraft());
+    state.busy = true;
+
+    if (number && Number(number) > 0) {
+      const voucher = await invoke('get_voucher', { number: Number(number) });
+      if (hasQueuedVoucherRequest) return;
+      if (JSON.stringify(collectDraft()) !== draftSnapshot) {
+        state.dirty = true;
+        toast('فرم هنگام بازکردن سند تغییر کرد؛ اطلاعات حفظ شد.', 'warning');
+        return;
+      }
+      if (voucher) loadVoucher(voucher);
+      else {
+        await refreshNextNumber();
+        if (hasQueuedVoucherRequest) return;
+        if (JSON.stringify(collectDraft()) !== draftSnapshot) {
+          state.dirty = true;
+          toast('فرم هنگام بازکردن سند تغییر کرد؛ اطلاعات حفظ شد.', 'warning');
+          return;
+        }
+        startNew(Number(number));
+      }
+    } else {
+      await refreshNextNumber();
+      if (hasQueuedVoucherRequest) return;
+      if (JSON.stringify(collectDraft()) !== draftSnapshot) {
+        state.dirty = true;
+        toast('فرم هنگام بازکردن سند تغییر کرد؛ اطلاعات حفظ شد.', 'warning');
+        return;
+      }
+      startNew(state.nextNumber);
+    }
+
+    if (appWindow) {
+      try {
+        await appWindow.setFocus();
+      } catch {
+        // Focus is best-effort.
+      }
+    }
+  } catch (error) {
+    toast(errorText(error), 'error');
+  } finally {
+    state.busy = false;
+    handlingVoucherRequest = false;
+    if (hasQueuedVoucherRequest) void drainVoucherRequest();
+  }
+}
+
 async function bindVoucherRequests() {
   if (!TAURI || !TAURI.event || typeof TAURI.event.listen !== 'function') return;
   try {
-    await TAURI.event.listen('voucher-request', async (event) => {
-      if (state.busy) return;
-      if (!(await guardUnsaved())) return;
+    await TAURI.event.listen('voucher-request', (event) => {
       const number = event && event.payload;
-
-      if (number && Number(number) > 0) {
-        try {
-          const voucher = await invoke('get_voucher', { number: Number(number) });
-          if (voucher) loadVoucher(voucher);
-          else {
-            await refreshNextNumber();
-            startNew(Number(number));
-          }
-        } catch (error) {
-          toast(errorText(error), 'error');
-        }
-      } else {
-        await refreshNextNumber();
-        startNew(state.nextNumber);
+      if (state.busy || handlingVoucherRequest || !state.ready) {
+        queuedVoucherRequest = number;
+        hasQueuedVoucherRequest = true;
+        return;
       }
-
-      if (appWindow) {
-        try {
-          await appWindow.setFocus();
-        } catch {
-          // Focus is best-effort.
-        }
-      }
+      void handleVoucherRequest(number);
     });
   } catch {
     // Events are an optimisation; opening the window still loads a voucher.
@@ -2857,9 +2943,9 @@ async function init() {
   setStatus('info', 'در حال بارگذاری…');
   state.busy = true;
   try {
+    await bindVoucherRequests();
     await Promise.all([loadSettings(), loadAccounts(), refreshNextNumber()]);
     const requested = await invoke('take_voucher_request');
-    state.busy = false;
     state.ready = true;
 
     if (requested && Number(requested) > 0) {
@@ -2874,7 +2960,8 @@ async function init() {
       startNew(state.nextNumber);
     }
 
-    await bindVoucherRequests();
+    state.busy = false;
+    await drainVoucherRequest();
 
     window.addEventListener('focus', () => {
       if (!state.ready) return;

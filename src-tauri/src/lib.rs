@@ -10,7 +10,9 @@ pub mod report;
 pub mod vouchers;
 
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 use vouchers::VoucherInput;
 
 /// A poisoned lock only means another thread panicked while holding it; the
@@ -45,6 +47,32 @@ fn report_meta(state: &State<'_, AppState>) -> Result<report::ReportMeta, String
     })
 }
 
+/// Defense in depth: a compromised child window must not be able to run
+/// commands that belong to another window.
+fn require_window(window: &WebviewWindow, allowed: &[&str]) -> Result<(), String> {
+    if allowed.contains(&window.label()) {
+        Ok(())
+    } else {
+        Err("این عملیات از پنجره جاری مجاز نیست.".to_string())
+    }
+}
+
+fn require_preview_window(window: &WebviewWindow) -> Result<(), String> {
+    if window.label().starts_with("print-preview-") {
+        Ok(())
+    } else {
+        Err("این عملیات فقط از پنجره پیش‌نمایش چاپ مجاز است.".to_string())
+    }
+}
+
+fn require_main_or_preview_window(window: &WebviewWindow) -> Result<(), String> {
+    if window.label() == "main" || window.label().starts_with("print-preview-") {
+        Ok(())
+    } else {
+        Err("این عملیات از پنجره جاری مجاز نیست.".to_string())
+    }
+}
+
 /* ── Account groups ─────────────────────────────────────────── */
 
 #[tauri::command(async)]
@@ -57,8 +85,10 @@ fn create_account_group(
     code: String,
     name: String,
     group_type: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::AccountGroup, String> {
+    require_window(&window, &["main", "account-groups"])?;
     state
         .database
         .create_account_group(&code, &name, &group_type)
@@ -70,15 +100,22 @@ fn update_account_group(
     code: String,
     name: String,
     group_type: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::AccountGroup, String> {
+    require_window(&window, &["main", "account-groups"])?;
     state
         .database
         .update_account_group(id, &code, &name, &group_type)
 }
 
 #[tauri::command(async)]
-fn delete_account_group(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+fn delete_account_group(
+    id: i64,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main", "account-groups"])?;
     state.database.delete_account_group(id)
 }
 
@@ -98,8 +135,10 @@ fn create_account(
     nature: String,
     parent_code: String,
     is_postable: bool,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
+    require_window(&window, &["main", "account-groups", "account-definition"])?;
     state.database.create_account(
         &code,
         &name,
@@ -119,27 +158,40 @@ fn update_account(
     nature: String,
     parent_code: String,
     is_postable: bool,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
+    require_window(&window, &["main", "account-groups", "account-definition"])?;
     state
         .database
         .update_account(id, &name, &group_code, &nature, &parent_code, is_postable)
 }
 
 #[tauri::command(async)]
-fn delete_account(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+fn delete_account(
+    id: i64,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main", "account-groups", "account-definition"])?;
     state.database.delete_account(id)
 }
 
 #[tauri::command(async)]
-fn export_account_excel(state: State<'_, AppState>) -> Result<Option<String>, String> {
+fn export_account_excel(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    require_window(&window, &["main", "account-groups", "account-definition"])?;
     excel::export_accounts(&state.database)
 }
 
 #[tauri::command(async)]
 fn import_account_excel(
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<excel::AccountImportResult>, String> {
+    require_window(&window, &["main", "account-groups", "account-definition"])?;
     excel::import_accounts(&state.database)
 }
 
@@ -154,8 +206,10 @@ fn get_settings(state: State<'_, AppState>) -> Result<db::Settings, String> {
 fn save_settings(
     company_name: String,
     fiscal_year: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Settings, String> {
+    require_window(&window, &["main"])?;
     state.database.save_settings(&company_name, &fiscal_year)
 }
 
@@ -201,38 +255,56 @@ fn get_voucher(
 #[tauri::command(async)]
 fn transfer_voucher_lines(
     input: vouchers::VoucherTransferInput,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::VoucherTransferResult, String> {
+    require_window(&window, &["main", "voucher"])?;
     state.database.transfer_voucher_lines(input)
 }
 
 #[tauri::command(async)]
 fn save_voucher(
     input: VoucherInput,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::Voucher, String> {
+    require_window(&window, &["main", "voucher"])?;
     state.database.save_voucher(input)
 }
 
 #[tauri::command(async)]
-fn delete_voucher(id: i64, state: State<'_, AppState>) -> Result<(), String> {
+fn delete_voucher(
+    id: i64,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
     state.database.delete_voucher(id)
 }
 
 #[tauri::command(async)]
-fn export_voucher_excel(input: VoucherInput) -> Result<Option<String>, String> {
+fn export_voucher_excel(
+    input: VoucherInput,
+    window: WebviewWindow,
+) -> Result<Option<String>, String> {
+    require_window(&window, &["main", "voucher"])?;
     excel::export_voucher(&input)
 }
 
 #[tauri::command(async)]
-fn import_voucher_excel() -> Result<Option<Vec<vouchers::VoucherLineInput>>, String> {
+fn import_voucher_excel(
+    window: WebviewWindow,
+) -> Result<Option<Vec<vouchers::VoucherLineInput>>, String> {
+    require_window(&window, &["main", "voucher"])?;
     excel::import_voucher()
 }
 
 #[tauri::command(async)]
 fn analyze_bulk_voucher_excel(
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<excel::BulkVoucherPreview>, String> {
+    require_window(&window, &["main"])?;
     *lock(&state.bulk_voucher_import) = None;
     let Some(import) = excel::import_vouchers()? else {
         return Ok(None);
@@ -245,8 +317,10 @@ fn analyze_bulk_voucher_excel(
 #[tauri::command(async)]
 fn commit_bulk_voucher_excel(
     renumber_conflicts: bool,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
+    require_window(&window, &["main"])?;
     let import = lock(&state.bulk_voucher_import)
         .clone()
         .ok_or_else(|| "ابتدا فایل اکسل را انتخاب و تحلیل کنید.".to_string())?;
@@ -258,8 +332,10 @@ fn commit_bulk_voucher_excel(
 #[tauri::command(async)]
 fn preview_voucher_reorganization(
     operation: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::VoucherReorganizationPreview, String> {
+    require_window(&window, &["main"])?;
     *lock(&state.reorganization_preview) = None;
     let preview = state.database.preview_voucher_reorganization(&operation)?;
     *lock(&state.reorganization_preview) = Some((operation, preview.plan_token.clone()));
@@ -270,8 +346,10 @@ fn preview_voucher_reorganization(
 fn apply_voucher_reorganization(
     operation: String,
     plan_token: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::VoucherReorganizationResult, String> {
+    require_window(&window, &["main"])?;
     let expected = lock(&state.reorganization_preview).clone();
     if expected.as_ref() != Some(&(operation.clone(), plan_token.clone())) {
         return Err("پیش‌نمایش منقضی یا نامعتبر است؛ دوباره پیش‌نمایش بگیرید.".to_string());
@@ -344,8 +422,10 @@ fn open_journal_preview(
     to: String,
     search: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
     let report = state.database.get_journal(&from, &to, &search)?;
     let meta = report_meta(&state)?;
     show_preview_window(&app, report::journal_print_doc(&report, &meta))
@@ -357,8 +437,10 @@ fn open_ledger_preview(
     from: String,
     to: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
     let report = state.database.get_ledger(&account_code, &from, &to)?;
     let meta = report_meta(&state)?;
     show_preview_window(&app, report::ledger_print_doc(&report, &meta))
@@ -369,8 +451,10 @@ fn open_trial_balance_preview(
     from: String,
     to: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_window(&window, &["main", "voucher", "trial-balance"])?;
     let report = state.database.get_trial_balance(&from, &to)?;
     let meta = report_meta(&state)?;
     show_preview_window(&app, report::trial_balance_print_doc(&report, &meta))
@@ -381,8 +465,10 @@ fn open_income_statement_preview(
     from: String,
     to: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
     let report = state.database.get_income_statement(&from, &to)?;
     let meta = report_meta(&state)?;
     show_preview_window(&app, report::income_statement_print_doc(&report, &meta))
@@ -392,8 +478,10 @@ fn open_income_statement_preview(
 fn open_balance_sheet_preview(
     as_of: String,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
     let report = state.database.get_balance_sheet(&as_of)?;
     let meta = report_meta(&state)?;
     let document = report::balance_sheet_print_doc(&report, &meta)?;
@@ -404,8 +492,10 @@ fn open_balance_sheet_preview(
 fn open_voucher_preview(
     number: i64,
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
     let voucher = state
         .database
         .get_voucher(number)?
@@ -416,7 +506,11 @@ fn open_voucher_preview(
 
 /// The preview window asks for the document it should render.
 #[tauri::command]
-fn get_print_doc(state: State<'_, AppState>) -> Result<report::PrintDoc, String> {
+fn get_print_doc(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<report::PrintDoc, String> {
+    require_preview_window(&window)?;
     lock(&state.print_doc)
         .clone()
         .ok_or_else(|| "گزارشی برای پیش‌نمایش آماده نیست.".to_string())
@@ -424,7 +518,12 @@ fn get_print_doc(state: State<'_, AppState>) -> Result<report::PrintDoc, String>
 
 /// Saves the standalone (browser-printable) HTML, used by the preview toolbar.
 #[tauri::command]
-fn save_report_html(default_name: String, html: String) -> Result<Option<String>, String> {
+fn save_report_html(
+    default_name: String,
+    html: String,
+    window: WebviewWindow,
+) -> Result<Option<String>, String> {
+    require_preview_window(&window)?;
     let Some(picked) = rfd::FileDialog::new()
         .set_title("ذخیره گزارش قابل چاپ")
         .set_file_name(default_name)
@@ -442,7 +541,11 @@ fn save_report_html(default_name: String, html: String) -> Result<Option<String>
 }
 
 #[tauri::command]
-fn backup_database(state: State<'_, AppState>) -> Result<Option<String>, String> {
+fn backup_database(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    require_window(&window, &["main"])?;
     let Some(path) = rfd::FileDialog::new()
         .set_title("ذخیره پشتیبان پایگاه داده")
         .set_file_name("hesabdari-backup.sqlite3")
@@ -456,7 +559,11 @@ fn backup_database(state: State<'_, AppState>) -> Result<Option<String>, String>
 }
 
 #[tauri::command]
-fn restore_database(state: State<'_, AppState>) -> Result<Option<String>, String> {
+fn restore_database(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    require_window(&window, &["main"])?;
     let Some(path) = rfd::FileDialog::new()
         .set_title("انتخاب پشتیبان برای بازیابی")
         .add_filter("SQLite backup", &["sqlite3", "db"])
@@ -471,7 +578,8 @@ fn restore_database(state: State<'_, AppState>) -> Result<Option<String>, String
 /// Opens a report the user saved from the preview window. The webview may
 /// only ask for an existing HTML file, never for an arbitrary program.
 #[tauri::command]
-fn open_path(path: String) -> Result<(), String> {
+fn open_path(path: String, window: WebviewWindow) -> Result<(), String> {
+    require_main_or_preview_window(&window)?;
     let target = std::path::Path::new(&path);
     let is_html = target
         .extension()
@@ -533,9 +641,12 @@ fn show_preview_window(app: &AppHandle, doc: report::PrintDoc) -> Result<(), Str
 fn open_voucher_window(
     number: Option<i64>,
     app: AppHandle,
+    caller: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    require_window(&caller, &["main"])?;
     if let Some(window) = app.get_webview_window("voucher") {
+        *lock(&state.pending_voucher) = Some(number);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -577,15 +688,70 @@ fn open_voucher_window(
     Ok(())
 }
 
+/// Opens (or focuses) the trial-balance report in its own native OS window.
+#[tauri::command(async)]
+fn open_trial_balance_window(app: AppHandle, caller: WebviewWindow) -> Result<(), String> {
+    require_window(&caller, &["main"])?;
+    if let Some(window) = app.get_webview_window("trial-balance") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let mut builder = WebviewWindowBuilder::new(
+        &app,
+        "trial-balance",
+        WebviewUrl::App("index.html".into()),
+    )
+    .title("تراز آزمایشی")
+    .decorations(true)
+    .resizable(true)
+    .maximizable(false)
+    .minimizable(false)
+    .initialization_script("window.__IS_TRIAL_BALANCE_POPUP__ = true;");
+
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
+        builder = builder.inner_size(
+            (logical.width * 0.86).clamp(940.0, 1420.0),
+            (logical.height * 0.82).clamp(560.0, 900.0),
+        );
+    } else {
+        builder = builder.inner_size(1160.0, 760.0);
+    }
+
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder
+            .parent(&main)
+            .map_err(|e| format!("تعیین پنجره اصلی به‌عنوان مالک ناموفق بود: {e}"))?;
+    }
+
+    let window = builder
+        .min_inner_size(860.0, 520.0)
+        .center()
+        .build()
+        .map_err(|e| format!("باز کردن پنجره تراز آزمایشی ناموفق بود: {e}"))?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
 /// Called once by the voucher window to learn which voucher it should open.
 #[tauri::command]
-fn take_voucher_request(state: State<'_, AppState>) -> Option<i64> {
+fn take_voucher_request(window: WebviewWindow, state: State<'_, AppState>) -> Option<i64> {
+    if require_window(&window, &["voucher"]).is_err() {
+        return None;
+    }
     lock(&state.pending_voucher).take().flatten()
 }
 
 /// Opens (or focuses) the account-group form in a normal OS window.
 #[tauri::command(async)]
-fn open_account_groups_window(app: AppHandle) -> Result<(), String> {
+fn open_account_groups_window(
+    app: AppHandle,
+    caller: WebviewWindow,
+) -> Result<(), String> {
+    require_window(&caller, &["main"])?;
     if let Some(window) = app.get_webview_window("account-groups") {
         let _ = window.unminimize();
         let _ = window.show();
@@ -624,6 +790,52 @@ fn open_account_groups_window(app: AppHandle) -> Result<(), String> {
         .center()
         .build()
         .map_err(|e| format!("باز کردن فرم گروه حساب ناموفق بود: {e}"))?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn open_account_definition_window(app: AppHandle, caller: WebviewWindow) -> Result<(), String> {
+    require_window(&caller, &["main"])?;
+    if let Some(window) = app.get_webview_window("account-definition") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let mut builder = WebviewWindowBuilder::new(
+        &app,
+        "account-definition",
+        WebviewUrl::App("account-definition.html".into()),
+    )
+    .title("تعریف حساب‌های کل، معین و تفصیلی")
+    .decorations(true)
+    .minimizable(false)
+    .maximizable(false)
+    .resizable(true);
+
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
+        builder = builder.inner_size(
+            (logical.width * 0.82).clamp(900.0, 1320.0),
+            (logical.height * 0.82).clamp(620.0, 900.0),
+        );
+    } else {
+        builder = builder.inner_size(1120.0, 760.0);
+    }
+
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder
+            .parent(&main)
+            .map_err(|e| format!("تعیین پنجره اصلی به‌عنوان مالک ناموفق بود: {e}"))?;
+    }
+
+    let window = builder
+        .min_inner_size(800.0, 560.0)
+        .center()
+        .build()
+        .map_err(|e| format!("باز کردن فرم تعریف حساب ناموفق بود: {e}"))?;
     let _ = window.set_focus();
     Ok(())
 }
@@ -674,7 +886,7 @@ pub fn run() {
             // Child forms must not outlive the main window.
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    for label in ["voucher", "account-groups"] {
+                    for label in ["voucher", "account-groups", "account-definition", "trial-balance"] {
                         if let Some(child) = window.app_handle().get_webview_window(label) {
                             let _ = child.close();
                         }
@@ -728,7 +940,9 @@ pub fn run() {
             open_path,
             open_voucher_window,
             take_voucher_request,
+            open_trial_balance_window,
             open_account_groups_window,
+            open_account_definition_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

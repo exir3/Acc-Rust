@@ -6,7 +6,6 @@
   <title>نرم‌افزار حسابداری</title>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="accounting.css" />
-  <link rel="stylesheet" href="account-definition.css" />
 </head>
 <body>
   <!-- ═══ Icon sprite ═════════════════════════════════════════════════════ -->
@@ -134,11 +133,11 @@
     </symbol>
   </svg>
 
-  <div class="app accounting-app">
+  <div class="app accounting-app is-workspace-home">
     <!-- ═══ Menu bar (flat light style, modeled on the WebApp third UI) ═══ -->
     <div class="menubar">
       <div class="menubar-start">
-        <div class="menubar-brand">
+        <div class="menubar-brand" role="button" tabindex="0" title="نمایش فضای کار" data-workspace-home>
           <svg class="ico brand-ico"><use href="#i-logo" /></svg>
           <span class="menubar-title">نرم‌افزار حسابداری</span>
         </div>
@@ -151,7 +150,7 @@
 
     <div class="app-shell">
       <!-- ═══ Sidebar ═════════════════════════════════════════════════════ -->
-      <aside class="sidebar" aria-label="منوی بخش‌ها">
+      <aside class="sidebar is-hidden" aria-label="منوی بخش‌ها">
         <div class="side-company">
           <div class="side-company-eyebrow">واحد اقتصادی</div>
           <div class="side-company-name" id="sideCompany">در حال بارگذاری…</div>
@@ -175,8 +174,8 @@
       <main class="workspace">
         <header class="page-head">
           <div>
-            <div class="crumbs" id="crumbs">حسابداری / <b>داشبورد</b></div>
-            <h1 id="pageTitle">داشبورد</h1>
+            <div class="crumbs" id="crumbs">حسابداری / <b>فضای کار</b></div>
+            <h1 id="pageTitle">فضای کار</h1>
           </div>
           <div class="page-head-actions" id="pageActions"></div>
         </header>
@@ -198,6 +197,7 @@
   </div>
 
   <div class="toast" id="toast" role="status" hidden></div>
+  <input id="wallpaperPicker" type="file" accept="image/*" hidden />
 
   <div class="modal" id="modal" hidden>
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">

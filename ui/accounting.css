@@ -13,11 +13,36 @@
     linear-gradient(180deg, #eef3fa 0%, #e7eef8 100%);
 }
 
+/* The trial-balance report runs in its own OS window and hides the
+   main-window chrome. Its title bar is the native Windows title bar. */
+body.is-trial-popup .menubar,
+body.is-trial-popup .sidebar,
+body.is-trial-popup .statusbar {
+  display: none !important;
+}
+
+body.is-trial-popup .page-scroll {
+  padding-top: 18px;
+}
+
 .app-shell {
   flex: 1;
   min-height: 0;
   display: flex;
 }
+
+.accounting-app.is-workspace-home .app-shell {
+  background-color: #dce5ed;
+  background-image: var(--workspace-wallpaper, none), linear-gradient(145deg, #dce5ed, #edf2f5);
+  background-position: center;
+  background-size: cover;
+}
+
+.accounting-app.is-workspace-home .page-head { display: none; }
+.accounting-app.is-workspace-home .workspace { background: transparent; }
+.accounting-app.is-workspace-home .page-scroll { padding: 0; background: transparent; }
+.menubar-brand[role="button"] { cursor: pointer; }
+.menubar-brand[role="button"]:focus-visible { outline: 2px solid var(--accent-2); outline-offset: -2px; }
 
 /* ── Sidebar ─────────────────────────────────────────────────── */
 
@@ -505,6 +530,41 @@
 }
 
 .filter-bar .filter-total b { color: #123a6b; font-variant-numeric: tabular-nums; }
+
+.trial-filter-trigger {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.trial-filter-trigger > span {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.trial-filter-trigger b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.trial-dialog-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: end;
+  margin: 0;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.trial-dialog-form .field { min-width: 0; }
+
+@media (max-width: 420px) {
+  .trial-dialog-form { grid-template-columns: 1fr; }
+  .trial-filter-trigger { align-items: flex-start; flex-direction: column; }
+}
 
 /* ── Dashboard summary list ──────────────────────────────────── */
 

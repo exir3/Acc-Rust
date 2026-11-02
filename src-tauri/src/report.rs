@@ -138,8 +138,12 @@ fn date(value: &str) -> String {
     if value.trim().is_empty() {
         "—".to_string()
     } else {
-        to_fa_digits(value)
+        html(&to_fa_digits(value))
     }
+}
+
+fn code(value: &str) -> String {
+    html(&to_fa_digits(value))
 }
 
 fn period(report_from: &str, report_to: &str) -> String {
@@ -258,7 +262,7 @@ pub fn journal_print_doc(report: &JournalReport, meta: &ReportMeta) -> PrintDoc 
             number = to_fa_digits(row.number),
             account = format!(
                 "{} — {}",
-                to_fa_digits(&row.account_code),
+                code(&row.account_code),
                 html(&row.account_name)
             ),
             description = html(if row.line_description.trim().is_empty() {
@@ -312,7 +316,7 @@ pub fn ledger_print_doc(report: &LedgerReport, meta: &ReportMeta) -> PrintDoc {
         let account_cell = if wide {
             format!(
                 "<td class=\"title\">{} — {}</td>\n",
-                to_fa_digits(&row.account_code),
+                code(&row.account_code),
                 html(&row.account_name)
             )
         } else {
@@ -381,7 +385,7 @@ pub fn ledger_print_doc(report: &LedgerReport, meta: &ReportMeta) -> PrintDoc {
 </tfoot>
 </table>"#,
         head = head("دفتر کل حساب", meta, &period(&report.from, &report.to)),
-        code = to_fa_digits(&report.account_code),
+        code = code(&report.account_code),
         name = html(&report.account_name),
         group = html(&report.group_name),
         children_note = if wide {
@@ -424,7 +428,7 @@ pub fn trial_balance_print_doc(report: &TrialBalanceReport, meta: &ReportMeta) -
 <td class="num">{pd}</td><td class="num">{pc}</td>
 <td class="num">{cd}</td><td class="num">{cc}</td>
 </tr>"#,
-            code = to_fa_digits(&row.account_code),
+            code = code(&row.account_code),
             name = html(&row.account_name),
             group = html(&row.group_name),
             od = money(row.opening_debit),
@@ -483,7 +487,7 @@ fn section(title: &str, rows: &[crate::vouchers::AmountRow], total: i64) -> Stri
     for row in rows {
         body.push_str(&format!(
             r#"<tr><td class="code">{code}</td><td class="title">{name}</td><td class="num">{amount}</td></tr>"#,
-            code = to_fa_digits(&row.account_code),
+            code = code(&row.account_code),
             name = html(&row.account_name),
             amount = money(row.amount),
         ));
@@ -512,6 +516,8 @@ pub fn income_statement_print_doc(report: &IncomeStatementReport, meta: &ReportM
 {revenues}
 {cogs}
 {expenses}
+{non_operating_revenues}
+{non_operating_expenses}
 <div class="rpt-total"><span>سود (زیان) ناخالص</span><span>{gross}</span></div>
 <div class="rpt-total"><span>سود (زیان) عملیاتی</span><span>{operating}</span></div>
 <div class="rpt-total net"><span>سود (زیان) خالص دوره</span><span>{net}</span></div>"#,
@@ -519,6 +525,16 @@ pub fn income_statement_print_doc(report: &IncomeStatementReport, meta: &ReportM
         revenues = section("درآمدها", &report.revenues, report.revenue_total),
         cogs = section("بهای تمام شده درآمدها", &report.cogs, report.cogs_total),
         expenses = section("هزینه‌های عملیاتی", &report.expenses, report.expense_total),
+        non_operating_revenues = section(
+            "درآمدهای غیرعملیاتی",
+            &report.non_operating_revenues,
+            report.non_operating_revenue_total
+        ),
+        non_operating_expenses = section(
+            "هزینه‌های غیرعملیاتی",
+            &report.non_operating_expenses,
+            report.non_operating_expense_total
+        ),
         gross = money(report.gross_profit),
         operating = money(report.operating_profit),
         net = money(report.net_profit),
@@ -545,7 +561,7 @@ fn balance_section(
     for row in rows {
         body.push_str(&format!(
             r#"<tr><td class="code">{code}</td><td class="title">{name}</td><td class="num">{amount}</td></tr>"#,
-            code = to_fa_digits(&row.account_code),
+            code = code(&row.account_code),
             name = html(&row.account_name),
             amount = money(row.amount),
         ));
@@ -642,7 +658,7 @@ pub fn voucher_print_doc(voucher: &Voucher, meta: &ReportMeta) -> PrintDoc {
 <td class="num">{credit}</td>
 </tr>"#,
             row = to_fa_digits(line.row_no),
-            code = to_fa_digits(&line.account_code),
+            code = code(&line.account_code),
             name = html(&line.account_name),
             description = html(&line.description),
             debit = money(line.debit),
@@ -711,6 +727,40 @@ mod tests {
         assert!(balance_sheet_print_doc(&report, &meta)
             .unwrap_err()
             .contains("محدوده عددی"));
+    }
+
+    #[test]
+    fn print_documents_escape_dates_codes_and_descriptions() {
+        let voucher = Voucher {
+            id: 1,
+            number: 1,
+            date: "1405/01/01<script>alert(1)</script>".to_string(),
+            voucher_type: "<b>نوع</b>".to_string(),
+            description: "<img src=x onerror=alert(1)>".to_string(),
+            lines: vec![crate::vouchers::VoucherLine {
+                id: 1,
+                row_no: 1,
+                account_code: "<svg/onload=alert(1)>".to_string(),
+                account_name: "<script>alert(2)</script>".to_string(),
+                description: "\"quoted\" & <tag>".to_string(),
+                debit: 100,
+                credit: 0,
+            }],
+            total_debit: 100,
+            total_credit: 0,
+        };
+        let meta = ReportMeta {
+            company: "شرکت <script>".to_string(),
+            fiscal_year: "1405".to_string(),
+            today: "1405/01/01".to_string(),
+        };
+
+        let doc = voucher_print_doc(&voucher, &meta);
+        assert!(!doc.html.contains("<script>"));
+        assert!(!doc.html.contains("<svg/onload"));
+        assert!(!doc.html.contains("<img src=x"));
+        assert!(doc.html.contains("&lt;script&gt;"));
+        assert!(doc.html.contains("۱۴۰۵/۰۱/۰۱&lt;script&gt;"));
     }
 
     #[test]

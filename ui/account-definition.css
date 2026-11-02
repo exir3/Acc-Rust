@@ -1,60 +1,18 @@
-/* Account definition popup — visual language aligned with WebApp/Aero forms. */
-.adp2-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 460;
-  display: grid;
-  place-items: center;
-  padding: 12px;
-  background: rgba(2, 6, 23, .48);
-  backdrop-filter: blur(1px);
-  direction: rtl;
-  font-family: var(--font, Tahoma, sans-serif);
+/* Account definition window content, framed by the native Windows title bar. */
+body:has(.adp2-window) {
+  overflow: hidden;
+  background: #f0f0f0;
 }
 .adp2-window {
-  width: min(1240px, 98vw);
-  height: min(820px, 94vh);
-  min-height: 420px;
+  width: 100vw;
+  height: 100vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid rgba(150, 200, 255, .58);
-  border-radius: 8px;
+  direction: rtl;
+  font-family: var(--font, Tahoma, sans-serif);
   background: #1e508c;
-  box-shadow: 0 0 0 1px rgba(0,0,0,.4), 0 18px 48px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.55);
   color: #172033;
-}
-.adp2-titlebar {
-  flex: 0 0 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 0 9px;
-  color: #fff;
-  background: linear-gradient(to bottom, #2b6aa6, #174779);
-  border-bottom: 1px solid rgba(0,0,0,.28);
-  user-select: none;
-}
-.adp2-titlebar strong {
-  flex: 1;
-  overflow: hidden;
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  text-shadow: 0 1px 2px #123;
-}
-.adp2-titlebar button {
-  width: 27px;
-  height: 21px;
-  border: 1px solid #8b3434;
-  border-radius: 3px;
-  color: white;
-  background: linear-gradient(#ffaaaa, #d52e2e 48%, #a91515);
-  font-size: 19px;
-  line-height: 15px;
-  cursor: pointer;
 }
 .adp2-content {
   flex: 1;
@@ -236,15 +194,12 @@
 .adp2-status { flex: 0 0 auto; min-height: 20px; padding: 2px 10px; color: #526274; background: #e9edf1; font-size: 10px; }
 .adp2-status[data-tone="ok"] { color: #17633c; }
 .adp2-status[data-tone="error"] { color: #a11d2b; background: #fff0f1; }
-.adp2-overlay button:focus-visible { outline: 2px solid #2879bb; outline-offset: 1px; }
+.adp2-window button:focus-visible { outline: 2px solid #2879bb; outline-offset: 1px; }
 @media(max-width:900px) {
-  .adp2-window { width: 99vw; height: 97vh; }
   .adp2-form { grid-template-columns: repeat(3,minmax(0,1fr)); }
   .adp2-filters { align-items: stretch; }
 }
 @media(max-width:620px) {
-  .adp2-overlay { padding: 4px; }
-  .adp2-window { width: 100vw; height: 99vh; }
   .adp2-content { padding: 6px; }
   .adp2-form { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .adp2-toolbar { gap: 4px; }

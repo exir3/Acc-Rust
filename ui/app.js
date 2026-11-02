@@ -8,6 +8,16 @@ const invoke = (window.__TAURI__ && window.__TAURI__.core)
   ? window.__TAURI__.core.invoke
   : null;
 
+const currentWindow = (window.__TAURI__ && window.__TAURI__.window
+  && typeof window.__TAURI__.window.getCurrentWindow === 'function')
+  ? window.__TAURI__.window.getCurrentWindow()
+  : null;
+// The trial balance is shown in its own OS window, but it reuses this
+// controller and hides the main-window chrome (see accounting.css).
+const IS_TRIAL_POPUP = window.__IS_TRIAL_BALANCE_POPUP__ === true
+  || currentWindow?.label === 'trial-balance';
+if (IS_TRIAL_POPUP && document.body) document.body.classList.add('is-trial-popup');
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
@@ -16,9 +26,8 @@ const AR_DIGITS = '٠١٢٣٤٥٦٧٨٩';
 const APP_VERSION = '۵.۰';
 
 const state = {
-  page: 'dashboard',
+  page: 'workspace',
   settings: null,
-  dashboard: null,
   accounts: [],
   groups: [],
   accountsLoaded: false,
@@ -33,12 +42,6 @@ const state = {
 };
 
 const NAV = [
-  {
-    section: 'مرور',
-    items: [
-      { id: 'dashboard', label: 'داشبورد', icon: 'i-dashboard' },
-    ],
-  },
   {
     section: 'عملیات',
     items: [
@@ -80,6 +83,7 @@ const MENU_BAR = [
   {
     label: 'اطلاعات پایه',
     items: [
+      { label: 'فضای کار', icon: '🖼️', command: 'workspace-home' },
       { label: 'تعریف گروه حسابها', icon: '📂', command: 'groups-window' },
       { label: 'تعریف حسابهای کل، معین و تفصیلی', icon: '📁', command: 'account-definition' },
       { label: 'مرور حسابها', icon: '🔍', page: 'accounts' },
@@ -150,7 +154,7 @@ const MENU_BAR = [
       { label: 'تنظیمات گزارش‌ها', icon: '🖨️' },
       { label: 'نمایش/مخفی‌سازی سایدبار', icon: '👁️', command: 'toggle-sidebar' },
       { label: 'تغییر تم رنگ سایدبار', icon: '🎨' },
-      { label: 'تغییر تصویر پس‌زمینه', icon: '🖼️' },
+      { label: 'تغییر تصویر پس‌زمینه', icon: '🖼️', command: 'choose-wallpaper' },
       { label: 'تنظیمات فونت', icon: '🔤' },
       { label: 'تنظیمات زوم (بزرگ‌نمایی)', icon: '🔍' },
       { label: 'مدیریت کاربران', icon: '👥' },
@@ -184,6 +188,13 @@ function digitsOnly(value) {
   return toEn(value).replace(/[^0-9]/g, '');
 }
 
+function amountBigInt(value) {
+  const text = String(value ?? 0).replace(/,/g, '').trim();
+  if (/^-?\d+$/.test(text)) return BigInt(text);
+  const numeric = Number(value);
+  return BigInt(Number.isFinite(numeric) ? Math.trunc(numeric) : 0);
+}
+
 function normalizeSearch(value) {
   return toEn(String(value ?? ''))
     .replace(/[يى]/g, 'ی')
@@ -201,9 +212,10 @@ function esc(value) {
 }
 
 function money(value) {
-  const n = Number(value) || 0;
-  const text = Math.abs(n).toLocaleString('en-US');
-  return `${n < 0 ? '-' : ''}${toFa(text)}`;
+  const amount = amountBigInt(value);
+  const negative = amount < 0n;
+  const text = (negative ? -amount : amount).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${negative ? '-' : ''}${toFa(text)}`;
 }
 
 function faDate(value) {
@@ -321,15 +333,29 @@ function setStatus(message, tone = 'ok') {
 }
 
 let dialogCloseHandler = null;
+let dialogReturnFocus = null;
+let dialogAppWasInert = false;
+let dialogKeyHandler = null;
 
 function closeDialog() {
   const modal = $('#modal');
   if (!modal || modal.hidden) return;
   modal.hidden = true;
+  if (dialogKeyHandler) {
+    modal.removeEventListener('keydown', dialogKeyHandler);
+    dialogKeyHandler = null;
+  }
+  const app = $('.accounting-app');
+  if (app) app.inert = dialogAppWasInert;
+  const returnFocus = dialogReturnFocus;
+  dialogReturnFocus = null;
   if (dialogCloseHandler) {
     const handler = dialogCloseHandler;
     dialogCloseHandler = null;
     handler();
+  }
+  if (returnFocus?.isConnected && !returnFocus.closest('[inert]') && !returnFocus.closest('[hidden]')) {
+    returnFocus.focus();
   }
 }
 
@@ -341,7 +367,10 @@ function openDialog(options) {
   const dialog = modal ? modal.querySelector('.dialog') : null;
   if (!modal || !title || !body || !foot || !dialog) return null;
 
+  const wasOpen = !modal.hidden;
+  const returnFocus = wasOpen ? dialogReturnFocus : document.activeElement;
   closeDialog();
+  dialogReturnFocus = returnFocus;
   dialog.classList.toggle('dialog-wide', Boolean(options.wide));
   title.textContent = options.title || '';
   body.innerHTML = options.body || '';
@@ -379,9 +408,39 @@ function openDialog(options) {
   result.setActions(options.actions || []);
   dialogCloseHandler = options.onClose || null;
   modal.hidden = false;
+  const app = $('.accounting-app');
+  dialogAppWasInert = Boolean(app?.inert);
+  if (app) app.inert = true;
+  dialogKeyHandler = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeDialog();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(modal.querySelectorAll(
+      'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])'
+    )).filter((element) => !element.hidden && element.getClientRects().length > 0);
+    if (!focusable.length) {
+      event.preventDefault();
+      dialog.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  modal.addEventListener('keydown', dialogKeyHandler);
   if (options.actionButtons) result.setActions(options.actionButtons);
   const firstInput = body.querySelector('input, select, textarea');
-  if (firstInput) setTimeout(() => firstInput.focus(), 30);
+  const firstFocusable = firstInput || modal.querySelector('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled)');
+  if (firstFocusable) setTimeout(() => { if (!modal.hidden) firstFocusable.focus(); }, 30);
   return result;
 }
 
@@ -529,7 +588,6 @@ const PAGES = {};
 
 function pageMeta(page) {
   const titles = {
-    dashboard: ['داشبورد', 'مرور'],
     vouchers: ['اسناد حسابداری', 'عملیات'],
     journal: ['دفتر روزنامه', 'عملیات'],
     ledger: ['دفتر کل', 'گزارش‌ها'],
@@ -540,7 +598,32 @@ function pageMeta(page) {
     groups: ['گروه‌های حساب', 'تعریف‌ها'],
     settings: ['تنظیمات', 'سیستم'],
   };
-  return titles[page] || ['داشبورد', 'مرور'];
+  return titles[page] || ['فضای کار', ''];
+}
+
+function applyWallpaper(dataUrl) {
+  const app = $('.accounting-app');
+  if (!app) return;
+  if (dataUrl) app.style.setProperty('--workspace-wallpaper', `url("${dataUrl}")`);
+  else app.style.removeProperty('--workspace-wallpaper');
+}
+
+function chooseWallpaper(file) {
+  if (!file) return;
+  createImageBitmap(file).then((bitmap) => {
+    const scale = Math.min(1, 2400 / bitmap.width, 1600 / bitmap.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const dataUrl = canvas.toDataURL('image/webp', 0.82);
+    localStorage.setItem('hesabdari-workspace-wallpaper', dataUrl);
+    applyWallpaper(dataUrl);
+    setStatus('تصویر پس‌زمینه ذخیره شد.', 'ok');
+  }).catch((error) => {
+    toast(`بارگذاری تصویر ناموفق بود: ${errorText(error)}`, 'error');
+  });
 }
 
 const printAction = (command, argsBuilder) => ({
@@ -558,151 +641,6 @@ async function printWithFeedback(command, args) {
     setStatus('آماده‌سازی گزارش ناموفق بود.', 'error');
     toast(errorText(error), 'error');
   }
-}
-
-/* ── Dashboard ──────────────────────────────────────────────── */
-
-PAGES.dashboard = {
-  actions: () => [
-    { label: 'سند جدید', icon: 'i-plus', primary: true, onClick: () => openVoucherWindow() },
-    { label: 'به‌روزرسانی', icon: 'i-refresh', onClick: () => navigate('dashboard', { force: true }) },
-  ],
-  load: async (force) => {
-    const dashboard = await invoke('get_dashboard');
-    state.dashboard = dashboard;
-    state.voucherCount = dashboard.voucherCount || 0;
-    updateBranding({
-      companyName: dashboard.companyName,
-      fiscalYear: dashboard.fiscalYear,
-      today: dashboard.today,
-    });
-    updateDatabasePath(dashboard.databasePath);
-    updateVoucherBadge();
-    if (force) {
-      state.accountsLoaded = false;
-      state.groupsLoaded = false;
-    }
-    return dashboard;
-  },
-  render: renderDashboard,
-  bind: bindDashboard,
-};
-
-function renderDashboard(d) {
-  const net = Number(d.netProfit) || 0;
-  const balanced = Number(d.totalDebit) === Number(d.totalCredit);
-  return `
-  <section class="dash-hero">
-    <div>
-      <div class="dash-hello">${esc(d.companyName || 'واحد اقتصادی')} — سال مالی ${toFa(d.fiscalYear || '—')}</div>
-      <h2 class="dash-title">دفتر حسابداری شما، یک‌جا</h2>
-      <div class="dash-sub">
-        ${d.voucherCount
-          ? `آخرین وضعیت ${toFa(d.voucherCount)} سند ثبت‌شده و ${toFa(d.accountCount)} حساب تعریف‌شده.`
-          : 'برای شروع، حساب‌های پیش‌فرض را بررسی کنید و اولین سند حسابداری را ثبت کنید.'}
-      </div>
-    </div>
-    <div class="dash-actions">
-      <button type="button" class="quick-action gold" data-new-voucher>
-        ${icon('i-plus')}<span>ثبت سند جدید</span>
-      </button>
-      <button type="button" class="quick-action" data-go="accounts">
-        ${icon('i-tree')}<span>حساب‌ها</span>
-      </button>
-      <button type="button" class="quick-action" data-go="journal">
-        ${icon('i-journal')}<span>دفتر روزنامه</span>
-      </button>
-    </div>
-  </section>
-
-  <div class="kpi-grid">
-    <div class="kpi"><span>تعداد اسناد</span><strong>${toFa(d.voucherCount)}</strong></div>
-    <div class="kpi"><span>جمع گردش بدهکار</span><strong>${money(d.totalDebit)}</strong></div>
-    <div class="kpi"><span>جمع گردش بستانکار</span><strong>${money(d.totalCredit)}</strong></div>
-    <div class="kpi" data-tone="${net >= 0 ? 'ok' : 'danger'}"><span>سود (زیان) خالص</span><strong>${money(net)}</strong></div>
-    <div class="kpi"><span>تعداد حساب‌ها</span><strong>${toFa(d.accountCount)}</strong></div>
-    <div class="kpi" data-tone="${balanced ? 'ok' : 'danger'}"><span>وضعیت دفتر</span><strong>${balanced ? 'متوازن' : 'مغایرت'}</strong></div>
-  </div>
-
-  <div class="panel-grid">
-    <div class="card">
-      <div class="section-head">
-        <h2>${icon('i-doc')} آخرین اسناد</h2>
-        <button type="button" class="link-btn" data-go="vouchers">مشاهده همه</button>
-      </div>
-      ${renderRecentVouchers(d.recent || [])}
-    </div>
-
-    <div class="card">
-      <div class="section-head">
-        <h2>${icon('i-coins')} خلاصه وضعیت مالی</h2>
-        <button type="button" class="link-btn" data-go="balance">ترازنامه</button>
-      </div>
-      ${renderFinancialSummary(d)}
-    </div>
-  </div>
-  `;
-}
-
-function renderRecentVouchers(recent) {
-  if (!recent.length) {
-    return `<div class="empty-state">
-      ${icon('i-doc')}
-      <b>هنوز سندی ثبت نشده است</b>
-      <span>با ثبت اولین سند، گردش حساب‌ها و گزارش‌ها به‌صورت خودکار ساخته می‌شود.</span>
-      <button type="button" class="btn btn-primary" data-new-voucher>${icon('i-plus')}<span>ثبت اولین سند</span></button>
-    </div>`;
-  }
-  const rows = recent.map((v) => `
-    <tr>
-      <td class="center"><button type="button" class="link-btn" data-open-voucher="${v.number}" title="باز کردن سند">${toFa(v.number)}</button></td>
-      <td class="nowrap">${faDate(v.date)}</td>
-      <td class="desc-cell">${esc(v.description) || '—'}</td>
-      <td class="money debit">${money(v.totalDebit)}</td>
-      <td class="money credit">${money(v.totalCredit)}</td>
-    </tr>`).join('');
-  return `<div class="table-wrap short">
-    <table class="data-table">
-      <thead><tr><th style="width:64px">شماره</th><th style="width:96px">تاریخ</th><th>شرح</th><th style="width:108px">بدهکار</th><th style="width:108px">بستانکار</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-  </div>`;
-}
-
-function renderFinancialSummary(d) {
-  const values = [
-    { key: 'assets', label: 'دارایی‌ها', value: d.assetsTotal },
-    { key: 'liabilities', label: 'بدهی‌ها', value: d.liabilitiesTotal },
-    { key: 'equity', label: 'سرمایه', value: d.equityTotal },
-    { key: 'income', label: 'درآمد', value: d.incomeTotal },
-    { key: 'expense', label: 'هزینه', value: d.expenseTotal },
-  ];
-  const max = Math.max(1, ...values.map((v) => Math.abs(Number(v.value) || 0)));
-  return `
-    <div class="summary-list">
-      ${values.map((item) => {
-        const value = Number(item.value) || 0;
-        const width = Math.max(2, Math.round((Math.abs(value) / max) * 100));
-        return `<div class="summary-row ${esc(item.key)}">
-          <span class="label">${item.label}</span>
-          <span class="bar"><i style="width:${width}%"></i></span>
-          <span class="value">${money(value)}</span>
-        </div>`;
-      }).join('')}
-      <div class="summary-row">
-        <span class="label"><b>سود (زیان)</b></span>
-        <span class="bar"><i style="width:${Math.max(2, Math.round((Math.abs(Number(d.netProfit) || 0) / max) * 100))}%;background:${Number(d.netProfit) >= 0 ? 'linear-gradient(90deg,#1fa375,#7ad0a3)' : 'linear-gradient(90deg,#c0392b,#e88a7c)'}"></i></span>
-        <span class="value">${money(d.netProfit)}</span>
-      </div>
-    </div>
-    <div class="report-total-line" style="margin-top:12px">
-      <span>تعداد ردیف‌های ثبت‌شده</span>
-      <span>${toFa(d.lineCount)} ردیف</span>
-    </div>`;
-}
-
-function bindDashboard() {
-  // Actions are wired by bindPageCommon so each button gets one listener.
 }
 
 /* ── Vouchers list ──────────────────────────────────────────── */
@@ -746,7 +684,7 @@ function vouchersFilterBar() {
 }
 
 function renderVouchers(report) {
-  const balanced = Number(report.totalDebit) === Number(report.totalCredit);
+  const balanced = amountBigInt(report.totalDebit) === amountBigInt(report.totalCredit);
   return `
   ${vouchersFilterBar()}
   <div class="report-summary">
@@ -862,7 +800,7 @@ function journalFilterBar() {
 }
 
 function renderJournal(report) {
-  const balanced = Number(report.totalDebit) === Number(report.totalCredit);
+  const balanced = amountBigInt(report.totalDebit) === amountBigInt(report.totalCredit);
   let lastVoucher = null;
   const rows = report.rows.map((row) => {
     const first = row.voucherId !== lastVoucher;
@@ -990,8 +928,8 @@ function renderLedger(data) {
     return `${filter}<div class="empty-state">${icon('i-ledger')}<b>حسابی انتخاب نشده است</b><span>یک حساب را از فهرست بالا انتخاب کنید.</span></div>`;
   }
 
-  const openingNet = Number(report.openingDebit) - Number(report.openingCredit);
-  const closingNet = Number(report.closingDebit) - Number(report.closingCredit);
+  const openingNet = amountBigInt(report.openingDebit) - amountBigInt(report.openingCredit);
+  const closingNet = amountBigInt(report.closingDebit) - amountBigInt(report.closingCredit);
   // The ledger of a parent account mixes its sub-accounts, so say which
   // sub-account each row belongs to.
   const withAccount = Boolean(report.includesChildren);
@@ -1061,6 +999,7 @@ function bindLedger(root) {
 
 PAGES.trial = {
   actions: () => [
+    { label: 'بازه گزارش', icon: 'i-search', onClick: openTrialFilterDialog },
     { label: 'چاپ گزارش', icon: 'i-print', onClick: () => printWithFeedback('open_trial_balance_preview', { ...state.filters.trial }) },
     { label: 'به‌روزرسانی', icon: 'i-refresh', onClick: () => navigate('trial', { force: true }) },
   ],
@@ -1069,24 +1008,75 @@ PAGES.trial = {
     return invoke('get_trial_balance', { from: f.from, to: f.to });
   },
   render: renderTrialBalance,
-  bind: bindVoucherRowActions,
+  bind: (root) => {
+    bindVoucherRowActions(root);
+    root.querySelector('[data-trial-filter]')?.addEventListener('click', openTrialFilterDialog);
+  },
 };
 
-function trialFilterBar() {
+function trialFilterTrigger() {
   const f = state.filters.trial;
   return `
-  <form class="filter-bar" data-filter="trial">
-    <div class="field">
-      <label for="tbFrom">از تاریخ</label>
-      <input id="tbFrom" class="input" name="from" data-date type="text" inputmode="numeric" value="${esc(f.from)}" placeholder="۱۴۰۵/۰۱/۰۱" />
-    </div>
-    <div class="field">
-      <label for="tbTo">تا تاریخ</label>
-      <input id="tbTo" class="input" name="to" data-date type="text" inputmode="numeric" value="${esc(f.to)}" placeholder="۱۴۰۵/۱۲/۲۹" />
-    </div>
-    <button class="btn btn-primary" type="submit">${icon('i-search')}<span>محاسبه تراز</span></button>
-    <button class="btn" type="button" data-reset>${icon('i-refresh')}<span>بازنشانی</span></button>
-  </form>`;
+  <div class="filter-bar trial-filter-trigger">
+    <span>بازه گزارش: <b>${faDate(f.from)} تا ${faDate(f.to)}</b></span>
+    <button class="btn btn-primary" type="button" data-trial-filter>${icon('i-search')}<span>تغییر بازه</span></button>
+  </div>`;
+}
+
+function openTrialFilterDialog() {
+  const f = state.filters.trial;
+  const dialog = openDialog({
+    title: 'بازه صورت تراز آزمایشی',
+    body: `
+      <form class="filter-bar trial-dialog-form" data-trial-filter-form>
+        <div class="field">
+          <label for="tbDialogFrom">از تاریخ</label>
+          <input id="tbDialogFrom" class="input" name="from" data-date type="text" inputmode="numeric" value="${esc(f.from)}" placeholder="۱۴۰۵/۰۱/۰۱" />
+        </div>
+        <div class="field">
+          <label for="tbDialogTo">تا تاریخ</label>
+          <input id="tbDialogTo" class="input" name="to" data-date type="text" inputmode="numeric" value="${esc(f.to)}" placeholder="۱۴۰۵/۱۲/۲۹" />
+        </div>
+      </form>`,
+    actions: [
+      {
+        label: 'محاسبه تراز',
+        icon: 'i-search',
+        primary: true,
+        onClick: (result) => {
+          const form = result.body.querySelector('[data-trial-filter-form]');
+          if (!form?.reportValidity()) return;
+          const data = new FormData(form);
+          state.filters.trial.from = String(data.get('from') || '');
+          state.filters.trial.to = String(data.get('to') || '');
+          result.close();
+          navigate('trial', { force: true });
+        },
+      },
+      {
+        label: 'بازنشانی',
+        icon: 'i-refresh',
+        onClick: (result) => {
+          const defaults = defaultFilters().trial;
+          result.body.querySelector('[name="from"]').value = defaults.from;
+          result.body.querySelector('[name="to"]').value = defaults.to;
+        },
+      },
+    ],
+  });
+  if (!dialog) return;
+
+  const form = dialog.body.querySelector('[data-trial-filter-form]');
+  form?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    dialog.foot.querySelector('.btn-primary')?.click();
+  });
+  form?.querySelectorAll('input[data-date]').forEach((input) => {
+    input.addEventListener('input', () => {
+      const cleaned = toEn(input.value).replace(/[^\d/]/g, '');
+      if (input.value !== cleaned) input.value = cleaned;
+    });
+  });
 }
 
 function renderTrialBalance(report) {
@@ -1103,11 +1093,11 @@ function renderTrialBalance(report) {
       <td class="money credit bold">${money(row.closingCredit)}</td>
     </tr>`).join('');
 
-  const balanced = Number(report.closingDebit) === Number(report.closingCredit)
-    && Number(report.periodDebit) === Number(report.periodCredit);
+  const balanced = amountBigInt(report.closingDebit) === amountBigInt(report.closingCredit)
+    && amountBigInt(report.periodDebit) === amountBigInt(report.periodCredit);
 
   return `
-  ${trialFilterBar()}
+  ${trialFilterTrigger()}
   <div class="report-summary">
     <div class="kpi"><span>تعداد حساب دارای گردش</span><strong>${toFa(report.rows.length)}</strong></div>
     <div class="kpi"><span>گردش بدهکار دوره</span><strong>${money(report.periodDebit)}</strong></div>
@@ -1185,15 +1175,17 @@ function incomeFilterBar() {
 }
 
 function renderIncomeStatement(report) {
-  const net = Number(report.netProfit) || 0;
+  const net = amountBigInt(report.netProfit);
   return `
   ${incomeFilterBar()}
   <div class="report-summary">
     <div class="kpi"><span>جمع درآمدها</span><strong>${money(report.revenueTotal)}</strong></div>
     <div class="kpi"><span>بهای تمام شده</span><strong>${money(report.cogsTotal)}</strong></div>
     <div class="kpi"><span>هزینه‌های عملیاتی</span><strong>${money(report.expenseTotal)}</strong></div>
+    <div class="kpi"><span>درآمدهای غیرعملیاتی</span><strong>${money(report.nonOperatingRevenueTotal)}</strong></div>
+    <div class="kpi"><span>هزینه‌های غیرعملیاتی</span><strong>${money(report.nonOperatingExpenseTotal)}</strong></div>
     <div class="kpi"><span>سود (زیان) ناخالص</span><strong>${money(report.grossProfit)}</strong></div>
-    <div class="kpi" data-tone="${net >= 0 ? 'ok' : 'danger'}"><span>سود (زیان) خالص</span><strong>${money(net)}</strong></div>
+    <div class="kpi" data-tone="${net >= 0n ? 'ok' : 'danger'}"><span>سود (زیان) خالص</span><strong>${money(net)}</strong></div>
   </div>
   <div class="report-layout">
     <div class="card">
@@ -1205,6 +1197,14 @@ function renderIncomeStatement(report) {
   </div>
   <div class="card" style="margin-top:12px">
     ${incomeSection('هزینه‌های عملیاتی', report.expenses, report.expenseTotal, 'i-bank')}
+  </div>
+  <div class="report-layout" style="margin-top:12px">
+    <div class="card">
+      ${incomeSection('درآمدهای غیرعملیاتی', report.nonOperatingRevenues, report.nonOperatingRevenueTotal, 'i-trend')}
+    </div>
+    <div class="card">
+      ${incomeSection('هزینه‌های غیرعملیاتی', report.nonOperatingExpenses, report.nonOperatingExpenseTotal, 'i-bank')}
+    </div>
   </div>
   <div class="card" style="margin-top:12px">
     <div class="report-total-line"><span>سود (زیان) ناخالص</span><span class="money">${money(report.grossProfit)}</span></div>
@@ -1268,13 +1268,13 @@ function renderBalanceSheet(report) {
     accountName: 'سود (زیان) انباشته دوره',
     amount: report.profit,
   });
-  const difference = Number(report.assetsTotal) - Number(report.totalLiabilitiesEquity);
+  const difference = amountBigInt(report.assetsTotal) - amountBigInt(report.totalLiabilitiesEquity);
   return `
   ${balanceFilterBar()}
   <div class="report-summary">
     <div class="kpi"><span>جمع دارایی‌ها</span><strong>${money(report.assetsTotal)}</strong></div>
     <div class="kpi"><span>جمع بدهی‌ها</span><strong>${money(report.liabilitiesTotal)}</strong></div>
-    <div class="kpi"><span>حقوق مالکانه</span><strong>${money(Number(report.equityTotal) + Number(report.profit))}</strong></div>
+    <div class="kpi"><span>حقوق مالکانه</span><strong>${money(amountBigInt(report.equityTotal) + amountBigInt(report.profit))}</strong></div>
     <div class="kpi" data-tone="${report.balanced ? 'ok' : 'danger'}"><span>وضعیت ترازنامه</span><strong>${report.balanced ? 'متوازن' : `مغایرت ${money(difference)}`}</strong></div>
   </div>
   <div class="report-layout">
@@ -1293,7 +1293,7 @@ function renderBalanceSheet(report) {
       <h3 class="muted small" style="margin:2px 0 5px">بدهی‌ها</h3>
       ${balanceTable(report.liabilities, report.liabilitiesTotal, 'جمع بدهی‌ها')}
       <h3 class="muted small" style="margin:14px 0 5px">حقوق مالکانه</h3>
-      ${balanceTable(equityRows, Number(report.equityTotal) + Number(report.profit), 'جمع حقوق مالکانه')}
+      ${balanceTable(equityRows, amountBigInt(report.equityTotal) + amountBigInt(report.profit), 'جمع حقوق مالکانه')}
       <div class="report-total-line net" style="margin-top:12px">
         <span>جمع بدهی‌ها و حقوق مالکانه</span>
         <span class="money">${money(report.totalLiabilitiesEquity)}</span>
@@ -1339,12 +1339,14 @@ PAGES.accounts = {
 function renderAccounts(data) {
   const { accounts, groups } = data;
   const filters = state.accountFilters;
+  const accountByCode = new Map(accounts.map((account) => [account.code, account]));
+  const parentCodes = new Set(accounts.map((account) => account.parentCode).filter(Boolean));
   const groupOptions = groups.map((g) => `<option value="${esc(g.code)}"${g.code === filters.group ? ' selected' : ''}>${toFa(g.code)} — ${esc(g.name)}</option>`).join('');
   const drillChain = [];
   for (const code of state.accountDrillPath) {
     const expectedLevel = drillChain.length + 1;
     const parent = drillChain[drillChain.length - 1];
-    const node = accounts.find((account) => account.code === code);
+    const node = accountByCode.get(code);
     if (!node || Number(node.level) !== expectedLevel || (node.parentCode || '') !== (parent?.code || '')) break;
     drillChain.push(node);
   }
@@ -1368,7 +1370,7 @@ function renderAccounts(data) {
   });
 
   const rows = filtered.map((account, index) => {
-    const hasChildren = accounts.some((child) => child.parentCode === account.code);
+    const hasChildren = parentCodes.has(account.code);
     return `
     <tr>
       <td class="center row-index">${toFa(index + 1)}</td>
@@ -2345,6 +2347,12 @@ function runMenuItem(item) {
     case 'toggle-sidebar':
       toggleSidebarVisibility();
       return;
+    case 'workspace-home':
+      void navigate('workspace');
+      return;
+    case 'choose-wallpaper':
+      $('#wallpaperPicker')?.click();
+      return;
     case 'help':
       showHelpDialog();
       return;
@@ -2523,9 +2531,28 @@ function updateVoucherBadge() {
 }
 
 async function navigate(page, { force = false } = {}) {
+  // Outside the dedicated trial-balance window, this report opens as a popup
+  // instead of replacing the page inside the main window.
+  if (page === 'trial' && !IS_TRIAL_POPUP) {
+    openTrialBalanceWindow();
+    return;
+  }
+  if (page === 'workspace') {
+    navSeq += 1;
+    state.page = page;
+    updateNavActive();
+    $('.accounting-app')?.classList.add('is-workspace-home');
+    renderActions([]);
+    const root = $('#page');
+    if (root) root.replaceChildren();
+    document.title = 'نرم‌افزار حسابداری';
+    setStatus('فضای کار آماده است.', 'ok');
+    return;
+  }
   const def = PAGES[page];
   if (!def) return;
   state.page = page;
+  $('.accounting-app')?.classList.remove('is-workspace-home');
   updateNavActive();
 
   const [title, section] = pageMeta(page);
@@ -2553,7 +2580,7 @@ async function navigate(page, { force = false } = {}) {
     def.bind?.(root, data);
     setStatus(`صفحه «${title}» آماده است.`, 'ok');
   } catch (error) {
-    if (seq !== navSeq) return;
+    if (seq !== navSeq || state.page !== page) return;
     root.innerHTML = `<div class="card">
       <div class="empty-state">
         ${icon('i-warning')}
@@ -2579,6 +2606,16 @@ async function openVoucherWindow(number = null) {
   }
 }
 
+async function openTrialBalanceWindow() {
+  if (!invoke) return;
+  try {
+    await invoke('open_trial_balance_window');
+    state.refreshOnFocus = true;
+  } catch (error) {
+    toast(errorText(error), 'error');
+  }
+}
+
 async function openGroupsWindow() {
   if (!invoke) return;
   try {
@@ -2590,6 +2627,22 @@ async function openGroupsWindow() {
 }
 
 function bindChrome() {
+  const homeButton = $('[data-workspace-home]');
+  homeButton?.addEventListener('click', () => void navigate('workspace'));
+  homeButton?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      void navigate('workspace');
+    }
+  });
+  $('#wallpaperPicker')?.addEventListener('change', (event) => {
+    chooseWallpaper(event.target.files?.[0]);
+    event.target.value = '';
+  });
+  window.addEventListener('account-definition-opened', () => {
+    state.refreshOnFocus = true;
+  });
+
   window.addEventListener('accounts-changed', () => {
     state.accountsLoaded = false;
     state.groupsLoaded = false;
@@ -2622,7 +2675,7 @@ function bindChrome() {
       return;
     }
     // Ctrl+N opens a new voucher, as described in the README.
-    if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+    if (!IS_TRIAL_POPUP && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
         && event.key.toLowerCase() === 'n' && $('#modal')?.hidden !== false) {
       event.preventDefault();
       openVoucherWindow();
@@ -2648,9 +2701,11 @@ function bindChrome() {
 /* ── Init ───────────────────────────────────────────────────── */
 
 async function init() {
-  buildNavigation();
-  buildMenubar();
-  bindMenubar();
+  if (!IS_TRIAL_POPUP) {
+    buildNavigation();
+    buildMenubar();
+    bindMenubar();
+  }
   bindChrome();
 
   if (!invoke) {
@@ -2663,7 +2718,8 @@ async function init() {
     await loadSettings();
     state.filters = defaultFilters();
     state.ready = true;
-    await navigate('dashboard');
+    applyWallpaper(localStorage.getItem('hesabdari-workspace-wallpaper'));
+    await navigate(IS_TRIAL_POPUP ? 'trial' : 'workspace');
     setStatus('آماده', 'ok');
   } catch (error) {
     renderFatal(errorText(error));

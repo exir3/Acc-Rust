@@ -6,7 +6,7 @@
 //! voucher line. Amounts are whole Rials, exactly like the database.
 
 use crate::db;
-use crate::vouchers::{VoucherInput, VoucherLineInput};
+use crate::vouchers::{VoucherInput, VoucherLineInput, MAX_VOUCHER_NUMBER};
 use calamine::{open_workbook_auto, Data, Reader};
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet, XlsxError};
 use serde::Serialize;
@@ -76,11 +76,42 @@ fn normalize_header(value: &str) -> String {
         .to_string()
 }
 
-fn digits_only(value: &str) -> String {
-    db::normalize_digits(value)
-        .chars()
-        .filter(|ch| ch.is_ascii_digit())
-        .collect()
+/// Normalizes Persian/Arabic digits and trims a cell that must contain a
+/// numeric code. Unlike a digit filter, it never drops characters, so bad
+/// input can be rejected instead of silently turning into another code.
+fn code_text(value: &str) -> String {
+    db::normalize_digits(value).trim().to_string()
+}
+
+fn parse_code(value: &str, label: &str) -> Result<String, String> {
+    let code = code_text(value);
+    if code.is_empty() {
+        return Err(format!("{label} خالی است."));
+    }
+    if !code.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!(
+            "{label} باید فقط شامل ارقام باشد؛ مقدار «{}» معتبر نیست.",
+            value.trim()
+        ));
+    }
+    Ok(code)
+}
+
+fn parse_account_code_cell(value: &str, label: &str) -> Result<String, String> {
+    let code = parse_code(value, label)?;
+    if code.chars().count() > 20 {
+        return Err(format!("{label} نمی‌تواند بیشتر از ۲۰ رقم باشد."));
+    }
+    Ok(code)
+}
+
+fn parse_account_code_data_cell(cell: &Data, label: &str) -> Result<String, String> {
+    if matches!(cell, Data::Int(_) | Data::Float(_)) {
+        return Err(format!(
+            "{label} باید در اکسل به‌صورت متن ذخیره شود تا صفرهای ابتدایی کد حفظ شوند."
+        ));
+    }
+    parse_account_code_cell(&cell_text(cell), label)
 }
 
 fn cell_text(cell: &Data) -> String {
@@ -100,6 +131,89 @@ fn cell_text(cell: &Data) -> String {
     }
 }
 
+fn is_total_row(row: &[Data]) -> bool {
+    row.iter()
+        .any(|cell| normalize_header(&cell_text(cell)) == "جمعکل")
+}
+
+fn has_import_values(row: &[Data], columns: &[Option<usize>]) -> bool {
+    columns.iter().flatten().any(|index| {
+        row.get(*index)
+            .is_some_and(|cell| !cell_text(cell).is_empty())
+    })
+}
+
+fn parse_text_amount(text: &str) -> Result<i64, String> {
+    let normalized = db::normalize_digits(text.trim());
+    let (sign, value) = normalized
+        .strip_prefix('-')
+        .map_or((1i64, normalized.as_str()), |value| (-1i64, value));
+    let is_separator = |ch: char| matches!(ch, ',' | '٬' | ' ' | '\u{200c}' | '\u{00a0}');
+    let separators: Vec<char> = value.chars().filter(|ch| is_separator(*ch)).collect();
+    let digits = if separators.is_empty() {
+        value.to_string()
+    } else {
+        if separators
+            .iter()
+            .any(|separator| *separator != separators[0])
+        {
+            return Err(format!("مبلغ «{text}» جداکننده‌های ناسازگار دارد."));
+        }
+        let groups: Vec<&str> = value.split(separators[0]).collect();
+        if groups.len() < 2
+            || groups[0].is_empty()
+            || groups[0].len() > 3
+            || !groups[0].chars().all(|ch| ch.is_ascii_digit())
+            || groups[1..]
+                .iter()
+                .any(|group| group.len() != 3 || !group.chars().all(|ch| ch.is_ascii_digit()))
+        {
+            return Err(format!("مبلغ «{text}» گروه‌بندی هزارگان معتبری ندارد."));
+        }
+        groups.concat()
+    };
+    if digits.is_empty() {
+        return Err(format!("مبلغ «{text}» عدد معتبری نیست."));
+    }
+    let magnitude = digits
+        .parse::<i64>()
+        .map_err(|_| format!("مبلغ «{text}» عدد معتبری نیست."))?;
+    magnitude
+        .checked_mul(sign)
+        .ok_or_else(|| format!("مبلغ «{text}» خارج از محدوده است."))
+}
+
+fn validate_export_balance(total_debit: i64, total_credit: i64) -> Result<(), String> {
+    if total_debit <= 0 || total_debit != total_credit {
+        return Err(format!(
+            "خروجی سند نامتوازن است؛ بدهکار {} و بستانکار {} است.",
+            db::to_fa_digits(total_debit),
+            db::to_fa_digits(total_credit)
+        ));
+    }
+    Ok(())
+}
+
+fn write_total_amount(
+    worksheet: &mut Worksheet,
+    row: u32,
+    column: u16,
+    amount: i64,
+    format: &Format,
+) -> Result<(), String> {
+    if amount.unsigned_abs() <= MAX_AMOUNT as u64 {
+        worksheet
+            .write_number_with_format(row, column, amount as f64, format)
+            .map(|_| ())
+            .map_err(xlsx_error)
+    } else {
+        worksheet
+            .write_string_with_format(row, column, &amount.to_string(), format)
+            .map(|_| ())
+            .map_err(xlsx_error)
+    }
+}
+
 /// Reads a cell as a whole-Rial amount. Persian digits and thousands
 /// separators are accepted because that is how users type them.
 fn cell_amount(cell: &Data) -> Result<i64, String> {
@@ -108,7 +222,7 @@ fn cell_amount(cell: &Data) -> Result<i64, String> {
         Data::Int(value) => Ok(*value),
         Data::Float(value)
             if value.is_finite()
-                && (value - value.round()).abs() < 0.01
+                && (value - value.round()).abs() <= 1e-9
                 && value.round().abs() <= MAX_AMOUNT as f64 =>
         {
             Ok(value.round() as i64)
@@ -120,16 +234,10 @@ fn cell_amount(cell: &Data) -> Result<i64, String> {
         Data::Float(_) => Err("مبلغ باید عدد صحیح و محدود باشد (بدون اعشار).".to_string()),
         _ => {
             let text = cell_text(cell);
-            let cleaned: String = db::normalize_digits(&text)
-                .chars()
-                .filter(|ch| !matches!(ch, ',' | '٬' | ' ' | '\u{200c}' | '\u{00a0}'))
-                .collect();
-            if cleaned.is_empty() || cleaned == "-" {
+            if text.is_empty() {
                 return Ok(0);
             }
-            cleaned
-                .parse::<i64>()
-                .map_err(|_| format!("مبلغ «{text}» عدد معتبری نیست."))
+            parse_text_amount(&text)
         }
     }
 }
@@ -171,7 +279,7 @@ pub fn export_voucher(input: &VoucherInput) -> Result<Option<String>, String> {
             .checked_add(line.credit)
             .ok_or_else(|| "جمع بستانکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
     }
-    let _validated_totals = (checked_debit, checked_credit);
+    validate_export_balance(checked_debit, checked_credit)?;
     let number = input.number.unwrap_or(0);
     let file_label = if number > 0 {
         number.to_string()
@@ -350,12 +458,8 @@ fn write_sheet(worksheet: &mut Worksheet, input: &VoucherInput) -> Result<(), St
     worksheet
         .merge_range(total_row, 0, total_row, 3, "جمع کل", &total_label_format)
         .map_err(xlsx_error)?;
-    worksheet
-        .write_number_with_format(total_row, 4, total_debit as f64, &total_amount_format)
-        .map_err(xlsx_error)?;
-    worksheet
-        .write_number_with_format(total_row, 5, total_credit as f64, &total_amount_format)
-        .map_err(xlsx_error)?;
+    write_total_amount(worksheet, total_row, 4, total_debit, &total_amount_format)?;
+    write_total_amount(worksheet, total_row, 5, total_credit, &total_amount_format)?;
 
     worksheet
         .set_freeze_panes(header_row + 1, 0)
@@ -483,9 +587,12 @@ fn add_imported_account(
         nature: imported_nature(group_code).to_string(),
     };
     if let Some(existing) = accounts.get(&code) {
-        if existing.parent_code != account.parent_code {
+        if existing.parent_code != account.parent_code
+            || existing.level != account.level
+            || existing.group_code != account.group_code
+        {
             return Err(format!(
-                "کد حساب {} در فایل با بیش از یک حساب بالاتر آمده است.",
+                "کد حساب {} در فایل با ساختار (حساب بالاتر، سطح یا گروه) متفاوت آمده است.",
                 db::to_fa_digits(code)
             ));
         }
@@ -539,7 +646,26 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
         let excel_row = header_row + offset + 2;
         let raw_number = cell_text(&read(row, columns.voucher_number));
         if raw_number.is_empty() {
-            continue;
+            if is_total_row(row) {
+                continue;
+            }
+            let value_columns = [
+                columns.voucher_date,
+                columns.general_code,
+                columns.general_name,
+                columns.subsidiary_code,
+                columns.subsidiary_name,
+                columns.description,
+                columns.debit,
+                columns.credit,
+            ];
+            if !has_import_values(row, &value_columns) {
+                continue;
+            }
+            return Err(format!(
+                "شماره سند ردیف {} اکسل الزامی است.",
+                db::to_fa_digits(excel_row)
+            ));
         }
         let number = cell_amount(&read(row, columns.voucher_number)).map_err(|error| {
             format!(
@@ -547,10 +673,11 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
                 db::to_fa_digits(excel_row)
             )
         })?;
-        if number <= 0 {
+        if number <= 0 || number > MAX_VOUCHER_NUMBER {
             return Err(format!(
-                "شماره سند ردیف {} اکسل باید بزرگ‌تر از صفر باشد.",
-                db::to_fa_digits(excel_row)
+                "شماره سند ردیف {} اکسل باید بین ۱ و {} باشد.",
+                db::to_fa_digits(excel_row),
+                db::to_fa_digits(MAX_VOUCHER_NUMBER)
             ));
         }
 
@@ -559,15 +686,21 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
             .replace('-', "/");
         let date = crate::vouchers::validate_voucher_date(&raw_date)
             .map_err(|error| format!("تاریخ ردیف {} اکسل: {error}", db::to_fa_digits(excel_row)))?;
-        let general_code = digits_only(&cell_text(&read(row, columns.general_code)));
-        if general_code.is_empty() {
-            return Err(format!(
-                "کد کل ردیف {} اکسل خالی است.",
-                db::to_fa_digits(excel_row)
-            ));
-        }
+        let general_code = parse_account_code_data_cell(
+            &read(row, columns.general_code),
+            &format!("کد کل ردیف {} اکسل", db::to_fa_digits(excel_row)),
+        )?;
         let general_name = cell_text(&read(row, columns.general_name));
-        let subsidiary_code = digits_only(&cell_text(&read(row, columns.subsidiary_code)));
+        let subsidiary_cell = read(row, columns.subsidiary_code);
+        let raw_subsidiary = cell_text(&subsidiary_cell);
+        let subsidiary_code = if raw_subsidiary.is_empty() {
+            String::new()
+        } else {
+            parse_account_code_data_cell(
+                &subsidiary_cell,
+                &format!("کد معین ردیف {} اکسل", db::to_fa_digits(excel_row)),
+            )?
+        };
         let subsidiary_name = cell_text(&read(row, columns.subsidiary_name));
         let group_code = imported_group_code(&general_code);
         add_imported_account(
@@ -734,11 +867,25 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
     let mut lines: Vec<VoucherLineInput> = Vec::new();
     for (offset, row) in range.rows().skip(header_row + 1).enumerate() {
         let excel_row = header_row + offset + 2;
-        let account_code = digits_only(&cell_text(&read(row, columns.account_code)));
-        if account_code.is_empty() {
-            // Empty spacer rows and the total row («جمع کل») have no code.
-            continue;
+        let account_code_cell = read(row, columns.account_code);
+        let raw_account_code = cell_text(&account_code_cell);
+        if raw_account_code.is_empty() {
+            if is_total_row(row) {
+                continue;
+            }
+            let value_columns = [columns.description, columns.debit, columns.credit];
+            if !has_import_values(row, &value_columns) {
+                continue;
+            }
+            return Err(format!(
+                "کد حساب ردیف {} اکسل الزامی است.",
+                db::to_fa_digits(excel_row)
+            ));
         }
+        let account_code = parse_account_code_data_cell(
+            &account_code_cell,
+            &format!("کد حساب ردیف {} اکسل", db::to_fa_digits(excel_row)),
+        )?;
 
         let description = cell_text(&read(row, columns.description));
         if description.chars().count() > MAX_LINE_DESCRIPTION {
@@ -902,6 +1049,22 @@ fn account_nature(raw: &str, fallback: &str) -> Result<String, String> {
 /// Export the chart in the same 11-column hierarchy layout used by WebApp.
 pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String> {
     let accounts = database.list_accounts()?.accounts;
+    let unsupported: Vec<&str> = accounts
+        .iter()
+        .filter(|account| account.level > 3)
+        .take(5)
+        .map(|account| account.code.as_str())
+        .collect();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "خروجی فعلی حداکثر سه سطح را پشتیبانی می‌کند؛ حساب‌های سطح چهارم مانند {} صادر نشدند.",
+            unsupported
+                .iter()
+                .map(|code| db::to_fa_digits(code))
+                .collect::<Vec<_>>()
+                .join("، ")
+        ));
+    }
     let by_code: BTreeMap<String, db::Account> = accounts
         .iter()
         .cloned()
@@ -949,14 +1112,14 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String
 
     // One row per terminal account (up to WebApp's three supported levels).
     // Repeated parent data is intentional: it makes every row independently importable.
+    let parent_codes: std::collections::BTreeSet<&str> = accounts
+        .iter()
+        .map(|account| account.parent_code.as_str())
+        .filter(|code| !code.is_empty())
+        .collect();
     let mut terminals: Vec<&db::Account> = accounts
         .iter()
-        .filter(|account| {
-            account.level <= 3
-                && !accounts
-                    .iter()
-                    .any(|child| child.parent_code == account.code && child.level <= 3)
-        })
+        .filter(|account| !parent_codes.contains(account.code.as_str()))
         .collect();
     terminals.sort_by(|a, b| a.code.cmp(&b.code));
 
@@ -1044,6 +1207,12 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
             .map(cell_text)
             .unwrap_or_default()
     };
+    let read_code_cell = |row: &[Data], index: Option<usize>| -> Data {
+        index
+            .and_then(|column| row.get(column))
+            .cloned()
+            .unwrap_or(Data::Empty)
+    };
 
     let mut accounts = database.list_accounts()?.accounts;
     let groups = database.list_account_groups()?.groups;
@@ -1055,33 +1224,39 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
 
     for (offset, row) in range.rows().skip(header_row + 1).enumerate() {
         let excel_row = header_row + offset + 2;
-        let group_code = digits_only(&read(row, columns.group_code));
+        let raw_group_code = read(row, columns.group_code);
         let legacy_nature = read(row, columns.legacy_nature);
+        let account_code_cells = [
+            read_code_cell(row, columns.level1_code),
+            read_code_cell(row, columns.level2_code),
+            read_code_cell(row, columns.level3_code),
+        ];
         let cells = [
             (
-                digits_only(&read(row, columns.level1_code)),
+                read(row, columns.level1_code),
                 read(row, columns.level1_name),
                 read(row, columns.level1_nature).if_empty(&legacy_nature),
             ),
             (
-                digits_only(&read(row, columns.level2_code)),
+                read(row, columns.level2_code),
                 read(row, columns.level2_name),
                 read(row, columns.level2_nature),
             ),
             (
-                digits_only(&read(row, columns.level3_code)),
+                read(row, columns.level3_code),
                 read(row, columns.level3_name),
                 read(row, columns.level3_nature),
             ),
         ];
         if cells
             .iter()
-            .all(|cell| cell.0.is_empty() && cell.1.trim().is_empty())
+            .all(|cell| code_text(&cell.0).is_empty() && cell.1.trim().is_empty())
         {
             continue;
         }
         let row_result = (|| -> Result<(usize, usize), String> {
-            if group_code.is_empty() || !group_codes.contains(&group_code) {
+            let group_code = parse_code(&raw_group_code, "کد گروه")?;
+            if !group_codes.contains(&group_code) {
                 return Err(format!(
                     "کد گروه «{}» در ردیف اکسل معتبر نیست.",
                     db::to_fa_digits(&group_code)
@@ -1104,30 +1279,28 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
             let mut parent_nature = "debtor".to_string();
             let mut row_created = 0usize;
             let mut row_skipped = 0usize;
-            for (level_index, (raw_code, raw_name, raw_nature)) in cells.iter().enumerate() {
+            for (level_index, (_, raw_name, raw_nature)) in cells.iter().enumerate() {
                 if raw_name.trim().is_empty() {
                     break;
                 }
                 let level = level_index as i64 + 1;
-                if raw_code.is_empty() {
-                    return Err(format!(
-                        "کد سطح {} خالی است؛ کدها باید در فایل مشخص باشند.",
-                        level
-                    ));
-                }
+                let code = parse_account_code_data_cell(
+                    &account_code_cells[level_index],
+                    &format!("کد سطح {level}"),
+                )?;
                 let name = raw_name.split_whitespace().collect::<Vec<_>>().join(" ");
                 if name.chars().count() > 255 {
                     return Err(format!("نام حساب «{}» بیش از ۲۵۵ کاراکتر است.", name));
                 }
-                if level > 1 && !raw_code.starts_with(&parent_code) {
+                if level > 1 && !code.starts_with(&parent_code) {
                     return Err(format!(
                         "کد «{}» با کد حساب بالاتر «{}» آغاز نمی‌شود.",
-                        db::to_fa_digits(raw_code),
+                        db::to_fa_digits(&code),
                         db::to_fa_digits(&parent_code)
                     ));
                 }
                 let nature = account_nature(raw_nature, &parent_nature)?;
-                if let Some(existing) = accounts.iter().find(|account| account.code == *raw_code) {
+                if let Some(existing) = accounts.iter().find(|account| account.code == code) {
                     if existing.level != level
                         || existing.group_code != group_code
                         || existing.parent_code != parent_code
@@ -1136,17 +1309,17 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                     {
                         return Err(format!(
                             "کد «{}» قبلاً با مشخصات متفاوت ثبت شده است.",
-                            db::to_fa_digits(raw_code)
+                            db::to_fa_digits(&code)
                         ));
                     }
                     skipped_count += 1;
                     row_skipped += 1;
-                    parent_code = raw_code.clone();
+                    parent_code = code;
                     parent_nature = nature;
                     continue;
                 }
                 let account = database.create_account(
-                    raw_code,
+                    &code,
                     &name,
                     level,
                     &group_code,
@@ -1157,7 +1330,7 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                 accounts.push(account);
                 created_count += 1;
                 row_created += 1;
-                parent_code = raw_code.clone();
+                parent_code = code;
                 parent_nature = nature;
             }
             Ok((row_created, row_skipped))
@@ -1242,18 +1415,54 @@ mod tests {
     fn amounts_accept_persian_digits_and_separators() {
         assert_eq!(cell_amount(&text("۱٬۲۳۴٬۵۶۷")).unwrap(), 1_234_567);
         assert_eq!(cell_amount(&text("2,500,000")).unwrap(), 2_500_000);
+        assert!(cell_amount(&text("12,34")).is_err());
+        assert!(cell_amount(&text("1٬234,567")).is_err());
         assert_eq!(cell_amount(&text("")).unwrap(), 0);
         assert_eq!(cell_amount(&Data::Float(4200.0)).unwrap(), 4200);
         assert_eq!(
             cell_amount(&Data::Float(2_500_000.0000000005)).unwrap(),
             2_500_000
         );
+        assert!(cell_amount(&Data::Float(1.005)).is_err());
         assert!(cell_amount(&Data::Float(4.5)).is_err());
         assert_eq!(
             cell_amount(&Data::Float(999_999_999_999_999.0)).unwrap(),
             MAX_AMOUNT
         );
         assert!(cell_amount(&Data::Float(1_000_000_000_000_000.0)).is_err());
+    }
+
+    #[test]
+    fn account_codes_must_be_text_to_preserve_leading_zeroes() {
+        assert_eq!(
+            parse_account_code_data_cell(&text("001101"), "کد حساب").unwrap(),
+            "001101"
+        );
+        assert!(parse_account_code_data_cell(&Data::Int(1101), "کد حساب")
+            .unwrap_err()
+            .contains("به‌صورت متن"));
+        assert!(parse_account_code_data_cell(&Data::Float(1101.0), "کد حساب").is_err());
+    }
+
+    #[test]
+    fn export_requires_a_balanced_nonzero_voucher() {
+        assert!(validate_export_balance(100, 90).is_err());
+        assert!(validate_export_balance(0, 0).is_err());
+        assert!(validate_export_balance(100, 100).is_ok());
+    }
+
+    #[test]
+    fn import_rows_with_values_are_not_mistaken_for_blanks_or_totals() {
+        let mut row = vec![Data::Empty; 4];
+        assert!(!has_import_values(&row, &[Some(1), Some(2), Some(3)]));
+        assert!(!is_total_row(&row));
+
+        row[2] = text("100");
+        assert!(has_import_values(&row, &[Some(1), Some(2), Some(3)]));
+        assert!(!is_total_row(&row));
+
+        row[0] = text("جمع کل");
+        assert!(is_total_row(&row));
     }
 
     #[test]

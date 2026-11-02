@@ -5,9 +5,20 @@
 
 use crate::db::{self, normalize_digits, Database};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+
+fn serialize_exact_amount<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if value.unsigned_abs() <= 9_007_199_254_740_991 {
+        serializer.serialize_i64(*value)
+    } else {
+        serializer.serialize_str(&value.to_string())
+    }
+}
 
 pub const VOUCHER_TYPES: [&str; 4] = [
     "سند حسابداری عادی",
@@ -16,10 +27,10 @@ pub const VOUCHER_TYPES: [&str; 4] = [
     "سند بستن حساب‌های موقت",
 ];
 
-const MAX_DESCRIPTION: usize = 1000;
-const MAX_LINE_DESCRIPTION: usize = 500;
+pub(crate) const MAX_DESCRIPTION: usize = 1000;
+pub(crate) const MAX_LINE_DESCRIPTION: usize = 500;
 const MAX_LINES: usize = 1000;
-const MAX_VOUCHER_NUMBER: i64 = 9_007_199_254_740_991;
+pub const MAX_VOUCHER_NUMBER: i64 = 9_007_199_254_740_991;
 
 /// Largest amount accepted on one line (1e15 Rials). It stays below 2^53 so
 /// the UI, which holds numbers as JavaScript doubles, never loses precision,
@@ -90,7 +101,9 @@ pub struct VoucherMergePreview {
     pub source_voucher_numbers: Vec<i64>,
     pub keep_voucher_number: i64,
     pub line_count: usize,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_credit: i64,
     pub reason: String,
 }
@@ -389,7 +402,9 @@ pub struct VoucherLine {
     pub account_code: String,
     pub account_name: String,
     pub description: String,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub credit: i64,
 }
 
@@ -403,7 +418,9 @@ pub struct Voucher {
     pub voucher_type: String,
     pub description: String,
     pub lines: Vec<VoucherLine>,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_credit: i64,
 }
 
@@ -416,7 +433,9 @@ pub struct VoucherSummary {
     #[serde(rename = "type")]
     pub voucher_type: String,
     pub description: String,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_credit: i64,
     pub line_count: i64,
 }
@@ -427,7 +446,9 @@ pub struct VoucherList {
     pub vouchers: Vec<VoucherSummary>,
     /// Number of vouchers in the whole book, ignoring any filter.
     pub total_count: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_credit: i64,
     pub database_path: String,
 }
@@ -445,7 +466,9 @@ pub struct JournalRow {
     pub account_code: String,
     pub account_name: String,
     pub line_description: String,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub credit: i64,
 }
 
@@ -456,7 +479,9 @@ pub struct JournalReport {
     pub to: String,
     pub search: String,
     pub rows: Vec<JournalRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_credit: i64,
     pub voucher_count: i64,
 }
@@ -473,9 +498,13 @@ pub struct LedgerRow {
     pub voucher_type: String,
     pub voucher_description: String,
     pub line_description: String,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub credit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub running_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub running_credit: i64,
 }
 
@@ -490,11 +519,17 @@ pub struct LedgerReport {
     pub includes_children: bool,
     pub from: String,
     pub to: String,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub opening_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub opening_credit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_credit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub closing_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub closing_credit: i64,
     pub rows: Vec<LedgerRow>,
 }
@@ -506,11 +541,17 @@ pub struct TrialBalanceRow {
     pub account_name: String,
     pub group_name: String,
     pub level: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub opening_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub opening_credit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub period_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub period_credit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub closing_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub closing_credit: i64,
 }
 
@@ -520,11 +561,17 @@ pub struct TrialBalanceReport {
     pub from: String,
     pub to: String,
     pub rows: Vec<TrialBalanceRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub opening_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub opening_credit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub period_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub period_credit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub closing_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub closing_credit: i64,
 }
 
@@ -533,6 +580,7 @@ pub struct TrialBalanceReport {
 pub struct AmountRow {
     pub account_code: String,
     pub account_name: String,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub amount: i64,
 }
 
@@ -542,13 +590,25 @@ pub struct IncomeStatementReport {
     pub from: String,
     pub to: String,
     pub revenues: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub revenue_total: i64,
     pub cogs: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub cogs_total: i64,
     pub expenses: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub expense_total: i64,
+    pub non_operating_revenues: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub non_operating_revenue_total: i64,
+    pub non_operating_expenses: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub non_operating_expense_total: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub gross_profit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub operating_profit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub net_profit: i64,
 }
 
@@ -557,12 +617,17 @@ pub struct IncomeStatementReport {
 pub struct BalanceSheetReport {
     pub as_of: String,
     pub assets: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub assets_total: i64,
     pub liabilities: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub liabilities_total: i64,
     pub equity: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub equity_total: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub profit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_liabilities_equity: i64,
     pub balanced: bool,
 }
@@ -578,13 +643,21 @@ pub struct Dashboard {
     pub group_count: i64,
     pub voucher_count: i64,
     pub line_count: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_debit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub total_credit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub assets_total: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub liabilities_total: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub equity_total: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub income_total: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub expense_total: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
     pub net_profit: i64,
     pub recent: Vec<VoucherSummary>,
 }
@@ -752,12 +825,21 @@ fn validate_voucher_type(input: &str) -> Result<String, String> {
 impl Database {
     pub fn next_voucher_number(&self) -> Result<i64, String> {
         self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT COALESCE(MAX(number), 0) + 1 FROM vouchers",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(db::db_error)
+            let maximum: i64 = conn
+                .query_row("SELECT COALESCE(MAX(number), 0) FROM vouchers", [], |row| {
+                    row.get(0)
+                })
+                .map_err(db::db_error)?;
+            let next = maximum
+                .checked_add(1)
+                .ok_or_else(|| "شماره سند بعدی از محدوده مجاز خارج است.".to_string())?;
+            if next > MAX_VOUCHER_NUMBER {
+                return Err(format!(
+                    "شماره سند بعدی از حداکثر {} بیشتر است؛ شماره سند جدیدی ثبت نمی‌شود.",
+                    db::to_fa_digits(MAX_VOUCHER_NUMBER.to_string())
+                ));
+            }
+            Ok(next)
         })
     }
 
@@ -922,8 +1004,11 @@ impl Database {
         if input.source_voucher_id <= 0 || input.source_voucher_number <= 0 {
             return Err("سند مبدأ معتبر نیست.".to_string());
         }
-        if input.target_voucher_number <= 0 {
-            return Err("شماره سند مقصد باید بزرگ‌تر از صفر باشد.".to_string());
+        if input.target_voucher_number <= 0 || input.target_voucher_number > MAX_VOUCHER_NUMBER {
+            return Err(format!(
+                "شماره سند مقصد باید بین ۱ و {} باشد.",
+                db::to_fa_digits(MAX_VOUCHER_NUMBER.to_string())
+            ));
         }
         let mode = input.mode.trim().to_lowercase();
         if mode != "copy" && mode != "move" {
@@ -1004,7 +1089,11 @@ impl Database {
                     ));
                 }
                 let postable = tx.query_row(
-                    "SELECT is_postable FROM accounts WHERE code = ?1",
+                                        "SELECT is_postable FROM accounts
+                                            WHERE code = ?1
+                                                AND NOT EXISTS(
+                                                        SELECT 1 FROM accounts child WHERE child.parent_code = accounts.code
+                                                )",
                     params![&line.account_code],
                     |row| row.get::<_, i64>(0),
                 ).optional().map_err(db::db_error)?.unwrap_or(0);
@@ -1224,9 +1313,17 @@ impl Database {
             for line in &lines {
                 let account = tx
                     .query_row(
-                        "SELECT name, is_postable FROM accounts WHERE code = ?1",
+                        "SELECT name, is_postable,
+                                EXISTS(SELECT 1 FROM accounts child WHERE child.parent_code = accounts.code)
+                           FROM accounts WHERE code = ?1",
                         params![line.account_code],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, i64>(1)?,
+                                row.get::<_, bool>(2)?,
+                            ))
+                        },
                     )
                     .optional()
                     .map_err(db::db_error)?
@@ -1236,7 +1333,7 @@ impl Database {
                             db::to_fa_digits(&line.account_code)
                         )
                     })?;
-                if account.1 == 0 {
+                if account.1 == 0 || account.2 {
                     return Err(format!(
                         "حساب «{}» قابل ثبت نیست؛ حساب کل یا حساب غیرقابل ثبت را انتخاب نکنید.",
                         account.0
@@ -1416,7 +1513,7 @@ impl Database {
             let voucher_type = validate_voucher_type(&input.voucher_type)?;
             let description = validate_description(&input.description, "شرح سند", MAX_DESCRIPTION)?;
             let number = input.number.unwrap_or(0);
-            if number <= 0 || !numbers.insert(number) {
+            if number <= 0 || number > MAX_VOUCHER_NUMBER || !numbers.insert(number) {
                 return Err(format!(
                     "شماره سند {} نامعتبر یا تکراری است.",
                     db::to_fa_digits(number)
@@ -1507,12 +1604,31 @@ impl Database {
                 {
                     return Err("اطلاعات یکی از حساب‌های فایل اکسل معتبر نیست.".to_string());
                 }
-                let exists = tx
-                    .query_row("SELECT 1 FROM accounts WHERE code = ?1", params![code], |_| Ok(()))
+                let existing = tx
+                    .query_row(
+                        "SELECT level, group_code, COALESCE(parent_code, '')
+                           FROM accounts WHERE code = ?1",
+                        params![code],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                            ))
+                        },
+                    )
                     .optional()
-                    .map_err(db::db_error)?
-                    .is_some();
-                if exists {
+                    .map_err(db::db_error)?;
+                if let Some((level, existing_group, existing_parent)) = existing {
+                    if level != account.level
+                        || existing_group != group_code
+                        || existing_parent != parent_code
+                    {
+                        return Err(format!(
+                            "حساب {} از قبل با گروه، سطح یا حساب بالاتر متفاوت ثبت شده است.",
+                            db::to_fa_digits(&code)
+                        ));
+                    }
                     continue;
                 }
                 let group_exists = tx
@@ -1593,6 +1709,12 @@ impl Database {
                     loop {
                         next_number = next_number.checked_add(1)
                             .ok_or_else(|| "شماره سند بعدی از محدوده عددی مجاز بیشتر است.".to_string())?;
+                        if next_number > MAX_VOUCHER_NUMBER {
+                            return Err(format!(
+                                "شماره سند بعدی از حداکثر {} بیشتر است.",
+                                db::to_fa_digits(MAX_VOUCHER_NUMBER.to_string())
+                            ));
+                        }
                         if !used_numbers.contains(&next_number) && !incoming_numbers.contains(&next_number) {
                             stored_number = next_number;
                             break;
@@ -2011,9 +2133,10 @@ impl Database {
     pub fn get_balance_sheet(&self, as_of: &str) -> Result<BalanceSheetReport, String> {
         let as_of = normalize_filter_date(as_of, "تاریخ ترازنامه")?;
         self.with_conn(|conn| {
-            // The final closing voucher zeroes every balance-sheet account,
-            // so the statement is prepared from the books before it.
-            let activities = account_activities(conn, "", &as_of, true, &[CLOSING_FINAL])?;
+            // A final closing voucher without a later opening voucher zeroes
+            // every balance-sheet account, so the statement is prepared from
+            // the books before it. `account_activities` applies that rule.
+            let activities = account_activities(conn, "", &as_of, true, &[])?;
             build_balance_sheet(as_of, activities)
         })
     }
@@ -2045,12 +2168,12 @@ impl Database {
             let mut income_total = 0i64;
             let mut expense_total = 0i64;
 
-            // Balance-sheet figures come from the books before the final
-            // closing voucher; income and expenses also leave out the
+            // Balance-sheet figures follow the same closing/opening rule as
+            // the balance sheet; income and expenses also leave out the
             // voucher that closes the temporary accounts.
-            for activity in &account_activities(conn, "", "", false, &[CLOSING_FINAL])? {
+            for activity in &account_activities(conn, "", "", false, &[])? {
                 let net = checked_sub(activity.debit, activity.credit, "مانده حساب داشبورد")?;
-                match classify(&activity.group_type, &activity.account_code) {
+                match classify_activity(activity, net) {
                     AccountClass::Asset => {
                         assets_total = checked_add(assets_total, net, "جمع دارایی داشبورد")?
                     }
@@ -2079,7 +2202,7 @@ impl Database {
                     activity.credit,
                     "مانده درآمد و هزینه داشبورد",
                 )?;
-                match classify(&activity.group_type, &activity.account_code) {
+                match classify_activity(activity, net) {
                     AccountClass::Income => {
                         income_total = checked_add(
                             income_total,
@@ -2249,6 +2372,12 @@ struct AccountActivity {
 
 /// Per-account totals for a date range. Vouchers whose type is in
 /// `skip_types` are left out of the totals.
+///
+/// A final closing voucher is also hidden while no opening voucher follows
+/// it up to the report date. That keeps a statement prepared at the closing
+/// date on the books as they stood before the close. Once the next year's
+/// opening voucher exists, both vouchers are included and cancel each other,
+/// so later periods are not counted twice.
 fn account_activities(
     conn: &Connection,
     from: &str,
@@ -2276,22 +2405,43 @@ fn account_activities(
                      AND (?2 = '' OR v.date <= ?2)
                      AND v.type <> ?3
                      AND v.type <> ?4
+                     AND NOT (
+                           v.type = ?5
+                           AND NOT EXISTS (
+                               SELECT 1
+                                 FROM vouchers o
+                                WHERE o.type = ?6
+                                  AND (?2 = '' OR o.date <= ?2)
+                                  AND (o.date > v.date
+                                       OR (o.date = v.date AND o.id > v.id))
+                           )
+                     )
                ) ON l.account_code = a.code
               ORDER BY a.code",
         )
         .map_err(db::db_error)?;
 
     let raw = stmt
-        .query_map(params![from_value, to_value, skip_a, skip_b], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<i64>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-            ))
-        })
+        .query_map(
+            params![
+                from_value,
+                to_value,
+                skip_a,
+                skip_b,
+                CLOSING_FINAL,
+                VOUCHER_TYPES[1]
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                ))
+            },
+        )
         .map_err(db::db_error)?;
 
     let mut activities: Vec<AccountActivity> = Vec::new();
@@ -2350,6 +2500,18 @@ fn classify(group_type: &str, account_code: &str) -> AccountClass {
     }
 }
 
+fn classify_activity(activity: &AccountActivity, net: i64) -> AccountClass {
+    if matches!(activity.group_code.as_str(), "10" | "11") {
+        if net < 0 {
+            AccountClass::Income
+        } else {
+            AccountClass::Expense
+        }
+    } else {
+        classify(&activity.group_type, &activity.account_code)
+    }
+}
+
 fn build_income_statement(
     from: String,
     to: String,
@@ -2358,6 +2520,8 @@ fn build_income_statement(
     let mut revenues = Vec::new();
     let mut cogs = Vec::new();
     let mut expenses = Vec::new();
+    let mut non_operating_revenues = Vec::new();
+    let mut non_operating_expenses = Vec::new();
 
     for activity in activities {
         let net = checked_sub(
@@ -2368,15 +2532,36 @@ fn build_income_statement(
         if net == 0 {
             continue;
         }
-        match classify(&activity.group_type, &activity.account_code) {
+        if activity.group_code == "10" || activity.group_code == "11" {
+            let amount = if net < 0 {
+                checked_neg(net, "مبلغ درآمد گروه‌های سایر")?
+            } else {
+                net
+            };
+            let row = AmountRow {
+                account_code: activity.account_code,
+                account_name: activity.account_name,
+                amount,
+            };
+            match (activity.group_code.as_str(), net < 0) {
+                ("10", true) => revenues.push(row),
+                ("10", false) => expenses.push(row),
+                ("11", true) => non_operating_revenues.push(row),
+                ("11", false) => non_operating_expenses.push(row),
+                _ => unreachable!(),
+            }
+            continue;
+        }
+        match classify_activity(&activity, net) {
             AccountClass::Income => {
                 let amount = checked_neg(net, "مبلغ درآمد")?;
                 if amount != 0 {
-                    revenues.push(AmountRow {
+                    let row = AmountRow {
                         account_code: activity.account_code,
                         account_name: activity.account_name,
                         amount,
-                    });
+                    };
+                    revenues.push(row);
                 }
             }
             AccountClass::Expense => {
@@ -2389,8 +2574,7 @@ fn build_income_statement(
                     account_name: activity.account_name,
                     amount,
                 };
-                let is_cogs = activity.group_code == "9" || activity.account_code.starts_with('5');
-                if is_cogs {
+                if activity.group_code == "9" {
                     cogs.push(row);
                 } else {
                     expenses.push(row);
@@ -2409,8 +2593,25 @@ fn build_income_statement(
         expenses.iter().map(|r| r.amount),
         "جمع هزینه صورت سود و زیان",
     )?;
+    let non_operating_revenue_total = checked_sum(
+        non_operating_revenues.iter().map(|r| r.amount),
+        "جمع درآمدهای غیرعملیاتی",
+    )?;
+    let non_operating_expense_total = checked_sum(
+        non_operating_expenses.iter().map(|r| r.amount),
+        "جمع هزینه‌های غیرعملیاتی",
+    )?;
     let gross_profit = checked_sub(revenue_total, cogs_total, "سود ناخالص")?;
     let operating_profit = checked_sub(gross_profit, expense_total, "سود عملیاتی")?;
+    let net_profit = checked_sub(
+        checked_add(
+            operating_profit,
+            non_operating_revenue_total,
+            "سود پیش از هزینه‌های غیرعملیاتی",
+        )?,
+        non_operating_expense_total,
+        "سود خالص",
+    )?;
     Ok(IncomeStatementReport {
         from,
         to,
@@ -2420,9 +2621,13 @@ fn build_income_statement(
         cogs_total,
         expenses,
         expense_total,
+        non_operating_revenues,
+        non_operating_revenue_total,
+        non_operating_expenses,
+        non_operating_expense_total,
         gross_profit,
         operating_profit,
-        net_profit: operating_profit,
+        net_profit,
     })
 }
 
@@ -2441,7 +2646,7 @@ fn build_balance_sheet(
         if net == 0 {
             continue;
         }
-        match classify(&activity.group_type, &activity.account_code) {
+        match classify_activity(&activity, net) {
             AccountClass::Asset => assets.push(AmountRow {
                 account_code: activity.account_code,
                 account_name: activity.account_name,
@@ -2543,6 +2748,30 @@ mod tests {
     }
 
     #[test]
+    fn serializes_large_amounts_as_exact_decimal_strings() {
+        #[derive(Serialize)]
+        struct AmountValue {
+            #[serde(serialize_with = "serialize_exact_amount")]
+            amount: i64,
+        }
+
+        assert_eq!(
+            serde_json::to_string(&AmountValue {
+                amount: 9_007_199_254_740_991,
+            })
+            .unwrap(),
+            "{\"amount\":9007199254740991}"
+        );
+        assert_eq!(
+            serde_json::to_string(&AmountValue {
+                amount: 9_007_199_254_740_992,
+            })
+            .unwrap(),
+            "{\"amount\":\"9007199254740992\"}"
+        );
+    }
+
+    #[test]
     fn validates_and_normalizes_jalali_voucher_dates() {
         assert_eq!(validate_voucher_date("۱۴۰۵/۱/۱").unwrap(), "1405/01/01");
         assert!(validate_voucher_date("1405/13/01").is_err());
@@ -2586,6 +2815,77 @@ mod tests {
         assert_eq!(updated.number, saved.number);
         assert_eq!(updated.date, "1405/01/11");
         assert_eq!(updated.total_debit, 2_000);
+    }
+
+    #[test]
+    fn refuses_posting_to_parent_even_if_legacy_flag_allows_it() {
+        let db = db::memory_database();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE accounts SET is_postable = 1 WHERE code = '110201'",
+                [],
+            )
+            .map_err(db::db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let result = db.save_voucher(voucher(
+            "1405/01/10",
+            vec![line("110201", 1_000, 0), line("410101", 0, 1_000)],
+        ));
+
+        assert!(result.unwrap_err().contains("قابل ثبت نیست"));
+    }
+
+    #[test]
+    fn refuses_transferring_legacy_rows_posted_to_parent_accounts() {
+        let db = db::memory_database();
+        let saved = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+        let first_line_id = saved.lines[0].id;
+        let line_ids = saved.lines.iter().map(|line| line.id).collect();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE accounts SET is_postable = 1 WHERE code = '110201'",
+                [],
+            )
+            .map_err(db::db_error)?;
+            conn.execute(
+                "UPDATE voucher_lines SET account_code = '110201' WHERE id = ?1",
+                params![first_line_id],
+            )
+            .map_err(db::db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let error = db
+            .transfer_voucher_lines(VoucherTransferInput {
+                source_voucher_id: saved.id,
+                source_voucher_number: saved.number,
+                target_voucher_number: 2,
+                line_ids,
+                mode: "copy".to_string(),
+            })
+            .unwrap_err();
+
+        assert!(error.contains("قابل ثبت نیست"));
+    }
+
+    #[test]
+    fn transfer_rejects_target_numbers_above_the_safe_limit() {
+        let db = db::memory_database();
+        let error = db
+            .transfer_voucher_lines(VoucherTransferInput {
+                source_voucher_id: 1,
+                source_voucher_number: 1,
+                target_voucher_number: MAX_VOUCHER_NUMBER + 1,
+                line_ids: Vec::new(),
+                mode: "copy".to_string(),
+            })
+            .unwrap_err();
+
+        assert!(error.contains("شماره سند مقصد"));
     }
 
     #[test]
@@ -2676,6 +2976,70 @@ mod tests {
         assert_eq!(dashboard.assets_total, 1_000_000);
         assert_eq!(dashboard.net_profit, 1_000_000);
         assert_eq!(dashboard.recent.len(), 1);
+    }
+
+    #[test]
+    fn non_operating_accounts_change_net_profit_not_operating_profit() {
+        let db = db::memory_database();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO accounts (code, name, level, group_code, nature, is_postable)
+                   VALUES ('1305', 'درآمد عملیاتی آزمایشی', 1, '10', 'dual', 1),
+                       ('1405', 'هزینه عملیاتی آزمایشی', 1, '10', 'dual', 1),
+                       ('1105', 'درآمد غیرعملیاتی آزمایشی', 1, '11', 'dual', 1),
+                       ('1205', 'هزینه غیرعملیاتی آزمایشی', 1, '11', 'dual', 1)",
+                [],
+            )
+            .map_err(db::db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        db.save_voucher(voucher(
+            "1405/01/10",
+            vec![line("110101", 1_000, 0), line("410101", 0, 1_000)],
+        ))
+        .unwrap();
+        db.save_voucher(voucher(
+            "1405/01/11",
+            vec![line("610101", 200, 0), line("110101", 0, 200)],
+        ))
+        .unwrap();
+        db.save_voucher(voucher(
+            "1405/01/12",
+            vec![line("110101", 40, 0), line("1305", 0, 40)],
+        ))
+        .unwrap();
+        db.save_voucher(voucher(
+            "1405/01/13",
+            vec![line("1405", 10, 0), line("110101", 0, 10)],
+        ))
+        .unwrap();
+        db.save_voucher(voucher(
+            "1405/01/14",
+            vec![line("110101", 100, 0), line("1105", 0, 100)],
+        ))
+        .unwrap();
+        db.save_voucher(voucher(
+            "1405/01/15",
+            vec![line("1205", 50, 0), line("110101", 0, 50)],
+        ))
+        .unwrap();
+
+        let report = db.get_income_statement("1405/01/01", "1405/01/31").unwrap();
+        assert_eq!(report.operating_profit, 830);
+        assert_eq!(report.non_operating_revenue_total, 100);
+        assert_eq!(report.non_operating_expense_total, 50);
+        assert_eq!(report.net_profit, 880);
+
+        let balance = db.get_balance_sheet("1405/01/31").unwrap();
+        assert_eq!(balance.assets_total, 880);
+        assert_eq!(balance.profit, report.net_profit);
+        assert!(balance.balanced);
+
+        let dashboard = db.get_dashboard().unwrap();
+        assert_eq!(dashboard.assets_total, 880);
+        assert_eq!(dashboard.net_profit, report.net_profit);
     }
 
     #[test]
@@ -3063,6 +3427,39 @@ mod tests {
     }
 
     #[test]
+    fn income_statement_classifies_cogs_by_group_not_code_prefix() {
+        let db = db::memory_database();
+        db.create_account("5102", "بهای تمام‌شده", 1, "9", "debtor", "", false)
+            .unwrap();
+        db.create_account("510201", "مواد مصرفی", 2, "9", "debtor", "5102", true)
+            .unwrap();
+        db.create_account("5111", "هزینه‌های عملیاتی", 1, "8", "debtor", "", false)
+            .unwrap();
+        db.create_account("511101", "اجاره", 2, "8", "debtor", "5111", true)
+            .unwrap();
+
+        db.save_voucher(voucher(
+            "1405/01/10",
+            vec![
+                line("510201", 100, 0),
+                line("511101", 40, 0),
+                line("110101", 0, 140),
+            ],
+        ))
+        .unwrap();
+
+        let income = db.get_income_statement("1405/01/01", "1405/12/29").unwrap();
+        assert_eq!(income.cogs_total, 100);
+        assert_eq!(income.cogs.len(), 1);
+        assert_eq!(income.cogs[0].account_code, "510201");
+        assert_eq!(income.expense_total, 40);
+        assert_eq!(income.expenses.len(), 1);
+        assert_eq!(income.expenses[0].account_code, "511101");
+        assert_eq!(income.gross_profit, -100);
+        assert_eq!(income.net_profit, -140);
+    }
+
+    #[test]
     fn aggregate_arithmetic_reports_overflow_instead_of_wrapping() {
         assert!(checked_add(i64::MAX, 1, "آزمون").is_err());
         assert!(checked_sub(i64::MIN, 1, "آزمون").is_err());
@@ -3128,6 +3525,54 @@ mod tests {
         let balance = db.get_balance_sheet("1405/12/29").unwrap();
         assert_eq!(balance.assets_total, 1_000_000);
         assert!(balance.balanced);
+    }
+
+    #[test]
+    fn opening_voucher_cancels_the_previous_final_closing() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/10", 1_000_000)).unwrap();
+
+        let mut closing = voucher(
+            "1405/12/29",
+            vec![line("410101", 1_000_000, 0), line("310101", 0, 1_000_000)],
+        );
+        closing.voucher_type = CLOSING_TEMPORARY.to_string();
+        db.save_voucher(closing).unwrap();
+
+        let mut final_closing = voucher(
+            "1405/12/29",
+            vec![line("310101", 1_000_000, 0), line("110101", 0, 1_000_000)],
+        );
+        final_closing.voucher_type = CLOSING_FINAL.to_string();
+        db.save_voucher(final_closing).unwrap();
+
+        // Before the next year is opened the statement still shows the books
+        // as they stood before the final closing voucher.
+        let before_opening = db.get_balance_sheet("1405/12/29").unwrap();
+        assert_eq!(before_opening.assets_total, 1_000_000);
+        assert_eq!(before_opening.equity_total, 1_000_000);
+        assert!(before_opening.balanced);
+
+        let mut opening = voucher(
+            "1406/01/01",
+            vec![line("110101", 1_000_000, 0), line("310101", 0, 1_000_000)],
+        );
+        opening.voucher_type = "سند حسابداری افتتاحیه".to_string();
+        db.save_voucher(opening).unwrap();
+
+        // With the opening voucher present, the closing and opening pair is
+        // included and cancels out instead of doubling the balances.
+        let after_opening = db.get_balance_sheet("1406/06/01").unwrap();
+        assert_eq!(after_opening.assets_total, 1_000_000);
+        assert_eq!(after_opening.equity_total, 1_000_000);
+        assert_eq!(after_opening.profit, 0);
+        assert!(after_opening.balanced);
+
+        let dashboard = db.get_dashboard().unwrap();
+        assert_eq!(dashboard.assets_total, 1_000_000);
+        assert_eq!(dashboard.equity_total, 1_000_000);
+        assert_eq!(dashboard.income_total, 1_000_000);
+        assert_eq!(dashboard.net_profit, 1_000_000);
     }
 
     #[test]
