@@ -783,6 +783,14 @@ fn find_account_columns(
     None
 }
 
+fn account_nature_label(value: &str) -> &str {
+    match value {
+        "creditor" => "بستانکار",
+        "dual" => "دوگانه",
+        _ => "بدهکار",
+    }
+}
+
 fn account_nature(raw: &str, fallback: &str) -> Result<String, String> {
     let value = raw.trim();
     if value.is_empty() {
@@ -885,7 +893,7 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String
         }
         let mut values = vec![String::new(); headers.len()];
         values[0] = chain[0].group_code.clone();
-        values[1] = chain[0].nature.clone();
+        values[1] = account_nature_label(&chain[0].nature).to_string();
         for account in chain {
             let offset = match account.level {
                 1 => 2,
@@ -895,7 +903,7 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String
             };
             values[offset] = account.code.clone();
             values[offset + 1] = account.name.clone();
-            values[offset + 2] = account.nature.clone();
+            values[offset + 2] = account_nature_label(&account.nature).to_string();
         }
         let row = index as u32 + 1;
         for (column, value) in values.iter().enumerate() {
