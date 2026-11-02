@@ -15,11 +15,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+base64 = "0.22.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.17"
 jalali-calendar = "0.1.2"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 calamine = "0.37"
 rust_xlsxwriter = "0.102"
 

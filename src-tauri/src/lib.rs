@@ -172,6 +172,15 @@ fn next_voucher_number(state: State<'_, AppState>) -> Result<i64, String> {
 }
 
 #[tauri::command(async)]
+fn adjacent_voucher_number(
+    number: i64,
+    direction: String,
+    state: State<'_, AppState>,
+) -> Result<Option<i64>, String> {
+    state.database.adjacent_voucher_number(number, &direction)
+}
+
+#[tauri::command(async)]
 fn list_vouchers(
     from: String,
     to: String,
@@ -387,7 +396,8 @@ fn open_balance_sheet_preview(
 ) -> Result<(), String> {
     let report = state.database.get_balance_sheet(&as_of)?;
     let meta = report_meta(&state)?;
-    show_preview_window(&app, report::balance_sheet_print_doc(&report, &meta))
+    let document = report::balance_sheet_print_doc(&report, &meta)?;
+    show_preview_window(&app, document)
 }
 
 #[tauri::command(async)]
@@ -429,6 +439,33 @@ fn save_report_html(default_name: String, html: String) -> Result<Option<String>
     }
     std::fs::write(&path, html).map_err(|e| format!("ذخیره فایل ناموفق بود: {e}"))?;
     Ok(Some(path))
+}
+
+#[tauri::command]
+fn backup_database(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("ذخیره پشتیبان پایگاه داده")
+        .set_file_name("hesabdari-backup.sqlite3")
+        .add_filter("SQLite database", &["sqlite3", "db"])
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    state.database.backup_to(&path)?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn restore_database(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("انتخاب پشتیبان برای بازیابی")
+        .add_filter("SQLite backup", &["sqlite3", "db"])
+        .pick_file()
+    else {
+        return Ok(None);
+    };
+    let safety_path = state.database.restore_from(&path)?;
+    Ok(Some(safety_path.to_string_lossy().to_string()))
 }
 
 /// Opens a report the user saved from the preview window. The webview may
@@ -619,10 +656,19 @@ fn open_external(path: &str) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .setup(|app| {
-            let (connection, path) = db::initialize(app.handle()).map_err(std::io::Error::other)?;
-            app.state::<AppState>().database.attach(connection, path);
-            Ok(())
+        .setup(|app| match db::initialize(app.handle()) {
+            Ok((connection, path)) => {
+                app.state::<AppState>().database.attach(connection, path);
+                Ok(())
+            }
+            Err(message) => {
+                let _ = rfd::MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Error)
+                    .set_title("خطا در راه‌اندازی")
+                    .set_description(&message)
+                    .show();
+                Err(std::io::Error::other(message).into())
+            }
         })
         .on_window_event(|window, event| {
             // Child forms must not outlive the main window.
@@ -651,6 +697,7 @@ pub fn run() {
             save_settings,
             validate_voucher_date,
             next_voucher_number,
+            adjacent_voucher_number,
             list_vouchers,
             get_voucher,
             transfer_voucher_lines,
@@ -676,6 +723,8 @@ pub fn run() {
             open_voucher_preview,
             get_print_doc,
             save_report_html,
+            backup_database,
+            restore_database,
             open_path,
             open_voucher_window,
             take_voucher_request,

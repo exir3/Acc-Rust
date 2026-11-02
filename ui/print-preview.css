@@ -320,7 +320,6 @@ html.pp-root #ppSheet .report-doc {
   .pp-subtitle { display: none; }
   .pp-title { max-width: 30vw; }
   .pp-meta { display: none; }
-  #ppSave { display: none; }
 }
 @media (max-width: 760px) {
   .pp-kicker { display: none; }

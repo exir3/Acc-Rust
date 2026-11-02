@@ -1535,7 +1535,7 @@ function openAccountDialog(account) {
       <form id="acctForm" class="acct-form" autocomplete="off">
         <div class="field">
           <label for="acctCode">کد حساب <span class="req">*</span></label>
-          <input id="acctCode" class="input mono" type="text" inputmode="numeric" maxlength="50" value="${esc(toFa(suggestedCode))}" ${isEdit ? 'readonly' : ''} placeholder="کد پیشنهادی بر اساس حساب بالاتر" />
+          <input id="acctCode" class="input mono" type="text" inputmode="numeric" maxlength="20" value="${esc(toFa(suggestedCode))}" ${isEdit ? 'readonly' : ''} placeholder="کد پیشنهادی بر اساس حساب بالاتر" />
         </div>
         <div class="field wide">
           <label for="acctName">نام حساب <span class="req">*</span></label>
@@ -1820,12 +1820,55 @@ function renderSettings(settings) {
       <div class="form-note" style="margin-top:14px">
         همه اطلاعات به‌صورت محلی و آفلاین در پایگاه داده SQLite ذخیره می‌شود.
       </div>
+      <div class="section-head">
+        <h2>${icon('i-save')} پشتیبان‌گیری</h2>
+      </div>
+      <p class="form-note">بازیابی، اطلاعات فعلی را جایگزین می‌کند و پیش از آن یک نسخهٔ ایمنی نگه می‌دارد.</p>
+      <div class="form-actions">
+        <button type="button" class="btn" data-backup-database>${icon('i-save')}<span>تهیه پشتیبان</span></button>
+        <button type="button" class="btn" data-restore-database>${icon('i-refresh')}<span>بازیابی پشتیبان</span></button>
+      </div>
     </div>
   </div>`;
 }
 
 function bindSettings(root) {
   root.querySelector('[data-edit-settings]')?.addEventListener('click', () => openSettingsDialog());
+  root.querySelector('[data-backup-database]')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const path = await invoke('backup_database');
+      if (path) toast(`پشتیبان ذخیره شد: ${path}`, 'ok');
+    } catch (error) {
+      toast(errorText(error), 'error');
+    } finally {
+      button.disabled = false;
+    }
+  });
+  root.querySelector('[data-restore-database]')?.addEventListener('click', async (event) => {
+    const confirmed = await confirmDialog(
+      'بازیابی پشتیبان',
+      'اطلاعات فعلی با فایل پشتیبان جایگزین می‌شود. پیش از بازیابی یک نسخهٔ ایمنی خودکار ساخته خواهد شد. ادامه می‌دهید؟'
+    );
+    if (!confirmed) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const safetyPath = await invoke('restore_database');
+      if (!safetyPath) return;
+      await Promise.all([ensureAccounts(true), ensureGroups(true)]);
+      const dashboard = await invoke('get_dashboard');
+      state.voucherCount = dashboard.voucherCount || 0;
+      updateVoucherBadge();
+      await navigate('settings', { force: true });
+      toast(`بازیابی انجام شد؛ نسخهٔ قبلی در ${safetyPath} نگهداری شد.`, 'ok');
+    } catch (error) {
+      toast(errorText(error), 'error');
+    } finally {
+      button.disabled = false;
+    }
+  });
   const sidebar = $('.sidebar');
   updateSidebarToggleButton(!!sidebar?.classList.contains('is-hidden'));
   root.querySelector('[data-sidebar-toggle]')?.addEventListener('click', toggleSidebarVisibility);
@@ -2097,7 +2140,7 @@ function openReorganizeVouchers() {
           <td>${toFa(change.newNumber)}</td>
         </tr>`).join('');
       const unbalancedRows = unbalancedGroups.slice(0, 10).map((group) => `
-        <li>${esc(group.date)}: ${group.sourceVoucherNumbers.map(toFa).join('، ')}</li>`).join('');
+        <li>${esc(group.date)}: ${group.sourceVoucherNumbers.map(toFa).join('، ')} — ${esc(group.reason || 'گروه قابل ادغام نیست.')}</li>`).join('');
       previewArea.innerHTML = `
         <div class="info-list">
           <div><dt>تعداد اسناد</dt><dd>${toFa(preview.totalVouchers)}</dd></div>
@@ -2107,7 +2150,7 @@ function openReorganizeVouchers() {
           <div><dt>تغییر شماره</dt><dd>${toFa(changes.length)}</dd></div>
         </div>
         ${noChanges ? '<div class="note">تغییری برای این عملیات پیدا نشد.</div>' : ''}
-        ${unbalancedGroups.length ? `<div class="note" data-tone="danger">${toFa(unbalancedGroups.length)} گروه هم‌تاریخ تراز نیستند و ادغام نمی‌شوند.<ul>${unbalancedRows}</ul></div>` : ''}
+        ${unbalancedGroups.length ? `<div class="note" data-tone="danger">${toFa(unbalancedGroups.length)} گروه هم‌تاریخ به دلیل نامتوازن‌بودن یا محدودیت داده ادغام نمی‌شوند.<ul>${unbalancedRows}</ul></div>` : ''}
         ${mergeGroups.length ? `
           <h3 class="reorganize-section-title">گروه‌های ادغام (${toFa(mergeGroups.length)})</h3>
           <div class="reorganize-table-wrap"><table><thead><tr><th>تاریخ</th><th>شماره اسناد</th><th>شماره باقی‌مانده</th><th>ردیف</th></tr></thead><tbody>${mergeRows}</tbody></table></div>
@@ -2547,6 +2590,11 @@ async function openGroupsWindow() {
 }
 
 function bindChrome() {
+  window.addEventListener('accounts-changed', () => {
+    state.accountsLoaded = false;
+    state.groupsLoaded = false;
+    if (state.page === 'accounts') void navigate('accounts', { force: true });
+  });
   $('#btnExitApp')?.addEventListener('click', () => {
     void exitApplication();
   });

@@ -22,11 +22,13 @@ const state = {
   selectedId: null,
   mode: 'view', // view | new | edit
   form: { code: '', name: '', type: TYPES[0] },
+  initialCode: '',
   loading: true,
   saving: false,
   deleting: false,
   dbPath: '',
   confirm: null,
+  confirmReturnFocus: null,
   confirmBusy: false,
   closeApproved: false,
   errorTimer: null,
@@ -368,6 +370,7 @@ function startNew() {
     name: '',
     type: TYPES[0],
   };
+  state.initialCode = onlyDigits(state.form.code);
   clearError();
   render();
 
@@ -407,7 +410,9 @@ function cancelEdit() {
 function isDirty() {
   const group = selectedGroup();
   if (state.mode === 'new') {
-    return normalizeName(state.form.name) !== '' || onlyDigits(state.form.code) !== '';
+    return normalizeName(state.form.name) !== ''
+      || onlyDigits(state.form.code) !== state.initialCode
+      || state.form.type !== TYPES[0];
   }
   if (state.mode === 'edit' && group) {
     return normalizeName(state.form.name) !== group.name || state.form.type !== group.type;
@@ -561,6 +566,7 @@ function deleteSelected() {
 function openConfirm({ title, message, confirmLabel = 'بله', tone = 'warn', onConfirm }) {
   state.confirm = { title, message, confirmLabel, tone, onConfirm };
   state.confirmBusy = false;
+  state.confirmReturnFocus = document.activeElement;
 
   $('#agConfirmTitle').textContent = title;
   $('#agConfirmText').textContent = message;
@@ -580,6 +586,9 @@ function closeConfirm() {
   if (state.confirmBusy) return;
   state.confirm = null;
   $('#agConfirm').hidden = true;
+  const returnFocus = state.confirmReturnFocus;
+  state.confirmReturnFocus = null;
+  if (returnFocus?.isConnected && !returnFocus.closest('[inert]')) returnFocus.focus();
 }
 
 async function confirmYes() {
@@ -597,6 +606,7 @@ async function confirmYes() {
     state.confirmBusy = false;
     state.confirm = null;
     $('#agConfirm').hidden = true;
+    state.confirmReturnFocus = null;
   }
 }
 
@@ -766,6 +776,21 @@ function bindEvents() {
   $('#agConfirmNo').addEventListener('click', closeConfirm);
   $('#agConfirm').addEventListener('click', (event) => {
     if (event.target === $('#agConfirm')) closeConfirm();
+  });
+  $('#agConfirm').addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    const focusable = [$('#agConfirmYes'), $('#agConfirmNo')]
+      .filter((button) => button && !button.disabled);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   });
 
   document.addEventListener('keydown', handleKeydown);

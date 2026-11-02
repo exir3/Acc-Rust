@@ -8,6 +8,7 @@ use crate::vouchers::{
     format_amount, BalanceSheetReport, IncomeStatementReport, JournalReport, LedgerReport,
     TrialBalanceReport, Voucher,
 };
+use base64::Engine;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -102,6 +103,20 @@ html, body { margin: 0; padding: 0; background: #fff; }
 .rpt-note { color: #7c8ba4; font-size: 10.5px; margin-top: 6px; }
 "#;
 
+fn portable_base_style() -> String {
+    let regular = base64::engine::general_purpose::STANDARD
+        .encode(include_bytes!("../../ui/fonts/Vazirmatn-FD-Regular.ttf"));
+    let bold = base64::engine::general_purpose::STANDARD
+        .encode(include_bytes!("../../ui/fonts/Vazirmatn-FD-Bold.ttf"));
+    format!(
+        r#"
+@font-face {{ font-family: "Vazirmatn FD"; src: url(data:font/ttf;base64,{regular}) format("truetype"); font-weight: 400; }}
+@font-face {{ font-family: "Vazirmatn FD"; src: url(data:font/ttf;base64,{bold}) format("truetype"); font-weight: 700; }}
+{BASE_STYLE}
+"#
+    )
+}
+
 fn html(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -137,6 +152,7 @@ fn period(report_from: &str, report_to: &str) -> String {
 }
 
 fn page(title: &str, body: &str, meta: &ReportMeta, landscape: bool, file_name: &str) -> PrintDoc {
+    let base_style = portable_base_style();
     let (width, height, page_css) = if landscape {
         (
             297.0,
@@ -156,7 +172,7 @@ fn page(title: &str, body: &str, meta: &ReportMeta, landscape: bool, file_name: 
 <head>
 <meta charset="utf-8">
 <title>{title} — {company}</title>
-<style>{BASE_STYLE}
+<style>{base_style}
 {page_css}
 </style>
 </head>
@@ -553,7 +569,14 @@ fn balance_section(
     )
 }
 
-pub fn balance_sheet_print_doc(report: &BalanceSheetReport, meta: &ReportMeta) -> PrintDoc {
+pub fn balance_sheet_print_doc(
+    report: &BalanceSheetReport,
+    meta: &ReportMeta,
+) -> Result<PrintDoc, String> {
+    let equity_total = report
+        .equity_total
+        .checked_add(report.profit)
+        .ok_or_else(|| "جمع حقوق مالکانه از محدوده عددی مجاز بیشتر است.".to_string())?;
     let mut equity_rows = report.equity.clone();
     equity_rows.push(crate::vouchers::AmountRow {
         account_code: String::new(),
@@ -589,7 +612,7 @@ pub fn balance_sheet_print_doc(report: &BalanceSheetReport, meta: &ReportMeta) -
         equity = balance_section(
             "حقوق مالکانه",
             &equity_rows,
-            report.equity_total + report.profit,
+            equity_total,
             "جمع حقوق مالکانه"
         ),
         assets_total = money(report.assets_total),
@@ -601,7 +624,7 @@ pub fn balance_sheet_print_doc(report: &BalanceSheetReport, meta: &ReportMeta) -
         },
     );
 
-    page("ترازنامه", &body, meta, false, "ترازنامه.html")
+    Ok(page("ترازنامه", &body, meta, false, "ترازنامه.html"))
 }
 
 /* ── Voucher ────────────────────────────────────────────────── */
@@ -659,4 +682,42 @@ pub fn voucher_print_doc(voucher: &Voucher, meta: &ReportMeta) -> PrintDoc {
         false,
         &format!("سند-{}.html", voucher.number),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn balance_sheet_print_rejects_equity_total_overflow() {
+        let report = BalanceSheetReport {
+            as_of: "1405/01/01".to_string(),
+            assets: Vec::new(),
+            assets_total: 0,
+            liabilities: Vec::new(),
+            liabilities_total: 0,
+            equity: Vec::new(),
+            equity_total: i64::MAX,
+            profit: 1,
+            total_liabilities_equity: 0,
+            balanced: false,
+        };
+        let meta = ReportMeta {
+            company: String::new(),
+            fiscal_year: String::new(),
+            today: String::new(),
+        };
+
+        assert!(balance_sheet_print_doc(&report, &meta)
+            .unwrap_err()
+            .contains("محدوده عددی"));
+    }
+
+    #[test]
+    fn portable_print_style_embeds_regular_and_bold_fonts() {
+        let style = portable_base_style();
+        assert_eq!(style.matches("data:font/ttf;base64,").count(), 2);
+        assert!(style.contains("font-weight: 400"));
+        assert!(style.contains("font-weight: 700"));
+    }
 }

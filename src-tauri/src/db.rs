@@ -4,13 +4,15 @@
 //! live in one local database. SQLite is bundled with the executable, so the
 //! application is fully usable offline after installation.
 
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
 pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 const LEGACY_DB_FILE_NAME: &str = "audit-analyzer.sqlite3";
 const LEGACY_IDENTIFIER: &str = "ir.audit.account-analyzer";
 
@@ -302,6 +304,70 @@ impl Database {
             .unwrap_or_default()
     }
 
+    pub fn backup_to(&self, destination: &Path) -> Result<(), String> {
+        let current_path = PathBuf::from(self.path_string());
+        if same_path(&current_path, destination) {
+            return Err("مسیر پشتیبان نمی‌تواند همان مسیر پایگاه دادهٔ فعال باشد.".to_string());
+        }
+
+        self.with_conn(|source| {
+            let temporary = unique_sibling_path(destination, "backup-tmp");
+            let _ = std::fs::remove_file(&temporary);
+            let mut target = Connection::open(&temporary).map_err(db_error)?;
+            {
+                let backup = Backup::new(source, &mut target).map_err(db_error)?;
+                backup
+                    .run_to_completion(128, Duration::from_millis(10), None)
+                    .map_err(db_error)?;
+            }
+            drop(target);
+            replace_file(&temporary, destination)
+        })
+    }
+
+    pub fn restore_from(&self, source_path: &Path) -> Result<PathBuf, String> {
+        let current_path = PathBuf::from(self.path_string());
+        if same_path(&current_path, source_path) {
+            return Err("فایل انتخاب‌شده پایگاه دادهٔ فعال است، نه یک پشتیبان.".to_string());
+        }
+
+        let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("باز کردن فایل پشتیبان ناموفق بود: {error}"))?;
+        validate_backup_connection(&source)?;
+        let safety_path = unique_sibling_path(&current_path, "before-restore");
+
+        self.with_conn(|target| {
+            let mut safety = Connection::open(&safety_path).map_err(db_error)?;
+            {
+                let backup = Backup::new(target, &mut safety).map_err(db_error)?;
+                backup
+                    .run_to_completion(128, Duration::from_millis(10), None)
+                    .map_err(db_error)?;
+            }
+            drop(safety);
+
+            let restore_result = {
+                let backup = Backup::new(&source, target).map_err(db_error)?;
+                backup
+                    .run_to_completion(128, Duration::from_millis(10), None)
+                    .map_err(db_error)
+            }
+            .and_then(|()| validate_backup_connection(target));
+            if let Err(error) = restore_result {
+                let safety = Connection::open(&safety_path).map_err(db_error)?;
+                {
+                    let rollback = Backup::new(&safety, target).map_err(db_error)?;
+                    rollback
+                        .run_to_completion(128, Duration::from_millis(10), None)
+                        .map_err(db_error)?;
+                }
+                return Err(format!(
+                    "بازیابی انجام نشد و پایگاه قبلی بازگردانده شد: {error}"
+                ));
+            }
+            Ok(safety_path.clone())
+        })
+    }
     pub(crate) fn with_conn<T>(
         &self,
         f: impl FnOnce(&mut Connection) -> Result<T, String>,
@@ -636,7 +702,7 @@ impl Database {
                         .to_string(),
                 );
             }
-            let has_history = account_has_lines(&tx, &code)?;
+            let has_history = account_subtree_has_lines(&tx, &code)?;
             if has_history && (old_group != group_code || old_parent_code != parent_code) {
                 return Err(
                     "این حساب در اسناد ثبت‌شده استفاده شده است؛ تغییر گروه یا والد آن می‌تواند طبقه‌بندی و مانده گزارش‌های تاریخی را تغییر دهد. ابتدا حساب اصلاحی یا ساختار جایگزین تعریف کنید."
@@ -646,6 +712,16 @@ impl Database {
 
             let (parent_code, parent_name) =
                 resolve_parent(&tx, &code, level, &parent_code, &group_code)?;
+            let new_parent_code = parent_code.as_deref().unwrap_or("");
+            if old_parent_code != new_parent_code
+                && !new_parent_code.is_empty()
+                && account_has_lines(&tx, new_parent_code)?
+            {
+                return Err(
+                    "حساب بالاتر در اسناد استفاده شده است؛ این حساب به‌عنوان زیرحساب انتخاب نمی‌شود."
+                        .to_string(),
+                );
+            }
             let postable = level > 1 && is_postable && children == 0;
             if !postable && level > 1 && children == 0 && account_has_lines(&tx, &code)? {
                 return Err(
@@ -686,6 +762,41 @@ impl Database {
                 params![name, code],
             )
             .map_err(db_error)?;
+
+            if old_parent_code != new_parent_code {
+                if !old_parent_code.is_empty() {
+                    let remaining_children: i64 = tx
+                        .query_row(
+                            "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
+                            params![old_parent_code],
+                            |row| row.get(0),
+                        )
+                        .map_err(db_error)?;
+                    if remaining_children == 0 {
+                        tx.execute(
+                            "UPDATE accounts
+                                SET is_postable = COALESCE(postable_before_children, is_postable),
+                                    postable_before_children = NULL,
+                                    updated_at = datetime('now', 'localtime')
+                              WHERE code = ?1",
+                            params![old_parent_code],
+                        )
+                        .map_err(db_error)?;
+                    }
+                }
+
+                if !new_parent_code.is_empty() {
+                    tx.execute(
+                        "UPDATE accounts
+                            SET postable_before_children = COALESCE(postable_before_children, is_postable),
+                                is_postable = 0,
+                                updated_at = datetime('now', 'localtime')
+                          WHERE code = ?1",
+                        params![new_parent_code],
+                    )
+                    .map_err(db_error)?;
+                }
+            }
 
             let updated = fetch_account(&tx, id)?;
             tx.commit().map_err(db_error)?;
@@ -778,8 +889,10 @@ impl Database {
         }
 
         self.with_conn(|conn| {
-            set_setting(conn, "company_name", &company_name)?;
-            set_setting(conn, "fiscal_year", fiscal_year)?;
+            let tx = conn.transaction().map_err(db_error)?;
+            set_setting(&tx, "company_name", &company_name)?;
+            set_setting(&tx, "fiscal_year", fiscal_year)?;
+            tx.commit().map_err(db_error)?;
             Ok(Settings {
                 company_name,
                 fiscal_year: fiscal_year.to_string(),
@@ -935,28 +1048,112 @@ fn copy_sqlite_database(source: &Path, destination: &Path) -> Result<(), String>
     Ok(())
 }
 
-fn seed_default_groups(conn: &Connection) -> rusqlite::Result<()> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM account_groups", [], |row| row.get(0))?;
-    if count > 0 {
-        return Ok(());
+fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(db_error)?;
+    if integrity != "ok" {
+        return Err(format!("سلامت فایل SQLite تأیید نشد: {integrity}"));
     }
-
-    let mut stmt = conn
-        .prepare("INSERT OR IGNORE INTO account_groups (code, name, type) VALUES (?1, ?2, ?3)")?;
-    for (code, name, group_type) in DEFAULT_GROUPS {
-        stmt.execute(params![code, name, group_type])?;
+    let version: String = conn
+        .query_row(
+            "SELECT value FROM app_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_error)?;
+    if version.parse::<i64>().ok() != Some(CURRENT_SCHEMA_VERSION) {
+        return Err("نسخه ساختار فایل پشتیبان با این نسخه برنامه سازگار نیست.".to_string());
+    }
+    for table in [
+        "app_meta",
+        "settings",
+        "account_groups",
+        "accounts",
+        "vouchers",
+        "voucher_lines",
+    ] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                params![table],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if !exists {
+            return Err(format!(
+                "فایل انتخاب‌شده پشتیبان معتبر نیست؛ جدول {table} وجود ندارد."
+            ));
+        }
     }
     Ok(())
 }
 
+fn unique_sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("database");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    path.with_file_name(format!(
+        "{file_name}.{suffix}-{}-{stamp}",
+        std::process::id()
+    ))
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
+    let previous = unique_sibling_path(destination, "previous");
+    if destination.exists() {
+        std::fs::rename(destination, &previous)
+            .map_err(|error| format!("آماده‌سازی فایل قبلی ناموفق بود: {error}"))?;
+    }
+    if let Err(error) = std::fs::rename(temporary, destination) {
+        if previous.exists() {
+            let _ = std::fs::rename(&previous, destination);
+        }
+        let _ = std::fs::remove_file(temporary);
+        return Err(format!("جایگزینی فایل پشتیبان ناموفق بود: {error}"));
+    }
+    let _ = std::fs::remove_file(previous);
+    Ok(())
+}
+
+fn seed_default_groups(conn: &Connection) -> rusqlite::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let count: i64 = tx.query_row("SELECT COUNT(*) FROM account_groups", [], |row| row.get(0))?;
+    if count > 0 {
+        return Ok(());
+    }
+
+    let mut stmt =
+        tx.prepare("INSERT OR IGNORE INTO account_groups (code, name, type) VALUES (?1, ?2, ?3)")?;
+    for (code, name, group_type) in DEFAULT_GROUPS {
+        stmt.execute(params![code, name, group_type])?;
+    }
+    drop(stmt);
+    tx.commit()?;
+    Ok(())
+}
+
 fn seed_default_accounts(conn: &Connection) -> rusqlite::Result<()> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
+    let tx = conn.unchecked_transaction()?;
+    let count: i64 = tx.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
     if count > 0 {
         return Ok(());
     }
 
     for (code, name, level, group_code, nature, parent_code, postable) in DEFAULT_ACCOUNTS {
-        let group_exists: bool = conn
+        let group_exists: bool = tx
             .query_row(
                 "SELECT 1 FROM account_groups WHERE code = ?1",
                 params![group_code],
@@ -971,7 +1168,7 @@ fn seed_default_accounts(conn: &Connection) -> rusqlite::Result<()> {
         let parent_name: String = if parent_code.is_empty() {
             String::new()
         } else {
-            conn.query_row(
+            tx.query_row(
                 "SELECT name FROM accounts WHERE code = ?1",
                 params![parent_code],
                 |row| row.get(0),
@@ -983,7 +1180,7 @@ fn seed_default_accounts(conn: &Connection) -> rusqlite::Result<()> {
             continue;
         }
 
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO accounts
                 (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -1003,6 +1200,7 @@ fn seed_default_accounts(conn: &Connection) -> rusqlite::Result<()> {
             ],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1110,6 +1308,24 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
 fn account_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM voucher_lines WHERE account_code = ?1)",
+        params![code],
+        |row| row.get(0),
+    )
+    .map_err(db_error)
+}
+
+fn account_subtree_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
+    conn.query_row(
+        "WITH RECURSIVE account_tree(code) AS (
+            SELECT code FROM accounts WHERE code = ?1
+            UNION
+            SELECT child.code
+              FROM accounts child
+              JOIN account_tree parent ON child.parent_code = parent.code
+        )
+        SELECT EXISTS (
+            SELECT 1 FROM voucher_lines WHERE account_code IN (SELECT code FROM account_tree)
+        )",
         params![code],
         |row| row.get(0),
     )
@@ -1304,6 +1520,19 @@ mod tests {
         memory_database()
     }
 
+    fn file_database(path: &Path) -> Database {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        apply_schema_migrations(&conn).unwrap();
+        seed_default_groups(&conn).unwrap();
+        seed_default_accounts(&conn).unwrap();
+        seed_default_settings(&conn).unwrap();
+        let db = Database::default();
+        db.attach(conn, path.to_path_buf());
+        db
+    }
+
     #[test]
     fn seeds_default_groups_and_accounts_once() {
         let db = test_database();
@@ -1315,6 +1544,68 @@ mod tests {
         assert_eq!(accounts.accounts.len(), 27);
         assert_eq!(accounts.accounts[0].code, "1101");
         assert!(!accounts.accounts[0].is_postable);
+    }
+
+    #[test]
+    fn database_backup_restores_data_and_keeps_a_safety_copy() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-backup-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let active_path = dir.join(DB_FILE_NAME);
+        let backup_path = dir.join("backup.sqlite3");
+        let db = file_database(&active_path);
+        let group = db
+            .create_account_group("90", "گروه پشتیبان", "دارایی")
+            .unwrap();
+
+        db.backup_to(&backup_path).unwrap();
+        db.delete_account_group(group.id).unwrap();
+        assert!(!db
+            .list_account_groups()
+            .unwrap()
+            .groups
+            .iter()
+            .any(|item| item.code == "90"));
+
+        let safety_path = db.restore_from(&backup_path).unwrap();
+        assert!(safety_path.exists());
+        assert!(db
+            .list_account_groups()
+            .unwrap()
+            .groups
+            .iter()
+            .any(|item| item.code == "90"));
+        drop(db);
+
+        let invalid_path = dir.join("invalid.sqlite3");
+        std::fs::write(&invalid_path, "not a database").unwrap();
+        let db = file_database(&active_path);
+        assert!(db.restore_from(&invalid_path).is_err());
+        let old_schema_path = dir.join("old-schema.sqlite3");
+        let old_schema = Connection::open(&old_schema_path).unwrap();
+        old_schema.execute_batch(SCHEMA).unwrap();
+        old_schema
+            .execute(
+                "UPDATE app_meta SET value = '2' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        drop(old_schema);
+        assert!(db
+            .restore_from(&old_schema_path)
+            .unwrap_err()
+            .contains("سازگار نیست"));
+        assert!(db
+            .list_account_groups()
+            .unwrap()
+            .groups
+            .iter()
+            .any(|item| item.code == "90"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1341,21 +1632,21 @@ mod tests {
         let db = test_database();
         let created = db
             .create_account(
-                "120101003",
+                "110101003",
                 "حساب آزمایشی",
                 3,
                 "1",
                 "debtor",
-                "120101",
+                "110101",
                 true,
             )
             .unwrap();
         assert_eq!(created.group_name, "دارایی‌های جاری");
-        assert_eq!(created.parent_name, "بدهکاران تجاری");
+        assert_eq!(created.parent_name, "صندوق مرکزی");
         assert!(created.is_postable);
 
         let updated = db
-            .update_account(created.id, "حساب آزمایشی ۲", "1", "debtor", "120101", false)
+            .update_account(created.id, "حساب آزمایشی ۲", "1", "debtor", "110101", false)
             .unwrap();
         assert_eq!(updated.name, "حساب آزمایشی ۲");
         assert!(!updated.is_postable);
@@ -1366,10 +1657,62 @@ mod tests {
             .unwrap()
             .accounts
             .into_iter()
-            .find(|account| account.code == "120101")
+            .find(|account| account.code == "110101")
             .unwrap();
         assert!(restored_parent.is_postable);
         assert_eq!(db.list_accounts().unwrap().accounts.len(), 27);
+    }
+
+    #[test]
+    fn changing_account_parent_updates_both_parent_postability_states() {
+        let db = test_database();
+        db.create_account("1102020", "والد قدیمی", 2, "1", "debtor", "1102", true)
+            .unwrap();
+        let child = db
+            .create_account("11020201", "زیرحساب", 3, "1", "debtor", "1102020", true)
+            .unwrap();
+
+        let before = db.list_accounts().unwrap().accounts;
+        assert!(
+            !before
+                .iter()
+                .find(|account| account.code == "1102020")
+                .unwrap()
+                .is_postable
+        );
+        assert!(
+            before
+                .iter()
+                .find(|account| account.code == "110202")
+                .unwrap()
+                .is_postable
+        );
+
+        db.update_account(
+            child.id,
+            &child.name,
+            &child.group_code,
+            &child.nature,
+            "110202",
+            true,
+        )
+        .unwrap();
+
+        let after = db.list_accounts().unwrap().accounts;
+        assert!(
+            after
+                .iter()
+                .find(|account| account.code == "1102020")
+                .unwrap()
+                .is_postable
+        );
+        assert!(
+            !after
+                .iter()
+                .find(|account| account.code == "110202")
+                .unwrap()
+                .is_postable
+        );
     }
 
     #[test]
@@ -1627,5 +1970,54 @@ mod tests {
         db.create_account("110202001", "زیرحساب", 3, "1", "debtor", "110202", true)
             .unwrap();
         assert!(!account(&db, "110202").is_postable);
+    }
+
+    #[test]
+    fn account_with_descendant_history_cannot_change_parent() {
+        let db = test_database();
+        db.create_account("1102010", "والد جایگزین", 2, "1", "debtor", "1102", true)
+            .unwrap();
+        let old_parent = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110201001")
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO accounts
+                    (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
+                 VALUES ('110201001001', 'تفصیلی قدیمی', 4, '1', 'debtor', '110201001', ?1, 1)",
+                params![old_parent.name],
+            )
+            .map_err(db_error)?;
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'عادی')",
+                [],
+            )
+            .map_err(db_error)?;
+            let voucher_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+                 VALUES (?1, 1, '110201001001', 1000, 0)",
+                params![voucher_id],
+            )
+            .map_err(db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let error = db
+            .update_account(
+                old_parent.id,
+                &old_parent.name,
+                &old_parent.group_code,
+                &old_parent.nature,
+                "1102010",
+                false,
+            )
+            .unwrap_err();
+        assert!(error.contains("اسناد ثبت‌شده"));
     }
 }

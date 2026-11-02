@@ -19,6 +19,7 @@ pub const VOUCHER_TYPES: [&str; 4] = [
 const MAX_DESCRIPTION: usize = 1000;
 const MAX_LINE_DESCRIPTION: usize = 500;
 const MAX_LINES: usize = 1000;
+const MAX_VOUCHER_NUMBER: i64 = 9_007_199_254_740_991;
 
 /// Largest amount accepted on one line (1e15 Rials). It stays below 2^53 so
 /// the UI, which holds numbers as JavaScript doubles, never loses precision,
@@ -91,6 +92,7 @@ pub struct VoucherMergePreview {
     pub line_count: usize,
     pub total_debit: i64,
     pub total_credit: i64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -153,6 +155,7 @@ struct ReorganizationSnapshot {
 struct ReorganizationMergeGroup {
     keep_id: i64,
     source_ids: Vec<i64>,
+    description: String,
 }
 
 #[derive(Debug, Clone)]
@@ -277,8 +280,39 @@ fn build_reorganization_plan(
             line_count: all_lines.len(),
             total_debit,
             total_credit,
+            reason: String::new(),
         };
+        let mut merged_description = vouchers[0].description.clone();
+        for source in vouchers.iter().skip(1) {
+            let separator = if merged_description.is_empty() {
+                ""
+            } else {
+                "\n"
+            };
+            merged_description.push_str(&format!(
+                "{separator}ادغام از سند شماره {}: {}",
+                source.number, source.description
+            ));
+        }
+        let mut rejection_reasons = Vec::new();
         if !balanced {
+            rejection_reasons.push("ردیف‌های گروه تراز نیستند.".to_string());
+        }
+        if all_lines.len() > MAX_LINES {
+            rejection_reasons.push(format!(
+                "تعداد ردیف‌ها از ظرفیت {} ردیفی فرم بیشتر است.",
+                db::to_fa_digits(MAX_LINES.to_string())
+            ));
+        }
+        if merged_description.chars().count() > MAX_DESCRIPTION {
+            rejection_reasons.push(format!(
+                "شرح‌های سرآیند پس از ادغام از سقف {} نویسه بیشتر می‌شوند.",
+                db::to_fa_digits(MAX_DESCRIPTION.to_string())
+            ));
+        }
+        if !rejection_reasons.is_empty() {
+            let mut preview = preview;
+            preview.reason = rejection_reasons.join(" ");
             unbalanced_groups.push(preview);
             continue;
         }
@@ -288,6 +322,7 @@ fn build_reorganization_plan(
         merge_plan.push(ReorganizationMergeGroup {
             keep_id,
             source_ids,
+            description: merged_description,
         });
         merge_groups.push(preview);
     }
@@ -726,6 +761,22 @@ impl Database {
         })
     }
 
+    pub fn adjacent_voucher_number(
+        &self,
+        number: i64,
+        direction: &str,
+    ) -> Result<Option<i64>, String> {
+        let query = match direction {
+            "previous" => "SELECT MAX(number) FROM vouchers WHERE number < ?1",
+            "next" => "SELECT MIN(number) FROM vouchers WHERE number > ?1",
+            _ => return Err("جهت پیمایش سند معتبر نیست.".to_string()),
+        };
+        self.with_conn(|conn| {
+            conn.query_row(query, params![number], |row| row.get(0))
+                .map_err(db::db_error)
+        })
+    }
+
     pub fn list_vouchers(&self, from: &str, to: &str, search: &str) -> Result<VoucherList, String> {
         let from = normalize_filter_date(from, "تاریخ شروع")?;
         let to = normalize_filter_date(to, "تاریخ پایان")?;
@@ -819,8 +870,10 @@ impl Database {
                     removed_voucher_count += 1;
                 }
                 tx.execute(
-                    "UPDATE vouchers SET updated_at = datetime('now', 'localtime') WHERE id = ?1",
-                    params![group.keep_id],
+                    "UPDATE vouchers
+                        SET description = ?1, updated_at = datetime('now', 'localtime')
+                      WHERE id = ?2",
+                    params![group.description, group.keep_id],
                 )
                 .map_err(db::db_error)?;
             }
@@ -1191,9 +1244,9 @@ impl Database {
                 }
             }
 
-            let existing_id = if id > 0 {
+            let existing_number = if id > 0 {
                 tx.query_row(
-                    "SELECT id FROM vouchers WHERE id = ?1",
+                    "SELECT number FROM vouchers WHERE id = ?1",
                     params![id],
                     |row| row.get::<_, i64>(0),
                 )
@@ -1202,20 +1255,27 @@ impl Database {
             } else {
                 None
             };
-            if id > 0 && existing_id.is_none() {
+            if id > 0 && existing_number.is_none() {
                 return Err("سند حسابداری یافت نشد.".to_string());
             }
 
-            let number = if requested_number > 0 {
-                requested_number
-            } else {
-                tx.query_row(
-                    "SELECT COALESCE(MAX(number), 0) + 1 FROM vouchers",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(db::db_error)?
+            let number = match (requested_number, existing_number) {
+                (number, _) if number > 0 => number,
+                (_, Some(current_number)) => current_number,
+                _ => tx
+                    .query_row("SELECT COALESCE(MAX(number), 0) FROM vouchers", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(db::db_error)?
+                    .checked_add(1)
+                    .ok_or_else(|| "شماره سند بعدی از محدوده مجاز خارج است.".to_string())?,
             };
+            if number <= 0 || number > MAX_VOUCHER_NUMBER {
+                return Err(format!(
+                    "شماره سند باید عدد صحیح و حداکثر {} باشد.",
+                    db::to_fa_digits(MAX_VOUCHER_NUMBER.to_string())
+                ));
+            }
 
             let duplicate = tx
                 .query_row(
@@ -2515,6 +2575,33 @@ mod tests {
     }
 
     #[test]
+    fn editing_voucher_without_number_preserves_its_number() {
+        let db = db::memory_database();
+        let saved = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+        let mut edited = cash_sale("1405/01/11", 2_000);
+        edited.id = Some(saved.id);
+
+        let updated = db.save_voucher(edited).unwrap();
+
+        assert_eq!(updated.number, saved.number);
+        assert_eq!(updated.date, "1405/01/11");
+        assert_eq!(updated.total_debit, 2_000);
+    }
+
+    #[test]
+    fn adjacent_voucher_numbers_skip_gaps() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+        let mut third = cash_sale("1405/01/12", 3_000);
+        third.number = Some(3);
+        db.save_voucher(third).unwrap();
+
+        assert_eq!(db.adjacent_voucher_number(1, "next").unwrap(), Some(3));
+        assert_eq!(db.adjacent_voucher_number(3, "previous").unwrap(), Some(1));
+        assert_eq!(db.adjacent_voucher_number(3, "next").unwrap(), None);
+    }
+
+    #[test]
     fn saves_balanced_voucher_and_builds_reports() {
         let db = db::memory_database();
         let saved = db.save_voucher(cash_sale("1405/01/10", 1_000_000)).unwrap();
@@ -2667,7 +2754,9 @@ mod tests {
         let db = db::memory_database();
         db.save_voucher(cash_sale("1405/01/02", 1_000)).unwrap();
         db.save_voucher(cash_sale("1405/01/01", 2_000)).unwrap();
-        db.save_voucher(cash_sale("1405/01/02", 500)).unwrap();
+        let mut source = cash_sale("1405/01/02", 500);
+        source.description = "شرح سند مبدأ".to_string();
+        db.save_voucher(source).unwrap();
         let mut opening = cash_sale("1405/01/02", 750);
         opening.voucher_type = VOUCHER_TYPES[1].to_string();
         db.save_voucher(opening).unwrap();
@@ -2693,11 +2782,40 @@ mod tests {
         assert_eq!(merged.date, "1405/01/02");
         assert_eq!(merged.lines.len(), 4);
         assert_eq!(merged.total_debit, 1_500);
+        assert!(merged
+            .description
+            .contains("ادغام از سند شماره 3: شرح سند مبدأ"));
         assert_eq!(
             db.get_voucher(3).unwrap().unwrap().voucher_type,
             VOUCHER_TYPES[1]
         );
         assert!(db.get_voucher(4).unwrap().is_none());
+    }
+
+    #[test]
+    fn reorganize_does_not_merge_groups_over_the_form_line_limit() {
+        let db = db::memory_database();
+        let large_voucher = || {
+            let mut lines = Vec::with_capacity(501);
+            lines.push(line("110101", 251, 0));
+            lines.extend((0..249).map(|_| line("110101", 1, 0)));
+            lines.push(line("410101", 0, 250));
+            lines.extend((0..250).map(|_| line("410101", 0, 1)));
+            voucher("1405/01/02", lines)
+        };
+        db.save_voucher(large_voucher()).unwrap();
+        db.save_voucher(large_voucher()).unwrap();
+
+        let preview = db.preview_voucher_reorganization("merge").unwrap();
+        assert!(preview.merge_groups.is_empty());
+        assert_eq!(preview.unbalanced_groups.len(), 1);
+        assert_eq!(preview.unbalanced_groups[0].line_count, 1_002);
+        assert!(preview.unbalanced_groups[0].reason.contains("ظرفیت"));
+
+        db.apply_voucher_reorganization("merge", &preview.plan_token)
+            .unwrap();
+        assert!(db.get_voucher(1).unwrap().is_some());
+        assert!(db.get_voucher(2).unwrap().is_some());
     }
 
     #[test]
@@ -3077,7 +3195,7 @@ mod tests {
 
         let list = db.list_vouchers("1405/02/01", "", "").unwrap();
         assert_eq!(list.vouchers.len(), 1);
-        assert_eq!(list.total_count, 2);
+        assert_eq!(list.total_count, 1);
 
         assert!(db.list_vouchers("1405/03/01", "1405/02/01", "").is_err());
         assert!(db.get_journal("1405/03/01", "1405/02/01", "").is_err());
@@ -3094,5 +3212,17 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("بیشتر از"));
         assert!(db.save_voucher(cash_sale("1405/01/10", MAX_AMOUNT)).is_ok());
+    }
+
+    #[test]
+    fn voucher_number_limit_matches_javascript_safe_integer() {
+        let db = db::memory_database();
+        let mut accepted = cash_sale("1405/01/10", 1_000);
+        accepted.number = Some(MAX_VOUCHER_NUMBER);
+        assert!(db.save_voucher(accepted).is_ok());
+
+        let mut rejected = cash_sale("1405/01/10", 1_000);
+        rejected.number = Some(MAX_VOUCHER_NUMBER + 1);
+        assert!(db.save_voucher(rejected).unwrap_err().contains("حداکثر"));
     }
 }

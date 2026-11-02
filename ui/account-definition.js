@@ -53,6 +53,11 @@
     const code = $('[data-code]'), name = $('[data-name]'), level = $('[data-edit-level]');
     const group = $('[data-edit-group]'), parent = $('[data-parent]'), nature = $('[data-nature]');
     const postable = $('[data-postable]'), errorBox = $('[data-error]'), status = $('[data-status]');
+    let initialEditorValues = null;
+    const editorValues = () => JSON.stringify([
+      code.value, name.value, level.value, group.value, parent.value, nature.value, postable.checked,
+    ]);
+    const rememberEditorValues = () => { initialEditorValues = editorValues(); };
     const say = (message,tone) => { status.textContent = message || ''; status.dataset.tone = tone || ''; };
     const getSelected = () => state.accounts.find(a => a.code === state.selected) || null;
     const children = c => state.accounts.filter(a => a.parentCode === c);
@@ -64,12 +69,24 @@
     const newCode = (n,p) => {
       const siblings=state.accounts.filter(a=>Number(a.level)===n && (n===1?!a.parentCode:a.parentCode===p));
       const prefix=n===1?'':p, used=new Set(state.accounts.map(a=>String(a.code)));
-      const suffixes=siblings.map(a=>nums(String(a.code).slice(prefix.length))).filter(Boolean).map(Number);
-      const width=Math.max(n===1?4:2,...siblings.map(a=>String(a.code).length-prefix.length));
-      let value=(suffixes.length?Math.max(...suffixes):(n===1?Math.pow(10,width-1)-1:0))+1;
-      const max=Math.pow(10,Math.min(width,8))-1;
-      while(value<=max && used.has(prefix+String(value).padStart(width,'0'))) value++;
-      return value<=max?prefix+String(value).padStart(width,'0'):'';
+      const suffixes=siblings.map(a=>nums(String(a.code).slice(prefix.length))).filter(Boolean).map(BigInt);
+      let width=Math.max(n===1?4:2,...siblings.map(a=>String(a.code).length-prefix.length));
+      const maxWidth=20-prefix.length;
+      let value=suffixes.length?suffixes.reduce((maximum,suffix)=>suffix>maximum?suffix:maximum,0n)+1n
+        :(n===1?10n**BigInt(width-1):1n);
+      while(width<=maxWidth){
+        const max=10n**BigInt(width)-1n;
+        if(value<=max){
+          while(value<=max){
+            const candidate=prefix+value.toString().padStart(width,'0');
+            if(!used.has(candidate))return candidate;
+            value++;
+          }
+        }
+        width++;
+        value=n===1?10n**BigInt(width-1):1n;
+      }
+      return '';
     };
     const fillGroups = selected => {
       const options=state.groups.map(g=>'<option value="'+esc(g.code)+'">'+fa(g.code)+' — '+esc(g.name)+' ('+esc(g.type)+')</option>').join('');
@@ -143,19 +160,21 @@
       level.value=String(n);fillGroups(p?p.groupCode:state.groups[0].code);group.disabled=!!p;
       name.value='';code.readOnly=false;postable.checked=n>1;errorBox.hidden=true;
       parentsFor(pc);if(pc)parent.value=pc;
+      rememberEditorValues();
       $('[data-save]').textContent='ثبت حساب (F2)';render();name.focus();
     };
     const edit = account => {
       if(!account)return;
       state.selected=account.code;state.mode='edit';editor.hidden=false;fillGroups(account.groupCode);
       $('[data-editor-title]').textContent='اصلاح حساب';
-      $('[data-editor-hint]').textContent='کد، سطح و حساب بالاتر در نسخه فعلی قابل تغییر نیستند.';
+      $('[data-editor-hint]').textContent='کد، سطح، گروه و حساب بالاتر در نسخه فعلی قابل تغییر نیستند.';
       code.value=fa(account.code);code.readOnly=true;name.value=account.name;
       level.innerHTML='<option value="'+account.level+'">'+levelText(account.level)+'</option>';level.value=String(account.level);
       group.value=account.groupCode;group.disabled=true;
       parent.innerHTML='<option value="'+esc(account.parentCode)+'">'+(account.parentCode?fa(account.parentCode)+' — '+esc(account.parentName):'حساب سطح کل')+'</option>';
       parent.disabled=true;nature.value=account.nature;postable.checked=!!account.isPostable;
       postable.disabled=Number(account.level)===1||children(account.code).length>0;
+      rememberEditorValues();
       $('[data-save]').textContent='ذخیره تغییرات (F2)';errorBox.hidden=true;render();name.focus();
     };
     const cancel = () => {state.mode='view';editor.hidden=true;errorBox.hidden=true;render();};
@@ -167,6 +186,7 @@
       try{
         if(state.mode==='edit')await invoke('update_account',{id:getSelected().id,name:n,groupCode:g,nature:nature.value,parentCode:p,isPostable:postable.checked});
         else await invoke('create_account',{code:c,name:n,level:l,groupCode:g,nature:nature.value,parentCode:p,isPostable:postable.checked});
+        window.dispatchEvent(new Event('accounts-changed'));
         state.selected=c;state.mode='view';editor.hidden=true;await refresh(false);state.selected=c;render();say('اطلاعات حساب ذخیره شد.','ok');
       }catch(err){errorBox.textContent=err.message||String(err);errorBox.hidden=false;}
       finally{state.busy=false;button.disabled=false;}
@@ -175,7 +195,7 @@
       const a=getSelected();if(!a||state.busy)return;
       if(!window.confirm('حساب «'+fa(a.code)+' — '+a.name+'» حذف شود؟ حساب دارای زیرحساب یا گردش سند قابل حذف نیست.'))return;
       state.busy=true;
-      try{await invoke('delete_account',{id:a.id});state.selected='';await refresh(false);say('حساب حذف شد.','ok');}
+      try{await invoke('delete_account',{id:a.id});window.dispatchEvent(new Event('accounts-changed'));state.selected='';await refresh(false);say('حساب حذف شد.','ok');}
       catch(e){say(e.message||String(e),'error');}finally{state.busy=false;}
     };
     const removeAll = async () => {
@@ -185,11 +205,16 @@
       try{
         const ordered=[...state.accounts].sort((a,b)=>Number(b.level)-Number(a.level));
         for(const a of ordered){try{await invoke('delete_account',{id:a.id});done++;}catch(e){blocked.push(fa(a.code)+' — '+a.name+': '+(e.message||String(e)));}}
+        if(done)window.dispatchEvent(new Event('accounts-changed'));
         state.selected='';await refresh(false);say(fa(done)+' حساب حذف شد؛ '+fa(blocked.length)+' حساب باقی ماند.',blocked.length?'error':'ok');
         if(blocked.length)window.alert('حساب‌های حذف‌نشده:\n'+blocked.slice(0,25).join('\n')+(blocked.length>25?'\n…':''));
       }finally{state.busy=false;}
     };
-    const close = () => {overlay.remove();document.removeEventListener('keydown',keys,true);};
+    const close = () => {
+      if(state.mode!=='view'&&initialEditorValues!==editorValues()
+        &&!window.confirm('تغییرات ذخیره‌نشدهٔ فرم حساب کنار گذاشته شود؟'))return;
+      overlay.remove();document.removeEventListener('keydown',keys,true);
+    };
     const keys = e => {
       if(e.key==='Escape'){e.preventDefault();close();return;}
       if(e.key==='F2'&&state.mode!=='view'){e.preventDefault();form.requestSubmit();return;}
@@ -218,7 +243,7 @@
     code.addEventListener('input',()=>{if(state.mode==='new')code.value=fa(nums(code.value));});
     form.addEventListener('submit',save);$('[data-cancel]').addEventListener('click',cancel);
     $('[data-export]').addEventListener('click',async()=>{try{const path=await invoke('export_account_excel');if(path)say('فایل اکسل ذخیره شد: '+path,'ok');}catch(e){say(e.message||String(e),'error');}});
-    $('[data-import]').addEventListener('click',async()=>{if(!window.confirm('حساب‌ها از فایل اکسل مطابق قالب WebApp وارد شوند؟'))return;try{const result=await invoke('import_account_excel');if(!result)return;await refresh(true);const msg=fa(result.createdCount)+' حساب جدید و '+fa(result.skippedCount)+' حساب موجود';say(msg+(result.errors.length?'؛ '+fa(result.errors.length)+' خطا':''),result.errors.length?'error':'ok');if(result.errors.length)window.alert('موارد ناموفق:\n'+result.errors.slice(0,30).join('\n'));}catch(e){say(e.message||String(e),'error');}});
+    $('[data-import]').addEventListener('click',async()=>{if(!window.confirm('حساب‌ها از فایل اکسل مطابق قالب WebApp وارد شوند؟'))return;try{const result=await invoke('import_account_excel');if(!result)return;window.dispatchEvent(new Event('accounts-changed'));await refresh(true);const msg=fa(result.createdCount)+' حساب جدید و '+fa(result.skippedCount)+' حساب موجود';say(msg+(result.errors.length?'؛ '+fa(result.errors.length)+' خطا':''),result.errors.length?'error':'ok');if(result.errors.length)window.alert('موارد ناموفق:\n'+result.errors.slice(0,30).join('\n'));}catch(e){say(e.message||String(e),'error');}});
     overlay.addEventListener('mousedown',e=>{if(e.target===overlay&&state.mode==='view')close();});
     document.addEventListener('keydown',keys,true);document.body.appendChild(overlay);
     refresh(true);setTimeout(()=>$('[data-search]').focus(),30);

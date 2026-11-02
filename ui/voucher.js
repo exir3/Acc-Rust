@@ -68,6 +68,7 @@ const state = {
   accountByCode: new Map(),
   settings: { companyName: '', fiscalYear: '', today: '' },
   voucher: null,
+  overflowVoucherLines: 0,
   nextNumber: 1,
   dirty: false,
   busy: false,
@@ -124,7 +125,8 @@ const parseAmount = (value) => BigInt(digitsOnly(value) || '0');
 // Largest amount per line, same as the backend (1e15 − 1 Rials). Beyond it
 // JavaScript numbers lose precision.
 const MAX_AMOUNT_DIGITS = 15;
-const MAX_VOUCHER_LINES = 500;
+const MAX_VOUCHER_LINES = 1000;
+const MAX_VOUCHER_NUMBER = Number.MAX_SAFE_INTEGER;
 
 /* ── Voucher grid ───────────────────────────────────────────── */
 
@@ -370,12 +372,27 @@ function bindVoucherGrid() {
     if (!input.matches('input')) return;
 
     if (input.classList.contains('vf-code-input') || input.classList.contains('vf-amount-input')) {
+      const rawValue = toAsciiDigits(input.value);
+      if (input.classList.contains('vf-amount-input') && /[-−]/.test(rawValue)) {
+        input.value = '';
+        toast('مبلغ منفی مجاز نیست؛ از ستون مقابل استفاده کنید.', 'error');
+      } else if (input.classList.contains('vf-amount-input') && /[./٫]/.test(rawValue)) {
+        input.value = '';
+        toast('مبلغ باید عدد صحیح ریالی باشد؛ اعشار مجاز نیست.', 'error');
+      }
       let cleaned = digitsOnly(input.value);
       if (input.classList.contains('vf-amount-input') && cleaned.length > MAX_AMOUNT_DIGITS) {
-        cleaned = cleaned.slice(0, MAX_AMOUNT_DIGITS);
+        input.value = cleaned;
+        input.classList.add('is-invalid');
+        input.setAttribute('aria-invalid', 'true');
         toast('مبلغ هر ردیف حداکثر ۱۵ رقم می‌تواند باشد.', 'error');
+      } else {
+        if (input.classList.contains('vf-amount-input')) {
+          input.classList.remove('is-invalid');
+          input.removeAttribute('aria-invalid');
+        }
+        if (input.value !== cleaned) input.value = cleaned;
       }
-      if (input.value !== cleaned) input.value = cleaned;
     }
 
     const row = input.closest('tr');
@@ -581,6 +598,10 @@ function currentNumber() {
 function fillGrid(lines) {
   const tbody = $('#voucherRows');
   if (!tbody) return;
+  state.overflowVoucherLines = Math.max(0, (lines || []).length - MAX_VOUCHER_LINES);
+  if (state.overflowVoucherLines) {
+    toast(`این سند ${vfFa(lines.length)} ردیف دارد و ظرفیت فرم ${vfFa(MAX_VOUCHER_LINES)} ردیف است؛ سند فقط‌خواندنی باز شد.`, 'error');
+  }
   tbody.textContent = '';
   (lines || []).forEach((line) => {
     const row = appendGridRow();
@@ -602,6 +623,7 @@ function fillGrid(lines) {
 
 function startNew(number) {
   state.voucher = null;
+  state.overflowVoucherLines = 0;
   state.dirty = false;
   state.activeRow = null;
   $('#vfDocNo').value = number > 0 ? String(number) : '';
@@ -650,6 +672,12 @@ function collectDraft() {
 }
 
 function validateDraft(draft) {
+  if (state.overflowVoucherLines) {
+    return `این سند ${vfFa(state.overflowVoucherLines + MAX_VOUCHER_LINES)} ردیف دارد و به‌دلیل ظرفیت فرم قابل ذخیره نیست.`;
+  }
+  if (draft.number != null && (!Number.isSafeInteger(draft.number) || draft.number > MAX_VOUCHER_NUMBER)) {
+    return `شماره سند باید عدد صحیح و حداکثر ${vfFa(MAX_VOUCHER_NUMBER)} باشد.`;
+  }
   if (!draft.date) return 'تاریخ سند را وارد کنید.';
   if (draft.lines.length > MAX_VOUCHER_LINES) {
     return `تعداد ردیف‌های سند نمی‌تواند بیشتر از ${vfFa(MAX_VOUCHER_LINES)} باشد.`;
@@ -720,6 +748,7 @@ async function saveVoucher(options = {}) {
     // asynchronous validation and accidentally save the stale draft.
     if (JSON.stringify(collectDraft()) !== draftSnapshot) {
       state.busy = false;
+      state.dirty = true;
       setStatus('warn', 'فرم تغییر کرده است');
       toast('اطلاعات فرم هنگام اعتبارسنجی تغییر کرد؛ لطفاً دوباره ذخیره کنید.', 'warning');
       return null;
@@ -732,6 +761,7 @@ async function saveVoucher(options = {}) {
     if (dateInput) dateInput.title = '';
   } catch (error) {
     state.busy = false;
+    if (JSON.stringify(collectDraft()) !== draftSnapshot) state.dirty = true;
     const dateInput = $('#vfDocDate');
     dateInput?.classList.add('is-invalid');
     dateInput?.setAttribute('aria-invalid', 'true');
@@ -741,10 +771,21 @@ async function saveVoucher(options = {}) {
     return null;
   }
 
+  let saveSnapshot = '';
   try {
+    saveSnapshot = JSON.stringify(collectDraft());
     const saved = await invoke('save_voucher', { input: draft });
     state.busy = false;
-    loadVoucher(saved);
+    const currentDraft = collectDraft();
+    if (JSON.stringify(currentDraft) !== saveSnapshot) {
+      state.voucher = saved;
+      if (currentDraft.number === draft.number) $('#vfDocNo').value = String(saved.number);
+      state.dirty = true;
+      setStatus('warn', 'تغییرات ذخیره‌نشده');
+      toast('نسخه اولیه سند ذخیره شد؛ ویرایش‌های جدید فرم حفظ شده‌اند و هنوز ذخیره نشده‌اند.', 'warning');
+    } else {
+      loadVoucher(saved);
+    }
 
     if (!options.silent) {
       toast(`سند شماره ${vfFa(saved.number)} ذخیره شد.`, 'ok');
@@ -758,6 +799,7 @@ async function saveVoucher(options = {}) {
     return saved;
   } catch (error) {
     state.busy = false;
+    if (saveSnapshot && JSON.stringify(collectDraft()) !== saveSnapshot) state.dirty = true;
     setStatus('error', 'ذخیره ناموفق');
     toast(errorText(error), 'error');
     return null;
@@ -817,9 +859,14 @@ async function navigatePrev() {
     return;
   }
 
-  const target = base - 1;
   state.busy = true;
   try {
+    const target = await invoke('adjacent_voucher_number', { number: base, direction: 'previous' });
+    if (target == null) {
+      state.busy = false;
+      toast('سند قبلی وجود ندارد.', 'info');
+      return;
+    }
     const voucher = await invoke('get_voucher', { number: target });
     state.busy = false;
     if (voucher) loadVoucher(voucher);
@@ -838,9 +885,16 @@ async function navigateNext() {
   }
 
   const base = currentNumber();
-  const target = base + 1;
   state.busy = true;
   try {
+    const target = await invoke('adjacent_voucher_number', { number: base, direction: 'next' });
+    if (target == null) {
+      await refreshNextNumber();
+      state.busy = false;
+      startNew(state.nextNumber);
+      toast('سند بعدی وجود ندارد؛ سند جدید آغاز شد.', 'info');
+      return;
+    }
     const voucher = await invoke('get_voucher', { number: target });
     if (voucher) {
       state.busy = false;
@@ -875,6 +929,10 @@ async function newVoucher() {
 
 async function copyVoucher() {
   if (state.busy) return;
+  if (state.overflowVoucherLines) {
+    toast('کپی این سند از فرم محدودشده ممکن نیست.', 'error');
+    return;
+  }
   const draft = collectDraft();
   if (!draft.lines.length) {
     toast('سندی برای کپی وجود ندارد.', 'info');
@@ -911,6 +969,10 @@ async function copyVoucher() {
 
 async function deleteVoucher() {
   if (state.busy) return;
+  if (state.overflowVoucherLines) {
+    toast('حذف این سند از فرم محدودشده ممکن نیست.', 'error');
+    return;
+  }
   const voucher = state.voucher;
   if (!voucher) {
     toast('ابتدا یک سند ذخیره‌شده را باز کنید.', 'info');
@@ -1269,12 +1331,15 @@ function bindAccountPicker() {
   if (selectBtn) selectBtn.addEventListener('click', chooseAccountPickerRow);
 
   const clearBtn = modal.querySelector('[data-picker-act="clear"]');
+  const showAllAccounts = () => {
+    state.accountPickerPath = [];
+    state.accountPickerShowAll = true;
+    if (search) search.value = '';
+    renderAccountPickerRows();
+    if (search) search.focus();
+  };
   if (clearBtn) {
-    clearBtn.addEventListener('click', () => {
-      if (search) search.value = '';
-      renderAccountPickerRows();
-      if (search) search.focus();
-    });
+    clearBtn.addEventListener('click', showAllAccounts);
   }
 
   modal.addEventListener('keydown', (ev) => {
@@ -1334,11 +1399,7 @@ function bindAccountPicker() {
         break;
       case 'F6':
         ev.preventDefault();
-        state.accountPickerPath = [];
-        state.accountPickerShowAll = true;
-        if (search) search.value = '';
-        renderAccountPickerRows();
-        if (search) search.focus();
+        showAllAccounts();
         break;
       default:
         break;
@@ -1349,6 +1410,13 @@ function bindAccountPicker() {
 /* ── Confirmation dialog ────────────────────────────────────── */
 
 let confirmResolve = null;
+let confirmReturnFocus = null;
+let confirmUnderlyingModal = null;
+let confirmMainWasInert = false;
+let excelReturnFocus = null;
+let excelMainWasInert = false;
+let transferReturnFocus = null;
+let transferMainWasInert = false;
 
 const confirmOpen = () => {
   const modal = $('#vfConfirmModal');
@@ -1370,11 +1438,17 @@ function confirmAction(message, confirmLabel = 'تأیید') {
       previous(false);
     }
     confirmResolve = resolve;
+    confirmReturnFocus = document.activeElement;
     text.textContent = message;
     okButton.textContent = confirmLabel;
     modal.hidden = false;
     const main = $('.voucher-window');
+    confirmMainWasInert = Boolean(main?.inert);
     if (main) main.inert = true;
+    confirmUnderlyingModal = transferModalOpen()
+      ? $('#vfTransferModal')
+      : (excelPreviewOpen() ? $('#vfExcelPreviewModal') : null);
+    if (confirmUnderlyingModal) confirmUnderlyingModal.inert = true;
     okButton.focus();
   });
 }
@@ -1384,10 +1458,15 @@ function settleConfirm(value) {
   if (!modal || modal.hidden) return;
   modal.hidden = true;
   const main = $('.voucher-window');
-  if (main) main.inert = false;
+  if (main) main.inert = confirmMainWasInert;
+  if (confirmUnderlyingModal) confirmUnderlyingModal.inert = false;
+  confirmUnderlyingModal = null;
   const resolve = confirmResolve;
   confirmResolve = null;
   if (resolve) resolve(value);
+  const returnFocus = confirmReturnFocus;
+  confirmReturnFocus = null;
+  if (returnFocus?.isConnected && !returnFocus.closest('[inert]')) returnFocus.focus();
 }
 
 function bindConfirm() {
@@ -1405,6 +1484,18 @@ function bindConfirm() {
     } else if (ev.key === 'Enter' && ev.target.tagName !== 'BUTTON') {
       ev.preventDefault();
       settleConfirm(true);
+    } else if (ev.key === 'Tab') {
+      const focusable = $$('#vfConfirmModal button:not([disabled])', modal);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault();
+        last.focus();
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault();
+        first.focus();
+      }
     }
   });
 }
@@ -2136,7 +2227,8 @@ async function copyVoucherRow() {
   const description = row.querySelector('.vf-desc-input')?.value || '';
   const debit = digitsOnly(row.querySelector('.vf-debit-input')?.value || '');
   const credit = digitsOnly(row.querySelector('.vf-credit-input')?.value || '');
-  const line = [code, '', description, debit, credit].join('\t');
+  const rowNumber = gridRows().filter(rowHasValue).indexOf(row) + 1;
+  const line = [rowNumber, code, '', description, debit, credit].join('\t');
   try { await writeClipboardText(line); state.activeRow = row; toast('ردیف جاری در کلیپ‌بورد کپی شد.', 'ok'); }
   catch (error) { toast(errorText(error), 'error'); }
 }
@@ -2155,7 +2247,12 @@ function parseVoucherClipboardRows(raw) {
   for (const line of lines.slice(start)) {
     const cells = line.split('\t').map((cell) => cell.trim());
     let code = '', description = '', debitText = '', creditText = '';
-    if (cells.length >= 5) {
+    if (cells.length >= 6) {
+      code = cells[1] || '';
+      description = cells[3] || '';
+      debitText = cells[4] || '';
+      creditText = cells[5] || '';
+    } else if (cells.length >= 5) {
       code = cells[1] && accountForCode(cells[1]) ? cells[1] : (cells[0] || '');
       description = cells[2] || ''; debitText = cells[3] || ''; creditText = cells[4] || '';
     } else {
@@ -2163,8 +2260,22 @@ function parseVoucherClipboardRows(raw) {
       debitText = cells[2] || ''; creditText = cells[3] || '';
     }
     const accountCode = digitsOnly(code);
-    const debit = Number(digitsOnly(debitText) || 0);
-    const credit = Number(digitsOnly(creditText) || 0);
+    if (description.length > 500) {
+      throw new Error(`شرح ردیف کلیپ‌بورد بیش از ۵۰۰ نویسه است (${vfFa(description.length)} نویسه).`);
+    }
+    const parseClipboardAmount = (text) => {
+      const normalized = toAsciiDigits(text).replace(/[,٬\s\u200c\u00a0]/g, '');
+      if (/[-−]/.test(normalized)) throw new Error('مبلغ منفی مجاز نیست؛ از ستون مقابل استفاده کنید.');
+      if (/[./٫]/.test(normalized)) throw new Error('مبلغ باید عدد صحیح ریالی باشد؛ اعشار مجاز نیست.');
+      if (!normalized) return 0;
+      if (!/^\d+$/.test(normalized)) throw new Error(`مبلغ «${text}» معتبر نیست.`);
+      const amount = Number(normalized);
+      if (!Number.isSafeInteger(amount) || amount > 999999999999999)
+        throw new Error('یکی از مبالغ کلیپ‌بورد خارج از محدوده مجاز است.');
+      return amount;
+    };
+    const debit = parseClipboardAmount(debitText);
+    const credit = parseClipboardAmount(creditText);
     if (!accountCode && !description && !debit && !credit) continue;
     if (!Number.isSafeInteger(debit) || !Number.isSafeInteger(credit) ||
         debit > 999999999999999 || credit > 999999999999999)
@@ -2182,6 +2293,12 @@ async function pasteVoucherRows() {
     const parsed = parseVoucherClipboardRows(await navigator.clipboard.readText());
     if (!parsed.length) { toast('ردیف قابل استفاده‌ای در کلیپ‌بورد پیدا نشد.', 'info'); return; }
     const tbody = $('#voucherRows'); if (!tbody) return;
+    const existingCount = gridRows().filter(rowHasValue).length;
+    const availableCount = Math.max(0, MAX_VOUCHER_LINES - existingCount);
+    if (parsed.length > availableCount) {
+      toast(`ظرفیت باقی‌مانده ${vfFa(availableCount)} ردیف است، اما ${vfFa(parsed.length)} ردیف درخواست شده؛ هیچ ردیفی وارد نشد.`, 'warning');
+      return;
+    }
     const filter = $('#vfGridSearch'); if (filter) filter.value = '';
     let anchor = focusedVoucherRow();
     if (anchor && !rowHasValue(anchor)) anchor = anchor.previousElementSibling;
@@ -2191,7 +2308,6 @@ async function pasteVoucherRows() {
     }
     let inserted = 0;
     for (const line of parsed) {
-      if (gridRows().filter(rowHasValue).length >= MAX_VOUCHER_LINES) break;
       if (anchor) anchor.insertAdjacentHTML('afterend', voucherRowTemplate());
       else tbody.insertAdjacentHTML('afterbegin', voucherRowTemplate());
       const row = anchor ? anchor.nextElementSibling : tbody.firstElementChild;
@@ -2279,8 +2395,12 @@ async function openVoucherTransfer(mode) {
       ? 'حالت عملیات: انتقال (حذف از مبدأ پس از تأیید)'
       : 'حالت عملیات: کپی (سند مبدأ حفظ می‌شود)';
     renderVoucherTransferRows();
-    const modal = $('#vfTransferModal'); modal.hidden = false;
-    const main = $('.voucher-window'); if (main) main.inert = true;
+    const modal = $('#vfTransferModal');
+    transferReturnFocus = document.activeElement;
+    const main = $('.voucher-window');
+    transferMainWasInert = Boolean(main?.inert);
+    modal.hidden = false;
+    if (main) main.inert = true;
     target?.focus(); target?.select();
   } catch (error) { toast(errorText(error), 'error'); }
 }
@@ -2288,8 +2408,11 @@ function closeVoucherTransfer() {
   if (state.busy) return;
   const modal = $('#vfTransferModal'); if (!modal || modal.hidden) return;
   modal.hidden = true;
-  const main = $('.voucher-window'); if (main) main.inert = false;
+  const main = $('.voucher-window'); if (main) main.inert = transferMainWasInert;
   state.transfer.source = null; state.transfer.selectedIds = new Set();
+  const returnFocus = transferReturnFocus;
+  transferReturnFocus = null;
+  if (returnFocus?.isConnected && !returnFocus.closest('[inert]')) returnFocus.focus();
 }
 async function submitVoucherTransfer() {
   if (state.busy) return;
@@ -2333,6 +2456,22 @@ function bindVoucherTransfer() {
   $('#vfTransferModal')?.addEventListener('click', (event) => {
     if (event.target.id === 'vfTransferModal') closeVoucherTransfer();
   });
+  $('#vfTransferModal')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    const modal = $('#vfTransferModal');
+    const focusable = $$('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])', modal)
+      .filter((element) => !element.hidden && element.getClientRects().length > 0);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
   $('#vfTransferSelectAll')?.addEventListener('click', () => {
     if (!state.transfer.source) return;
     state.transfer.selectedIds = new Set(state.transfer.source.lines.map((line) => line.id));
@@ -2345,8 +2484,11 @@ function bindVoucherTransfer() {
 function closeExcelPreview() {
   const modal = $('#vfExcelPreviewModal'); if (!modal || modal.hidden) return;
   modal.hidden = true;
-  const main = $('.voucher-window'); if (main) main.inert = false;
+  const main = $('.voucher-window'); if (main) main.inert = excelMainWasInert;
   state.excelPreview = null;
+  const returnFocus = excelReturnFocus;
+  excelReturnFocus = null;
+  if (returnFocus?.isConnected && !returnFocus.closest('[inert]')) returnFocus.focus();
 }
 function renderExcelPreview(imported) {
   const tbody = $('#vfExcelPreviewRows'), summary = $('#vfExcelPreviewSummary');
@@ -2387,11 +2529,25 @@ function renderExcelPreview(imported) {
     ' ردیف دارای خطا. فقط ردیف‌های معتبر قابل افزودن هستند.';
   $('#vfExcelAppend').disabled = !validLines.length;
   $('#vfExcelReplace').disabled = !validLines.length;
-  const modal = $('#vfExcelPreviewModal'); modal.hidden = false;
-  const main = $('.voucher-window'); if (main) main.inert = true;
+  const modal = $('#vfExcelPreviewModal');
+  if (modal.hidden) {
+    excelReturnFocus = document.activeElement;
+    const main = $('.voucher-window');
+    excelMainWasInert = Boolean(main?.inert);
+    if (main) main.inert = true;
+    modal.hidden = false;
+    ($('#vfExcelAppend').disabled ? $('#vfExcelPreviewCancel') : $('#vfExcelAppend'))?.focus();
+  }
 }
 async function commitExcelPreview(replaceExisting) {
   const preview = state.excelPreview; if (!preview || !preview.lines.length) return;
+  const existingCount = collectDraft().lines.length;
+  const resultCount = replaceExisting ? preview.lines.length : existingCount + preview.lines.length;
+  if (resultCount > MAX_VOUCHER_LINES) {
+    const availableCount = replaceExisting ? MAX_VOUCHER_LINES : Math.max(0, MAX_VOUCHER_LINES - existingCount);
+    toast(`ظرفیت ${vfFa(availableCount)} ردیف است، اما ${vfFa(preview.lines.length)} ردیف معتبر انتخاب شده؛ هیچ تغییری اعمال نشد.`, 'warning');
+    return;
+  }
   if (replaceExisting && collectDraft().lines.length) {
     const ok = await confirmAction(
       'ردیف‌های فعلی سند با ردیف‌های معتبر فایل اکسل جایگزین می‌شوند. این تغییر تا زمان ذخیره سند قابل بازگشت است. ادامه می‌دهید؟',
@@ -2411,6 +2567,22 @@ function bindExcelPreview() {
   $('#vfExcelReplace')?.addEventListener('click', () => commitExcelPreview(true));
   $('#vfExcelPreviewModal')?.addEventListener('click', (event) => {
     if (event.target.id === 'vfExcelPreviewModal') closeExcelPreview();
+  });
+  $('#vfExcelPreviewModal')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    const modal = $('#vfExcelPreviewModal');
+    const focusable = $$('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])', modal)
+      .filter((element) => !element.hidden && element.getClientRects().length > 0);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   });
 }
 function bindVoucherGridSearch() {
@@ -2506,6 +2678,8 @@ function bindWindowKeys() {
       }
       return;
     }
+
+    if (accountPickerOpen()) return;
 
     if (ledgerModalOpen()) {
       if (ev.ctrlKey && ev.key.toLowerCase() === 'p') {
