@@ -96,7 +96,7 @@
       $('[data-breadcrumb]').querySelectorAll('[data-path]').forEach(b=>b.addEventListener('click',()=>{state.path=b.dataset.path?b.dataset.path.split(','):[];render();}));
       const list=filtered(); $('[data-count]').textContent=fa(list.length)+' حساب';
       rows.innerHTML=list.length?list.map((a,i)=>
-        '<tr tabindex="0" data-row="'+esc(a.code)+'" class="'+(a.code===state.selected?'selected':'')+'">'+
+        '<tr tabindex="'+(a.code===state.selected?'0':'-1')+'" aria-selected="'+(a.code===state.selected?'true':'false')+'" data-row="'+esc(a.code)+'" class="'+(a.code===state.selected?'selected':'')+'">'+
         '<td>'+fa(i+1)+'</td><td class="mono" dir="ltr">'+fa(a.code)+'</td><td class="name">'+esc(a.name)+'</td>'+
         '<td>'+levelText(a.level)+'</td><td>'+esc(a.groupName)+'</td><td>'+natureText(a.nature)+'</td>'+
         '<td>'+esc(a.parentName||'—')+'</td><td>'+(a.isPostable?'قابل ثبت':'غیرقابل ثبت')+'</td></tr>').join(''):
