@@ -908,7 +908,7 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String
         let row = index as u32 + 1;
         for (column, value) in values.iter().enumerate() {
             worksheet
-                .write_string(row, column as u16, value)
+                .write_string(row, column as u16, value.as_str())
                 .map_err(xlsx_error)?;
         }
     }
