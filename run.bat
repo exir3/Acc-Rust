@@ -63,14 +63,23 @@ if errorlevel 1 (
 REM --- Stop the running copy so the exe can be replaced -------
 taskkill /f /im Hesabdari.exe >nul 2>nul
 
-REM --- Re-embed the UI when ui\ is newer than the last build --
-REM  The frontend files are embedded into the binary at compile
-REM  time, so the app crate must be refreshed when ui\ changed.
-if exist "!EXE!" (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "$exe = Get-Item -LiteralPath '%EXE%'; $newest = Get-ChildItem -LiteralPath '%ROOT%\ui' -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($newest -and ($newest.LastWriteTime -gt $exe.LastWriteTime)) { (Get-Item -LiteralPath '%ROOT%\src-tauri\src\lib.rs').LastWriteTime = Get-Date }"
+REM --- Force a rebuild when any source or UI file changed -----
+REM  Cargo decides what to rebuild by file timestamps, not content.
+REM  Some editors and copy/archive tools preserve very old stamps
+REM  (even 1980), so a changed file can look older than the last
+REM  build and cargo silently reuses the stale binary. Compare a
+REM  content hash of every build input instead, and touch lib.rs
+REM  (the crate that also embeds ui\) whenever that hash changes.
+set "STAMP=%LOCAL_TARGET%\.run-inputs.sha256"
+set "BUILD_STATE="
+for /f "usebackq delims=" %%S in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$root='%ROOT%'; $files=@(); $files+=Get-ChildItem -LiteralPath (Join-Path $root 'src-tauri\src') -Recurse -File -Filter *.rs -ErrorAction SilentlyContinue; $files+=Get-Item -LiteralPath (Join-Path $root 'src-tauri\Cargo.toml'),(Join-Path $root 'src-tauri\build.rs'),(Join-Path $root 'src-tauri\tauri.conf.json') -ErrorAction SilentlyContinue; $files+=Get-ChildItem -LiteralPath (Join-Path $root 'src-tauri\capabilities') -Recurse -File -ErrorAction SilentlyContinue; $files+=Get-ChildItem -LiteralPath (Join-Path $root 'ui') -Recurse -File -ErrorAction SilentlyContinue; $sha=[System.Security.Cryptography.SHA256]::Create(); $sb=New-Object System.Text.StringBuilder; foreach($f in ($files|Sort-Object FullName)){ [void]$sb.Append($f.FullName.Substring($root.Length)).Append('|'); $content=[System.IO.File]::ReadAllBytes($f.FullName); [void]$sb.Append([System.BitConverter]::ToString($sha.ComputeHash($content)).Replace('-','')).Append([char]10) }; $hash=[System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($sb.ToString()))).Replace('-','').ToLowerInvariant(); $stamp=Join-Path $root 'cargo-target\.run-inputs.sha256'; $old=''; if(Test-Path -LiteralPath $stamp){ $old=(Get-Content -LiteralPath $stamp -Raw).Trim() }; if($old -eq $hash){ Write-Output 'SAME' } else { $dir=Split-Path -Parent $stamp; if(-not (Test-Path -LiteralPath $dir)){ [void](New-Item -ItemType Directory -Path $dir -Force) }; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\src\lib.rs')).LastWriteTime=Get-Date; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\build.rs')).LastWriteTime=Get-Date; Set-Content -LiteralPath $stamp -Value $hash -NoNewline; Write-Output 'CHANGED' }"`) do set "BUILD_STATE=%%S"
+
+if /i "!BUILD_STATE!"=="SAME" (
+    echo [1/2] No input changes - using the existing build.
+) else (
+    echo [1/2] Input changes detected - rebuilding the app ...
 )
 
-echo [1/2] Building ...
 cargo build --manifest-path "%ROOT%\src-tauri\Cargo.toml" %CARGO_ARGS%
 if errorlevel 1 goto :fail
 
@@ -104,6 +113,8 @@ echo Build caches removed. The next build may take longer once.
 goto :eof
 
 :fail
+REM --- Do not trust this build next time; retry a full rebuild ---
+if defined STAMP if exist "!STAMP!" del /q "!STAMP!" >nul 2>nul
 echo.
 echo ============================================================
 echo   RUN FAILED  (see messages above)

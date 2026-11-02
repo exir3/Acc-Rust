@@ -263,3 +263,41 @@ body.voucher-page {
   background-color: #fff7f7;
   box-shadow: 0 0 0 2px rgba(196, 61, 75, 0.12);
 }
+
+
+.vf-grid-filterbar { flex:0 0 auto; display:flex; align-items:center; gap:9px; min-height:36px; padding:4px 10px; border-inline:1px solid #879db0; background:linear-gradient(to bottom,#f7fafc,#e3ebf3); color:#39556f; font-size:11px; }
+.vf-grid-filterbar label { flex:0 0 auto; font-weight:700; }
+.vf-grid-filterbar input { flex:1 1 auto; min-width:120px; height:27px; padding:0 9px; border:1px solid #b5c5d5; border-radius:3px; background:#fff; color:#24384b; font:inherit; font-size:11px; }
+.vf-grid-filterbar input:focus { outline:2px solid #6aa2d8; outline-offset:1px; }
+.vf-grid-filterbar span { color:#657b90; white-space:nowrap; }
+.ap-path { min-height:26px; display:flex; align-items:center; padding:4px 9px; border-block:1px solid #d1deea; background:#f7fafc; color:#46627c; font-size:10px; font-weight:700; line-height:1.6; }
+.vf-transfer-modal, .vf-excel-preview-modal { z-index:385; padding:14px; background:rgba(2,6,23,.56); }
+.vf-transfer-window, .vf-excel-preview-window { width:min(1120px,100%); height:min(760px,calc(100vh - 28px)); min-height:0; background:#e8eef5; }
+.vf-transfer-content, .vf-excel-preview-content { flex:1; min-height:0; display:flex; flex-direction:column; gap:9px; padding:12px; overflow:hidden; background:#eef3f8; }
+.vf-transfer-fields { display:flex; align-items:end; gap:16px; flex-wrap:wrap; padding:10px; border:1px solid #c8d5e3; background:#f9fbfd; }
+.vf-transfer-fields label { display:grid; gap:4px; min-width:190px; color:#52657a; font-size:11px; font-weight:700; }
+.vf-transfer-fields input { height:32px; padding:0 9px; border:1px solid #b7c7d7; border-radius:3px; background:#fff; color:#182b3d; font:inherit; font-size:13px; }
+.vf-transfer-mode { padding:8px 0; color:#294b6b; font-size:12px; font-weight:700; }
+.vf-transfer-actions { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+.vf-transfer-actions #vfTransferSummary { margin-inline-start:auto; color:#3f5870; font-size:11px; }
+.vf-transfer-table-wrap, .vf-excel-preview-table-wrap { flex:1; min-height:140px; overflow:auto; border:1px solid #b9c9d8; background:#fff; }
+.vf-transfer-table, .vf-excel-preview-table { width:100%; border-collapse:collapse; table-layout:fixed; color:#23384d; font-size:11px; }
+.vf-transfer-table th, .vf-transfer-table td, .vf-excel-preview-table th, .vf-excel-preview-table td { padding:7px 8px; border-bottom:1px solid #e0e7ef; text-align:right; overflow-wrap:anywhere; }
+.vf-transfer-table th, .vf-excel-preview-table th { position:sticky; top:0; z-index:1; background:#dce8f3; color:#294b6b; white-space:nowrap; }
+.vf-transfer-table .vf-money, .vf-excel-preview-table .vf-money { direction:ltr; text-align:left; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.vf-transfer-table tr:nth-child(even), .vf-excel-preview-table tr:nth-child(even) { background:#f6f9fc; }
+.vf-transfer-table tr.selected { background:#e2efff; }
+.vf-transfer-note { margin:0; color:#6a4e12; font-size:10px; line-height:1.8; }
+.vf-transfer-footer { display:flex; justify-content:flex-start; gap:7px; flex-wrap:wrap; padding:8px 10px; background:#dce6f0; border-top:1px solid #bdcddd; }
+.vf-transfer-footer .ap-tool { min-height:31px; }
+.vf-excel-preview-summary { min-height:24px; color:#38536d; font-size:11px; line-height:1.8; }
+.vf-excel-preview-table tr.invalid { background:#fff0f0; }
+.vf-excel-preview-table .vf-import-error { color:#a52635; font-weight:700; }
+.vf-excel-preview-table .vf-import-ok { color:#17653f; font-weight:700; }
+.vf-transfer-window :is(button,input):focus-visible, .vf-excel-preview-window :is(button,input):focus-visible { outline:2px solid #1f5fd0; outline-offset:1px; }
+@media (max-width:760px) {
+  .vf-transfer-modal,.vf-excel-preview-modal { padding:6px; }
+  .vf-transfer-window,.vf-excel-preview-window { height:calc(100vh - 12px); }
+  .vf-transfer-content,.vf-excel-preview-content { padding:7px; }
+  .vf-transfer-table,.vf-excel-preview-table { min-width:850px; }
+}

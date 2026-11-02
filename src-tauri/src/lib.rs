@@ -188,6 +188,14 @@ fn get_voucher(
 }
 
 #[tauri::command(async)]
+fn transfer_voucher_lines(
+    input: vouchers::VoucherTransferInput,
+    state: State<'_, AppState>,
+) -> Result<vouchers::VoucherTransferResult, String> {
+    state.database.transfer_voucher_lines(input)
+}
+
+#[tauri::command(async)]
 fn save_voucher(
     input: VoucherInput,
     state: State<'_, AppState>,
@@ -643,6 +651,7 @@ pub fn run() {
             next_voucher_number,
             list_vouchers,
             get_voucher,
+            transfer_voucher_lines,
             save_voucher,
             delete_voucher,
             export_voucher_excel,

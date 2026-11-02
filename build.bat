@@ -67,6 +67,18 @@ if errorlevel 1 (
     goto :fail
 )
 
+REM --- Refresh the app crate before every build -----------------
+REM  Cargo compares file timestamps, and some editors/copy tools
+REM  keep very old timestamps on edited files. A changed file can
+REM  then look older than the last build, so cargo silently reuses
+REM  a stale binary. Touching these two files forces the crate and
+REM  its embedded ui\ to be compiled from the current sources.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-Item -LiteralPath '%ROOT%\src-tauri\src\lib.rs').LastWriteTime=Get-Date; (Get-Item -LiteralPath '%ROOT%\src-tauri\build.rs').LastWriteTime=Get-Date"
+if errorlevel 1 (
+    echo [ERROR] Could not refresh source timestamps.
+    goto :fail
+)
+
 if /i "%MODE%"=="portable" goto :do_portable
 if /i "%MODE%"=="installer" goto :do_installer
 goto :do_all

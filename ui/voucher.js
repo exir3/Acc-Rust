@@ -75,6 +75,10 @@ const state = {
   ready: false,
   activeRow: null,
   ledger: { account: null, report: null, from: '', to: '', query: '', returnFocus: null, request: 0 },
+  transfer: { mode: 'copy', source: null, selectedIds: new Set() },
+  excelPreview: null,
+  accountPickerPath: [],
+  accountPickerShowAll: false,
 };
 
 const accountForCode = (code) => state.accountByCode.get(digitsOnly(code)) || null;
@@ -318,6 +322,7 @@ function refreshFormState() {
   renumberRows();
   updateTotals();
   updateLedger(state.activeRow && state.activeRow.isConnected ? state.activeRow : null);
+  applyVoucherGridSearch();
 }
 
 function markAllCodesFinal() {
@@ -471,6 +476,8 @@ function moveGridFocus(input, row, step) {
 function addRow() {
   const tbody = $('#voucherRows');
   if (!tbody) return;
+  const gridSearch = $('#vfGridSearch');
+  if (gridSearch && gridSearch.value) { gridSearch.value = ''; applyVoucherGridSearch(); }
   if (gridRows().filter(rowHasValue).length >= MAX_VOUCHER_LINES) {
     toast(`حداکثر ${vfFa(MAX_VOUCHER_LINES)} ردیف برای هر سند مجاز است.`, 'warning');
     return;
@@ -982,7 +989,14 @@ const accountPickerOpen = () => {
 
 function filterAccountPicker(term) {
   const q = normalizeSearch(term);
-  if (!q) return state.accounts.slice();
+  const parent = state.accountPickerPath[state.accountPickerPath.length - 1] || null;
+  let source = state.accounts;
+  if (!q && !state.accountPickerShowAll) {
+    source = parent
+      ? state.accounts.filter((account) => digitsOnly(account.parentCode) === digitsOnly(parent.code))
+      : state.accounts.filter((account) => Number(account.level) === 1 || !account.parentCode);
+  }
+  if (!q) return source.slice();
   return state.accounts.filter((account) =>
     normalizeSearch(account.code).includes(q) ||
     normalizeSearch(account.name).includes(q) ||
@@ -990,6 +1004,15 @@ function filterAccountPicker(term) {
     normalizeSearch(account.parentName).includes(q) ||
     normalizeSearch(account.groupName).includes(q)
   );
+}
+
+function renderAccountPickerPath() {
+  const path = $('#accountPickerPath');
+  if (!path) return;
+  const labels = ['همه حساب‌های کل'].concat(state.accountPickerPath.map((account) =>
+    vfFa(account.code) + ' — ' + account.name
+  ));
+  path.textContent = labels.join('  ‹  ');
 }
 
 function apCell(text, className, dir) {
@@ -1006,6 +1029,7 @@ function renderAccountPickerRows(resetIndex = true) {
   if (!box) return;
   const term = $('#accountPickerSearch') ? $('#accountPickerSearch').value : '';
   apVisible = filterAccountPicker(term);
+  renderAccountPickerPath();
   if (resetIndex) apIndex = 0;
   if (apIndex > apVisible.length - 1) apIndex = Math.max(0, apVisible.length - 1);
 
@@ -1097,6 +1121,8 @@ function openAccountPicker(input) {
   }
 
   apTarget = input || null;
+  state.accountPickerPath = [];
+  state.accountPickerShowAll = false;
   const search = $('#accountPickerSearch');
   const code = input && input.classList.contains('vf-code-input') ? digitsOnly(input.value) : '';
   if (search) search.value = code;
@@ -1121,6 +1147,23 @@ function openAccountPicker(input) {
   if (selected) selected.scrollIntoView({ block: 'nearest' });
 }
 
+function drillOrChooseAccountPickerRow(account) {
+  if (!account) return;
+  const children = state.accounts.filter((item) =>
+    digitsOnly(item.parentCode) === digitsOnly(account.code)
+  );
+  if (children.length) {
+    state.accountPickerPath.push(account);
+    const search = $('#accountPickerSearch');
+    if (search) search.value = '';
+    apIndex = 0;
+    renderAccountPickerRows();
+    search?.focus();
+    return;
+  }
+  chooseAccountPickerRow();
+}
+
 function closeAccountPicker(refocus = false) {
   const modal = $('#accountPickerModal');
   if (!modal || modal.hidden) return;
@@ -1138,6 +1181,13 @@ function chooseAccountPickerRow() {
   if (!account) return;
 
   if (!account.isPostable) {
+    const hasChildren = state.accounts.some((item) =>
+      digitsOnly(item.parentCode) === digitsOnly(account.code)
+    );
+    if (hasChildren) {
+      drillOrChooseAccountPickerRow(account);
+      return;
+    }
     toast('این حساب قابل ثبت نیست؛ حساب معین یا تفصیلی انتخاب کنید.', 'error');
     return;
   }
@@ -1179,7 +1229,18 @@ function bindAccountPicker() {
   const closeBtn = $('#btnAccountPickerClose');
   if (closeBtn) closeBtn.addEventListener('click', () => closeAccountPicker(true));
   const backBtn = $('#accountPickerBack');
-  if (backBtn) backBtn.addEventListener('click', () => closeAccountPicker(true));
+  if (backBtn) backBtn.addEventListener('click', () => {
+    if (state.accountPickerPath.length) {
+      state.accountPickerPath.pop();
+      state.accountPickerShowAll = false;
+      if (search) search.value = '';
+      apIndex = 0;
+      renderAccountPickerRows();
+      search?.focus();
+    } else {
+      closeAccountPicker(true);
+    }
+  });
   modal.addEventListener('click', (ev) => {
     if (ev.target.id === 'accountPickerModal') closeAccountPicker(true);
   });
@@ -1197,7 +1258,7 @@ function bindAccountPicker() {
     if (!row) return;
     apIndex = Number(row.dataset.pickerIndex);
     highlightAccountPickerRow(apIndex);
-    chooseAccountPickerRow();
+    drillOrChooseAccountPickerRow(apVisible[apIndex]);
   });
 
   const selectBtn = $('#accountPickerSelect');
@@ -1256,7 +1317,12 @@ function bindAccountPicker() {
         break;
       case 'F2':
         ev.preventDefault();
-        chooseAccountPickerRow();
+        if (apVisible[apIndex] && state.accounts.some((item) =>
+          digitsOnly(item.parentCode) === digitsOnly(apVisible[apIndex].code))) {
+          drillOrChooseAccountPickerRow(apVisible[apIndex]);
+        } else {
+          chooseAccountPickerRow();
+        }
         break;
       case 'F5':
         ev.preventDefault();
@@ -1264,6 +1330,8 @@ function bindAccountPicker() {
         break;
       case 'F6':
         ev.preventDefault();
+        state.accountPickerPath = [];
+        state.accountPickerShowAll = true;
         if (search) search.value = '';
         renderAccountPickerRows();
         if (search) search.focus();
@@ -1662,10 +1730,7 @@ async function importVoucherFromExcel() {
       return;
     }
 
-    const existing = collectDraft().lines;
-    fillGrid([...existing, ...imported]);
-    markDirty();
-    toast(`${vfFa(imported.length)} ردیف از فایل اکسل به سند اضافه شد.`, 'ok');
+    renderExcelPreview(imported);
   } catch (error) {
     state.busy = false;
     toast(errorText(error), 'error');
@@ -2016,6 +2081,338 @@ function bindAccountLedger() {
   });
 }
 
+
+function applyVoucherGridSearch() {
+  const input = $('#vfGridSearch');
+  const count = $('#vfGridSearchCount');
+  const query = normalizeSearch(input ? input.value : '');
+  let visible = 0;
+  let filled = 0;
+  for (const row of gridRows()) {
+    if (!rowHasValue(row)) { row.hidden = !!query; continue; }
+    filled += 1;
+    const code = digitsOnly(row.querySelector('.vf-code-input')?.value || '');
+    const account = accountForCode(code);
+    const haystack = normalizeSearch([
+      code, account ? account.name : '',
+      row.querySelector('.vf-desc-input')?.value || '',
+      row.querySelector('.vf-debit-input')?.value || '',
+      row.querySelector('.vf-credit-input')?.value || '',
+    ].join(' '));
+    const activeEditing = row === state.activeRow &&
+      document.activeElement?.closest?.('#voucherRows tr') === row;
+    const match = !query || haystack.includes(query) || activeEditing;
+    row.hidden = !match;
+    if (match) visible += 1;
+  }
+  if (count) count.textContent = query
+    ? vfFa(visible) + ' از ' + vfFa(filled) + ' ردیف'
+    : vfFa(filled) + ' ردیف';
+}
+
+function focusedVoucherRow() {
+  const active = document.activeElement;
+  const row = active && active.closest ? active.closest('#voucherRows tr') : null;
+  return row || (state.activeRow && state.activeRow.isConnected ? state.activeRow : null);
+}
+function writeClipboardText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+  return new Promise((resolve, reject) => {
+    const area = document.createElement('textarea');
+    area.value = text; area.style.position = 'fixed'; area.style.opacity = '0';
+    document.body.append(area); area.select();
+    const ok = document.execCommand('copy'); area.remove();
+    if (ok) resolve(); else reject(new Error('دسترسی به کلیپ‌بورد ممکن نیست.'));
+  });
+}
+async function copyVoucherRow() {
+  const row = focusedVoucherRow();
+  if (!row || !rowHasValue(row)) { toast('ابتدا یک ردیف دارای اطلاعات را انتخاب کنید.', 'info'); return; }
+  const code = digitsOnly(row.querySelector('.vf-code-input')?.value || '');
+  const description = row.querySelector('.vf-desc-input')?.value || '';
+  const debit = digitsOnly(row.querySelector('.vf-debit-input')?.value || '');
+  const credit = digitsOnly(row.querySelector('.vf-credit-input')?.value || '');
+  const line = [code, '', description, debit, credit].join('\t');
+  try { await writeClipboardText(line); state.activeRow = row; toast('ردیف جاری در کلیپ‌بورد کپی شد.', 'ok'); }
+  catch (error) { toast(errorText(error), 'error'); }
+}
+function parseVoucherClipboardRows(raw) {
+  const lines = String(raw || '').split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) return [];
+  const isHeader = (cells) => {
+    const words = cells.map(normalizeSearch).join(' ');
+    const hasCode = words.includes('کد') || words.includes('code') || words.includes('account');
+    const hasDebit = words.includes('بدهکار') || words.includes('debit');
+    const hasCredit = words.includes('بستانکار') || words.includes('credit');
+    return hasCode && hasDebit && hasCredit;
+  };
+  const start = isHeader(lines[0].split('\t')) ? 1 : 0;
+  const parsed = [];
+  for (const line of lines.slice(start)) {
+    const cells = line.split('\t').map((cell) => cell.trim());
+    let code = '', description = '', debitText = '', creditText = '';
+    if (cells.length >= 5) {
+      code = cells[1] && accountForCode(cells[1]) ? cells[1] : (cells[0] || '');
+      description = cells[2] || ''; debitText = cells[3] || ''; creditText = cells[4] || '';
+    } else {
+      code = cells[0] || ''; description = cells[1] || '';
+      debitText = cells[2] || ''; creditText = cells[3] || '';
+    }
+    const accountCode = digitsOnly(code);
+    const debit = Number(digitsOnly(debitText) || 0);
+    const credit = Number(digitsOnly(creditText) || 0);
+    if (!accountCode && !description && !debit && !credit) continue;
+    if (!Number.isSafeInteger(debit) || !Number.isSafeInteger(credit) ||
+        debit > 999999999999999 || credit > 999999999999999)
+      throw new Error('یکی از مبالغ کلیپ‌بورد خارج از محدوده مجاز است.');
+    if (debit > 0 && credit > 0)
+      throw new Error('در ردیف چسبانده‌شده، هم‌زمان بدهکار و بستانکار پر شده است.');
+    parsed.push({ accountCode, description, debit, credit });
+  }
+  return parsed;
+}
+async function pasteVoucherRows() {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.readText)
+      throw new Error('خواندن کلیپ‌بورد در این پنجره مجاز نیست.');
+    const parsed = parseVoucherClipboardRows(await navigator.clipboard.readText());
+    if (!parsed.length) { toast('ردیف قابل استفاده‌ای در کلیپ‌بورد پیدا نشد.', 'info'); return; }
+    const tbody = $('#voucherRows'); if (!tbody) return;
+    const filter = $('#vfGridSearch'); if (filter) filter.value = '';
+    let anchor = focusedVoucherRow();
+    if (anchor && !rowHasValue(anchor)) anchor = anchor.previousElementSibling;
+    if (!anchor || anchor.parentElement !== tbody) {
+      const filled = gridRows().filter(rowHasValue);
+      anchor = filled.length ? filled[filled.length - 1] : null;
+    }
+    let inserted = 0;
+    for (const line of parsed) {
+      if (gridRows().filter(rowHasValue).length >= MAX_VOUCHER_LINES) break;
+      if (anchor) anchor.insertAdjacentHTML('afterend', voucherRowTemplate());
+      else tbody.insertAdjacentHTML('afterbegin', voucherRowTemplate());
+      const row = anchor ? anchor.nextElementSibling : tbody.firstElementChild;
+      if (!row) break;
+      row.querySelector('.vf-code-input').value = line.accountCode;
+      row.querySelector('.vf-desc-input').value = line.description;
+      row.querySelector('.vf-debit-input').value = line.debit ? formatAmount(line.debit) : '';
+      row.querySelector('.vf-credit-input').value = line.credit ? formatAmount(line.credit) : '';
+      updateRowAccount(row, true); anchor = row; inserted += 1;
+    }
+    if (!inserted) { toast('ظرفیت مجاز ردیف‌های سند تکمیل است.', 'warning'); return; }
+    state.activeRow = anchor; ensureTrailingBlank(); syncVoucherRowCount();
+    refreshFormState(); markDirty();
+    toast(vfFa(inserted) + ' ردیف از کلیپ‌بورد چسبانده شد.', 'ok');
+    anchor.querySelector('.vf-code-input')?.focus();
+  } catch (error) { toast(errorText(error), 'error'); }
+}
+function transferModalOpen() {
+  const modal = $('#vfTransferModal'); return !!modal && !modal.hidden;
+}
+function excelPreviewOpen() {
+  const modal = $('#vfExcelPreviewModal'); return !!modal && !modal.hidden;
+}
+function renderVoucherTransferSummary() {
+  const source = state.transfer.source, summary = $('#vfTransferSummary');
+  if (!source || !summary) return;
+  const chosen = source.lines.filter((line) => state.transfer.selectedIds.has(line.id));
+  const debit = chosen.reduce((sum, line) => sum + BigInt(line.debit || 0), 0n);
+  const credit = chosen.reduce((sum, line) => sum + BigInt(line.credit || 0), 0n);
+  const difference = debit > credit ? debit - credit : credit - debit;
+  summary.textContent = vfFa(chosen.length) + ' ردیف | بدهکار ' +
+    vfFa(formatAmount(debit)) + ' | بستانکار ' + vfFa(formatAmount(credit)) +
+    ' | مغایرت ' + vfFa(formatAmount(difference));
+}
+function renderVoucherTransferRows() {
+  const tbody = $('#vfTransferRows'), source = state.transfer.source;
+  if (!tbody || !source) return;
+  tbody.textContent = '';
+  for (const line of source.lines) {
+    const row = document.createElement('tr');
+    const pickCell = document.createElement('td'); pickCell.className = 'vf-center';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox'; checkbox.className = 'vf-transfer-check';
+    checkbox.dataset.lineId = String(line.id);
+    checkbox.checked = state.transfer.selectedIds.has(line.id);
+    checkbox.setAttribute('aria-label', 'انتخاب ردیف ' + vfFa(line.rowNo));
+    pickCell.append(checkbox); row.append(pickCell);
+    const values = [vfFa(line.rowNo), vfFa(line.accountCode), line.accountName || '',
+      line.description || '', vfFa(formatAmount(line.debit || 0)), vfFa(formatAmount(line.credit || 0))];
+    values.forEach((value, index) => {
+      const cell = document.createElement('td'); cell.textContent = value;
+      if (index >= 4) cell.className = 'vf-money'; row.append(cell);
+    });
+    if (checkbox.checked) row.classList.add('selected');
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) state.transfer.selectedIds.add(line.id);
+      else state.transfer.selectedIds.delete(line.id);
+      row.classList.toggle('selected', checkbox.checked); renderVoucherTransferSummary();
+    });
+    row.addEventListener('click', (event) => {
+      if (event.target === checkbox) return;
+      checkbox.checked = !checkbox.checked;
+      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    tbody.append(row);
+  }
+  renderVoucherTransferSummary();
+}
+async function openVoucherTransfer(mode) {
+  if (state.busy || !invoke || (mode !== 'copy' && mode !== 'move')) return;
+  let source = state.voucher;
+  if (!source) { toast('برای کپی یا انتقال ردیف‌ها، ابتدا یک سند ذخیره‌شده را باز کنید.', 'warning'); return; }
+  if (state.dirty) {
+    source = await saveVoucher({ silent: true });
+    if (!source) return;
+  }
+  try {
+    const next = await invoke('next_voucher_number');
+    state.transfer.mode = mode; state.transfer.source = source;
+    state.transfer.selectedIds = new Set();
+    const target = $('#vfTransferTarget'); if (target) target.value = String(next);
+    const title = $('#vfTransferTitle'), modeLabel = $('#vfTransferModeLabel');
+    if (title) title.textContent = mode === 'move' ? 'انتقال ردیف‌های سند به سند دیگر' : 'کپی ردیف‌های سند به سند دیگر';
+    if (modeLabel) modeLabel.textContent = mode === 'move'
+      ? 'حالت عملیات: انتقال (حذف از مبدأ پس از تأیید)'
+      : 'حالت عملیات: کپی (سند مبدأ حفظ می‌شود)';
+    renderVoucherTransferRows();
+    const modal = $('#vfTransferModal'); modal.hidden = false;
+    const main = $('.voucher-window'); if (main) main.inert = true;
+    target?.focus(); target?.select();
+  } catch (error) { toast(errorText(error), 'error'); }
+}
+function closeVoucherTransfer() {
+  if (state.busy) return;
+  const modal = $('#vfTransferModal'); if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  const main = $('.voucher-window'); if (main) main.inert = false;
+  state.transfer.source = null; state.transfer.selectedIds = new Set();
+}
+async function submitVoucherTransfer() {
+  if (state.busy) return;
+  const source = state.transfer.source;
+  const lineIds = Array.from(state.transfer.selectedIds);
+  const targetText = digitsOnly($('#vfTransferTarget')?.value || '');
+  const targetNumber = Number(targetText);
+  if (!source || lineIds.length < 2) { toast('حداقل دو ردیف مرتبط را انتخاب کنید.', 'warning'); return; }
+  if (!targetText || !Number.isSafeInteger(targetNumber) || targetNumber <= 0) {
+    toast('شماره سند مقصد معتبر نیست.', 'error'); return;
+  }
+  if (targetNumber === Number(source.number)) { toast('شماره سند مقصد باید با سند مبدأ متفاوت باشد.', 'error'); return; }
+  if (state.transfer.mode === 'move') {
+    const ok = await confirmAction(
+      'ردیف‌های انتخاب‌شده از سند مبدأ حذف و به سند مقصد افزوده می‌شوند. فقط در صورتی عملیات انجام می‌شود که هر دو سند پس از انتقال تراز بمانند. ادامه می‌دهید؟',
+      'انتقال ردیف‌ها'
+    );
+    if (!ok) return;
+  }
+  const operationMode = state.transfer.mode;
+  state.busy = true; setStatus('info', 'در حال کپی یا انتقال ردیف‌ها…');
+  try {
+    const result = await invoke('transfer_voucher_lines', { input: {
+      sourceVoucherId: source.id,
+      sourceVoucherNumber: source.number,
+      targetVoucherNumber: targetNumber,
+      lineIds, mode: operationMode,
+    }});
+    state.busy = false; closeVoucherTransfer(); loadVoucher(result.target);
+    toast(operationMode === 'move'
+      ? 'ردیف‌ها به سند شماره ' + vfFa(result.target.number) + ' منتقل شدند.'
+      : 'ردیف‌ها در سند شماره ' + vfFa(result.target.number) + ' کپی شدند.', 'ok');
+  } catch (error) {
+    state.busy = false; setStatus('error', 'عملیات ردیف‌ها انجام نشد'); toast(errorText(error), 'error');
+  }
+}
+function bindVoucherTransfer() {
+  $('#vfTransferClose')?.addEventListener('click', closeVoucherTransfer);
+  $('#vfTransferCancel')?.addEventListener('click', closeVoucherTransfer);
+  $('#vfTransferSubmit')?.addEventListener('click', submitVoucherTransfer);
+  $('#vfTransferModal')?.addEventListener('click', (event) => {
+    if (event.target.id === 'vfTransferModal') closeVoucherTransfer();
+  });
+  $('#vfTransferSelectAll')?.addEventListener('click', () => {
+    if (!state.transfer.source) return;
+    state.transfer.selectedIds = new Set(state.transfer.source.lines.map((line) => line.id));
+    renderVoucherTransferRows();
+  });
+  $('#vfTransferSelectNone')?.addEventListener('click', () => {
+    state.transfer.selectedIds = new Set(); renderVoucherTransferRows();
+  });
+}
+function closeExcelPreview() {
+  const modal = $('#vfExcelPreviewModal'); if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  const main = $('.voucher-window'); if (main) main.inert = false;
+  state.excelPreview = null;
+}
+function renderExcelPreview(imported) {
+  const tbody = $('#vfExcelPreviewRows'), summary = $('#vfExcelPreviewSummary');
+  if (!tbody || !summary) return;
+  const items = imported.map((line, index) => {
+    const code = digitsOnly(line.accountCode || ''), account = accountForCode(code);
+    const debit = Number(line.debit || 0), credit = Number(line.credit || 0), errors = [];
+    if (!code) errors.push('کد حساب خالی');
+    else if (!account) errors.push('حساب یافت نشد');
+    else if (!account.isPostable) errors.push('حساب قابل ثبت نیست');
+    if (String(line.description || '').length > 500) errors.push('شرح بیش از ۵۰۰ نویسه');
+    if (!Number.isSafeInteger(debit) || !Number.isSafeInteger(credit) ||
+        debit < 0 || credit < 0 || debit > 999999999999999 || credit > 999999999999999)
+      errors.push('مبلغ نامعتبر');
+    else if ((debit === 0) === (credit === 0))
+      errors.push('دقیقاً یکی از بدهکار/بستانکار باید مثبت باشد');
+    return { index, line: { accountCode: code, description: String(line.description || ''), debit, credit }, account, errors };
+  });
+  const validLines = items.filter((item) => !item.errors.length).map((item) => item.line);
+  state.excelPreview = { lines: validLines, total: items.length, invalid: items.length - validLines.length };
+  tbody.textContent = '';
+  items.forEach((item) => {
+    const row = document.createElement('tr'); if (item.errors.length) row.classList.add('invalid');
+    const values = [vfFa(item.index + 1), vfFa(item.line.accountCode),
+      item.account ? item.account.name : '—', item.line.description,
+      vfFa(formatAmount(item.line.debit)), vfFa(formatAmount(item.line.credit)),
+      item.errors.length ? item.errors.join('، ') : 'معتبر'];
+    values.forEach((value, index) => {
+      const cell = document.createElement('td'); cell.textContent = value;
+      if (index === 4 || index === 5) cell.className = 'vf-money';
+      if (index === 6) cell.className = item.errors.length ? 'vf-import-error' : 'vf-import-ok';
+      row.append(cell);
+    });
+    tbody.append(row);
+  });
+  summary.textContent = vfFa(items.length) + ' ردیف از اکسل خوانده شد؛ ' +
+    vfFa(validLines.length) + ' ردیف معتبر و ' + vfFa(state.excelPreview.invalid) +
+    ' ردیف دارای خطا. فقط ردیف‌های معتبر قابل افزودن هستند.';
+  $('#vfExcelAppend').disabled = !validLines.length;
+  $('#vfExcelReplace').disabled = !validLines.length;
+  const modal = $('#vfExcelPreviewModal'); modal.hidden = false;
+  const main = $('.voucher-window'); if (main) main.inert = true;
+}
+async function commitExcelPreview(replaceExisting) {
+  const preview = state.excelPreview; if (!preview || !preview.lines.length) return;
+  if (replaceExisting && collectDraft().lines.length) {
+    const ok = await confirmAction(
+      'ردیف‌های فعلی سند با ردیف‌های معتبر فایل اکسل جایگزین می‌شوند. این تغییر تا زمان ذخیره سند قابل بازگشت است. ادامه می‌دهید؟',
+      'جایگزینی ردیف‌ها'
+    );
+    if (!ok) return;
+  }
+  const lines = replaceExisting ? preview.lines : collectDraft().lines.concat(preview.lines);
+  fillGrid(lines); state.dirty = true; closeExcelPreview(); markDirty();
+  toast(vfFa(preview.lines.length) + ' ردیف معتبر از پیش‌نمایش اکسل ' +
+    (replaceExisting ? 'جایگزین' : 'به سند افزوده') + ' شد.', 'ok');
+}
+function bindExcelPreview() {
+  $('#vfExcelPreviewClose')?.addEventListener('click', closeExcelPreview);
+  $('#vfExcelPreviewCancel')?.addEventListener('click', closeExcelPreview);
+  $('#vfExcelAppend')?.addEventListener('click', () => commitExcelPreview(false));
+  $('#vfExcelReplace')?.addEventListener('click', () => commitExcelPreview(true));
+  $('#vfExcelPreviewModal')?.addEventListener('click', (event) => {
+    if (event.target.id === 'vfExcelPreviewModal') closeExcelPreview();
+  });
+}
+function bindVoucherGridSearch() {
+  $('#vfGridSearch')?.addEventListener('input', applyVoucherGridSearch);
+  applyVoucherGridSearch();
+}
 /* ── Toolbar and keyboard ───────────────────────────────────── */
 
 function bindToolbar() {
@@ -2059,6 +2456,18 @@ function bindToolbar() {
         case 'delete-voucher':
           await deleteVoucher();
           break;
+        case 'transfer-copy':
+          await openVoucherTransfer('copy');
+          break;
+        case 'transfer-move':
+          await openVoucherTransfer('move');
+          break;
+        case 'copy-row':
+          await copyVoucherRow();
+          break;
+        case 'paste-row':
+          await pasteVoucherRows();
+          break;
         default:
           break;
       }
@@ -2070,6 +2479,14 @@ function bindWindowKeys() {
   document.addEventListener('keydown', (ev) => {
     if (confirmOpen()) return;
     if (ev.defaultPrevented) return;
+    if (transferModalOpen() || excelPreviewOpen()) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        if (transferModalOpen()) closeVoucherTransfer();
+        else closeExcelPreview();
+      }
+      return;
+    }
 
     if (ev.key === 'Escape') {
       if (ledgerModalOpen()) {
@@ -2092,6 +2509,19 @@ function bindWindowKeys() {
         printAccountLedger();
       }
       return;
+    }
+
+    const gridInput = ev.target?.closest?.('#voucherRows input');
+    if (gridInput && ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+      const hasTextSelection = typeof gridInput.selectionStart === 'number' &&
+        gridInput.selectionStart !== gridInput.selectionEnd;
+      const key = ev.key.toLowerCase();
+      if (key === 'c' && !hasTextSelection) {
+        ev.preventDefault(); copyVoucherRow(); return;
+      }
+      if (key === 'v' && !hasTextSelection) {
+        ev.preventDefault(); pasteVoucherRows(); return;
+      }
     }
 
     if (ev.key === 'F2' && !accountPickerOpen()) {
@@ -2223,6 +2653,9 @@ async function bindVoucherRequests() {
 async function init() {
   bindVoucherGrid();
   bindAccountPicker();
+  bindVoucherGridSearch();
+  bindVoucherTransfer();
+  bindExcelPreview();
   bindConfirm();
   bindDocMeta();
   bindVoucherSearch();

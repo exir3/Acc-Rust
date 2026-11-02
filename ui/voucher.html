@@ -302,6 +302,21 @@
             </button>
           </div>
 
+          <div class="vf-tool-group" role="group" aria-label="عملیات ردیف و انتقال">
+            <button type="button" class="vf-tool" data-action="copy-row" title="کپی سطر جاری به کلیپ‌بورد">
+              <svg class="ico vf-ic-indigo"><use href="#i-copy" /></svg><span>کپی سطر</span>
+            </button>
+            <button type="button" class="vf-tool" data-action="paste-row" title="چسباندن ردیف‌های کلیپ‌بورد">
+              <svg class="ico vf-ic-green"><use href="#i-open" /></svg><span>چسباندن سطر</span>
+            </button>
+            <button type="button" class="vf-tool" data-action="transfer-copy" title="کپی ردیف‌های انتخابی به سند دیگر">
+              <svg class="ico vf-ic-indigo"><use href="#i-copy" /></svg><span>کپی ردیف‌ها</span>
+            </button>
+            <button type="button" class="vf-tool" data-action="transfer-move" title="انتقال ردیف‌های انتخابی به سند دیگر">
+              <svg class="ico vf-ic-sky"><use href="#i-repeat" /></svg><span>انتقال ردیف‌ها</span>
+            </button>
+          </div>
+
           <div class="vf-tool-group vf-tool-group-danger" role="group" aria-label="حذف سند">
             <button type="button" class="vf-tool vf-tool-danger" data-action="delete-voucher" title="حذف سند ذخیره‌شده">
               <svg class="ico vf-ic-red"><use href="#i-trash" /></svg>
@@ -311,6 +326,12 @@
         </div>
 
         <!-- ── Voucher grid ─────────────────────────────────────────── -->
+        <div class="vf-grid-filterbar">
+          <label for="vfGridSearch">جستجو در ردیف‌های سند</label>
+          <input id="vfGridSearch" type="search" autocomplete="off"
+                 placeholder="کد حساب، نام حساب، شرح یا مبلغ..." aria-label="فیلتر ردیف‌های سند" />
+          <span id="vfGridSearchCount" aria-live="polite"></span>
+        </div>
         <div class="vf-grid-wrap" id="vfGridWrap">
           <table class="vf-grid">
             <colgroup>
@@ -408,6 +429,7 @@
                  aria-label="جستجوی حساب‌ها" />
         </div>
 
+        <div class="ap-path" id="accountPickerPath">همه حساب‌های کل</div>
         <div class="ap-grid">
           <div class="ap-grid-scroll" id="accountPickerScroll" role="grid" aria-label="فهرست حساب‌ها" aria-colcount="5">
             <div class="ap-grid-header" role="row">
@@ -441,6 +463,65 @@
         </div>
       </div>
     </div>
+  </div>
+
+
+  <div class="modal vf-transfer-modal" id="vfTransferModal" hidden>
+    <section class="ap-window vf-transfer-window" role="dialog" aria-modal="true" aria-labelledby="vfTransferTitle">
+      <div class="ap-titlebar">
+        <button class="ap-close" id="vfTransferClose" type="button" title="بستن (Esc)" aria-label="بستن عملیات ردیف‌ها">
+          <svg class="ico"><use href="#i-close" /></svg>
+        </button>
+        <span class="ap-title" id="vfTransferTitle">کپی ردیف‌ها به سند دیگر</span>
+      </div>
+      <div class="vf-transfer-content">
+        <div class="vf-transfer-fields">
+          <label>شماره سند مقصد<input id="vfTransferTarget" type="text" inputmode="numeric" dir="ltr" autocomplete="off" /></label>
+          <div class="vf-transfer-mode" id="vfTransferModeLabel">حالت عملیات: کپی</div>
+        </div>
+        <div class="vf-transfer-actions">
+          <button type="button" class="ap-tool" id="vfTransferSelectAll">انتخاب همه</button>
+          <button type="button" class="ap-tool" id="vfTransferSelectNone">لغو انتخاب</button>
+          <span id="vfTransferSummary" role="status" aria-live="polite"></span>
+        </div>
+        <div class="vf-transfer-table-wrap">
+          <table class="vf-transfer-table">
+            <thead><tr><th>انتخاب</th><th>ردیف</th><th>کد حساب</th><th>نام حساب</th><th>شرح</th><th>بدهکار</th><th>بستانکار</th></tr></thead>
+            <tbody id="vfTransferRows"></tbody>
+          </table>
+        </div>
+        <p class="vf-transfer-note">ردیف‌های انتخابی باید تراز باشند. در حالت انتقال، سند مبدأ نیز پس از حذف ردیف‌ها باید حداقل دو ردیف تراز داشته باشد. عملیات در یک تراکنش پایگاه داده انجام می‌شود.</p>
+      </div>
+      <div class="vf-transfer-footer">
+        <button type="button" class="ap-tool ap-tool-select" id="vfTransferSubmit">اجرای عملیات</button>
+        <button type="button" class="ap-tool" id="vfTransferCancel">انصراف</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal vf-excel-preview-modal" id="vfExcelPreviewModal" hidden>
+    <section class="ap-window vf-excel-preview-window" role="dialog" aria-modal="true" aria-labelledby="vfExcelPreviewTitle">
+      <div class="ap-titlebar">
+        <button class="ap-close" id="vfExcelPreviewClose" type="button" title="بستن" aria-label="بستن پیش‌نمایش اکسل">
+          <svg class="ico"><use href="#i-close" /></svg>
+        </button>
+        <span class="ap-title" id="vfExcelPreviewTitle">پیش‌نمایش ورود ردیف‌های اکسل</span>
+      </div>
+      <div class="vf-excel-preview-content">
+        <div id="vfExcelPreviewSummary" class="vf-excel-preview-summary" role="status"></div>
+        <div class="vf-excel-preview-table-wrap">
+          <table class="vf-excel-preview-table">
+            <thead><tr><th>ردیف فایل</th><th>کد حساب</th><th>نام حساب</th><th>شرح</th><th>بدهکار</th><th>بستانکار</th><th>وضعیت</th></tr></thead>
+            <tbody id="vfExcelPreviewRows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="vf-transfer-footer">
+        <button type="button" class="ap-tool ap-tool-select" id="vfExcelAppend">افزودن ردیف‌های معتبر</button>
+        <button type="button" class="ap-tool" id="vfExcelReplace">جایگزینی با ردیف‌های معتبر</button>
+        <button type="button" class="ap-tool" id="vfExcelPreviewCancel">انصراف</button>
+      </div>
+    </section>
   </div>
 
   <div class="modal account-ledger-modal" id="accountLedgerModal" hidden>
