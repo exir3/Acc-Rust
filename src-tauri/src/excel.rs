@@ -8,9 +8,7 @@
 use crate::db;
 use crate::vouchers::{VoucherInput, VoucherLineInput};
 use calamine::{open_workbook_auto, Data, Reader};
-use rust_xlsxwriter::{
-    Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet, XlsxError,
-};
+use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet, XlsxError};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -109,9 +107,7 @@ fn cell_amount(cell: &Data) -> Result<i64, String> {
         Data::Empty => Ok(0),
         Data::Int(value) => Ok(*value),
         Data::Float(value)
-            if value.is_finite()
-                && value.fract() == 0.0
-                && value.abs() <= MAX_AMOUNT as f64 =>
+            if value.is_finite() && value.fract() == 0.0 && value.abs() <= MAX_AMOUNT as f64 =>
         {
             Ok(*value as i64)
         }
@@ -151,18 +147,26 @@ pub fn export_voucher(input: &VoucherInput) -> Result<Option<String>, String> {
     let mut checked_credit = 0i64;
     for (index, line) in input.lines.iter().enumerate() {
         let row_no = db::to_fa_digits(index + 1);
-        if line.debit < 0 || line.credit < 0 || line.debit > MAX_AMOUNT || line.credit > MAX_AMOUNT {
+        if line.debit < 0 || line.credit < 0 || line.debit > MAX_AMOUNT || line.credit > MAX_AMOUNT
+        {
             return Err(format!("مبلغ ردیف {row_no} خارج از محدوده مجاز است."));
         }
         if line.debit > 0 && line.credit > 0 {
-            return Err(format!("در ردیف {row_no} نمی‌توان هم‌زمان بدهکار و بستانکار داشت."));
+            return Err(format!(
+                "در ردیف {row_no} نمی‌توان هم‌زمان بدهکار و بستانکار داشت."
+            ));
         }
         if line.description.chars().count() > MAX_LINE_DESCRIPTION {
-            return Err(format!("شرح ردیف {row_no} بیشتر از {} کاراکتر است.", db::to_fa_digits(MAX_LINE_DESCRIPTION)));
+            return Err(format!(
+                "شرح ردیف {row_no} بیشتر از {} کاراکتر است.",
+                db::to_fa_digits(MAX_LINE_DESCRIPTION)
+            ));
         }
-        checked_debit = checked_debit.checked_add(line.debit)
+        checked_debit = checked_debit
+            .checked_add(line.debit)
             .ok_or_else(|| "جمع بدهکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
-        checked_credit = checked_credit.checked_add(line.credit)
+        checked_credit = checked_credit
+            .checked_add(line.credit)
             .ok_or_else(|| "جمع بستانکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
     }
     let _validated_totals = (checked_debit, checked_credit);
@@ -192,9 +196,7 @@ pub fn export_voucher(input: &VoucherInput) -> Result<Option<String>, String> {
 
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
-    worksheet
-        .set_name("سند حسابداری")
-        .map_err(xlsx_error)?;
+    worksheet.set_name("سند حسابداری").map_err(xlsx_error)?;
     worksheet.set_right_to_left(true);
 
     write_sheet(worksheet, input)?;
@@ -334,9 +336,11 @@ fn write_sheet(worksheet: &mut Worksheet, input: &VoucherInput) -> Result<(), St
                 .write_number_with_format(row, 5, line.credit as f64, &amount_format)
                 .map_err(xlsx_error)?;
         }
-        total_debit = total_debit.checked_add(line.debit)
+        total_debit = total_debit
+            .checked_add(line.debit)
             .ok_or_else(|| "جمع بدهکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
-        total_credit = total_credit.checked_add(line.credit)
+        total_credit = total_credit
+            .checked_add(line.credit)
             .ok_or_else(|| "جمع بستانکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
     }
 
@@ -369,7 +373,10 @@ struct ImportColumns {
 
 fn find_columns(range: &calamine::Range<Data>) -> Option<(usize, ImportColumns)> {
     for (row_index, row) in range.rows().enumerate().take(HEADER_SCAN_ROWS) {
-        let headers: Vec<String> = row.iter().map(|cell| normalize_header(&cell_text(cell))).collect();
+        let headers: Vec<String> = row
+            .iter()
+            .map(|cell| normalize_header(&cell_text(cell)))
+            .collect();
         let find = |needles: &[&str]| {
             headers
                 .iter()
@@ -392,7 +399,10 @@ fn find_columns(range: &calamine::Range<Data>) -> Option<(usize, ImportColumns)>
 
 fn find_bulk_columns(range: &calamine::Range<Data>) -> Option<(usize, BulkImportColumns)> {
     for (row_index, row) in range.rows().enumerate().take(HEADER_SCAN_ROWS) {
-        let headers: Vec<String> = row.iter().map(|cell| normalize_header(&cell_text(cell))).collect();
+        let headers: Vec<String> = row
+            .iter()
+            .map(|cell| normalize_header(&cell_text(cell)))
+            .collect();
         let find = |aliases: &[&str]| {
             aliases.iter().find_map(|alias| {
                 let alias = normalize_header(alias);
@@ -460,7 +470,11 @@ fn add_imported_account(
     }
     let account = ImportedAccount {
         code: code.clone(),
-        name: if name.is_empty() { format!("حساب {code}") } else { name },
+        name: if name.is_empty() {
+            format!("حساب {code}")
+        } else {
+            name
+        },
         parent_code,
         group_code: group_code.to_string(),
         level,
@@ -468,7 +482,10 @@ fn add_imported_account(
     };
     if let Some(existing) = accounts.get(&code) {
         if existing.parent_code != account.parent_code {
-            return Err(format!("کد حساب {} در فایل با بیش از یک حساب بالاتر آمده است.", db::to_fa_digits(code)));
+            return Err(format!(
+                "کد حساب {} در فایل با بیش از یک حساب بالاتر آمده است.",
+                db::to_fa_digits(code)
+            ));
         }
     } else {
         accounts.insert(code, account);
@@ -490,8 +507,8 @@ pub fn import_vouchers() -> Result<Option<BulkVoucherImport>, String> {
 }
 
 fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
-    let mut workbook = open_workbook_auto(&path)
-        .map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
+    let mut workbook =
+        open_workbook_auto(&path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
     let range = match workbook.worksheet_range_at(0) {
         Some(Ok(range)) => range,
         Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
@@ -508,7 +525,10 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
         return Err("عنوان ستون‌های فایل پیدا نشد. ستون‌های «سند»، «تاریخ»، «کد کل»، «بدهکار» و «بستانکار» الزامی هستند.".to_string());
     };
     let read = |row: &[Data], index: Option<usize>| -> Data {
-        index.and_then(|index| row.get(index)).cloned().unwrap_or(Data::Empty)
+        index
+            .and_then(|index| row.get(index))
+            .cloned()
+            .unwrap_or(Data::Empty)
     };
 
     let mut vouchers = BTreeMap::<i64, VoucherInput>::new();
@@ -519,10 +539,17 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
         if raw_number.is_empty() {
             continue;
         }
-        let number = cell_amount(&read(row, columns.voucher_number))
-            .map_err(|error| format!("شماره سند ردیف {} اکسل: {error}", db::to_fa_digits(excel_row)))?;
+        let number = cell_amount(&read(row, columns.voucher_number)).map_err(|error| {
+            format!(
+                "شماره سند ردیف {} اکسل: {error}",
+                db::to_fa_digits(excel_row)
+            )
+        })?;
         if number <= 0 {
-            return Err(format!("شماره سند ردیف {} اکسل باید بزرگ‌تر از صفر باشد.", db::to_fa_digits(excel_row)));
+            return Err(format!(
+                "شماره سند ردیف {} اکسل باید بزرگ‌تر از صفر باشد.",
+                db::to_fa_digits(excel_row)
+            ));
         }
 
         let raw_date = db::normalize_digits(&cell_text(&read(row, columns.voucher_date)))
@@ -532,7 +559,10 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
             .map_err(|error| format!("تاریخ ردیف {} اکسل: {error}", db::to_fa_digits(excel_row)))?;
         let general_code = digits_only(&cell_text(&read(row, columns.general_code)));
         if general_code.is_empty() {
-            return Err(format!("کد کل ردیف {} اکسل خالی است.", db::to_fa_digits(excel_row)));
+            return Err(format!(
+                "کد کل ردیف {} اکسل خالی است.",
+                db::to_fa_digits(excel_row)
+            ));
         }
         let general_name = cell_text(&read(row, columns.general_name));
         let subsidiary_code = digits_only(&cell_text(&read(row, columns.subsidiary_code)));
@@ -562,20 +592,38 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
         };
         let description = cell_text(&read(row, columns.description));
         if description.chars().count() > MAX_LINE_DESCRIPTION {
-            return Err(format!("شرح ردیف {} اکسل بیشتر از {} کاراکتر است.", db::to_fa_digits(excel_row), db::to_fa_digits(MAX_LINE_DESCRIPTION)));
+            return Err(format!(
+                "شرح ردیف {} اکسل بیشتر از {} کاراکتر است.",
+                db::to_fa_digits(excel_row),
+                db::to_fa_digits(MAX_LINE_DESCRIPTION)
+            ));
         }
-        let debit = cell_amount(&read(row, columns.debit))
-            .map_err(|error| format!("بدهکار ردیف {} اکسل: {error}", db::to_fa_digits(excel_row)))?;
-        let credit = cell_amount(&read(row, columns.credit))
-            .map_err(|error| format!("بستانکار ردیف {} اکسل: {error}", db::to_fa_digits(excel_row)))?;
+        let debit = cell_amount(&read(row, columns.debit)).map_err(|error| {
+            format!("بدهکار ردیف {} اکسل: {error}", db::to_fa_digits(excel_row))
+        })?;
+        let credit = cell_amount(&read(row, columns.credit)).map_err(|error| {
+            format!(
+                "بستانکار ردیف {} اکسل: {error}",
+                db::to_fa_digits(excel_row)
+            )
+        })?;
         if debit < 0 || credit < 0 || debit > MAX_AMOUNT || credit > MAX_AMOUNT {
-            return Err(format!("مبلغ ردیف {} اکسل خارج از محدوده مجاز است.", db::to_fa_digits(excel_row)));
+            return Err(format!(
+                "مبلغ ردیف {} اکسل خارج از محدوده مجاز است.",
+                db::to_fa_digits(excel_row)
+            ));
         }
         if debit == 0 && credit == 0 {
-            return Err(format!("ردیف {} اکسل مبلغ بدهکار یا بستانکار ندارد.", db::to_fa_digits(excel_row)));
+            return Err(format!(
+                "ردیف {} اکسل مبلغ بدهکار یا بستانکار ندارد.",
+                db::to_fa_digits(excel_row)
+            ));
         }
         if debit > 0 && credit > 0 {
-            return Err(format!("در ردیف {} اکسل هم بدهکار و هم بستانکار مقدار دارد.", db::to_fa_digits(excel_row)));
+            return Err(format!(
+                "در ردیف {} اکسل هم بدهکار و هم بستانکار مقدار دارد.",
+                db::to_fa_digits(excel_row)
+            ));
         }
 
         let voucher = vouchers.entry(number).or_insert_with(|| VoucherInput {
@@ -587,11 +635,23 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
             lines: Vec::new(),
         });
         if voucher.date != date {
-            return Err(format!("تاریخ سند {} در ردیف‌های اکسل یکسان نیست.", db::to_fa_digits(number)));
+            return Err(format!(
+                "تاریخ سند {} در ردیف‌های اکسل یکسان نیست.",
+                db::to_fa_digits(number)
+            ));
         }
-        voucher.lines.push(VoucherLineInput { account_code, description, debit, credit });
+        voucher.lines.push(VoucherLineInput {
+            account_code,
+            description,
+            debit,
+            credit,
+        });
         if voucher.lines.len() > MAX_IMPORT_LINES {
-            return Err(format!("تعداد ردیف‌های سند {} بیشتر از {} است.", db::to_fa_digits(number), db::to_fa_digits(MAX_IMPORT_LINES)));
+            return Err(format!(
+                "تعداد ردیف‌های سند {} بیشتر از {} است.",
+                db::to_fa_digits(number),
+                db::to_fa_digits(MAX_IMPORT_LINES)
+            ));
         }
     }
 
@@ -600,19 +660,37 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
     }
     for voucher in vouchers.values() {
         if voucher.lines.len() < 2 {
-            return Err(format!("سند {} کمتر از دو ردیف دارد.", db::to_fa_digits(voucher.number.unwrap_or_default())));
+            return Err(format!(
+                "سند {} کمتر از دو ردیف دارد.",
+                db::to_fa_digits(voucher.number.unwrap_or_default())
+            ));
         }
-        let debit = voucher.lines.iter().try_fold(0i64, |sum, line| sum.checked_add(line.debit))
+        let debit = voucher
+            .lines
+            .iter()
+            .try_fold(0i64, |sum, line| sum.checked_add(line.debit))
             .ok_or_else(|| "جمع بدهکار یک سند از محدوده عددی مجاز بیشتر است.".to_string())?;
-        let credit = voucher.lines.iter().try_fold(0i64, |sum, line| sum.checked_add(line.credit))
+        let credit = voucher
+            .lines
+            .iter()
+            .try_fold(0i64, |sum, line| sum.checked_add(line.credit))
             .ok_or_else(|| "جمع بستانکار یک سند از محدوده عددی مجاز بیشتر است.".to_string())?;
         if debit != credit {
-            return Err(format!("سند {} تراز نیست؛ بدهکار {} و بستانکار {} است.", db::to_fa_digits(voucher.number.unwrap_or_default()), db::to_fa_digits(debit), db::to_fa_digits(credit)));
+            return Err(format!(
+                "سند {} تراز نیست؛ بدهکار {} و بستانکار {} است.",
+                db::to_fa_digits(voucher.number.unwrap_or_default()),
+                db::to_fa_digits(debit),
+                db::to_fa_digits(credit)
+            ));
         }
     }
 
     Ok(BulkVoucherImport {
-        file_name: path.file_name().and_then(|name| name.to_str()).unwrap_or("اکسل").to_string(),
+        file_name: path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("اکسل")
+            .to_string(),
         vouchers: vouchers.into_values().collect(),
         accounts: accounts.into_values().collect(),
     })
@@ -629,8 +707,8 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
         return Ok(None);
     };
 
-    let mut workbook = open_workbook_auto(&path)
-        .map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
+    let mut workbook =
+        open_workbook_auto(&path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
     let range = match workbook.worksheet_range_at(0) {
         Some(Ok(range)) => range,
         Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
@@ -669,10 +747,14 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
             ));
         }
 
-        let debit = cell_amount(&read(row, columns.debit))
-            .map_err(|error| format!("بدهکار ردیف {} اکسل: {error}", db::to_fa_digits(excel_row)))?;
+        let debit = cell_amount(&read(row, columns.debit)).map_err(|error| {
+            format!("بدهکار ردیف {} اکسل: {error}", db::to_fa_digits(excel_row))
+        })?;
         let credit = cell_amount(&read(row, columns.credit)).map_err(|error| {
-            format!("بستانکار ردیف {} اکسل: {error}", db::to_fa_digits(excel_row))
+            format!(
+                "بستانکار ردیف {} اکسل: {error}",
+                db::to_fa_digits(excel_row)
+            )
         })?;
         if debit < 0 || credit < 0 {
             return Err(format!(
@@ -720,7 +802,6 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
     Ok(Some(lines))
 }
 
-
 /* ── Chart of accounts import/export (WebApp-compatible layout) ── */
 
 #[derive(Debug, Clone, Serialize)]
@@ -746,9 +827,7 @@ struct AccountImportColumns {
     level3_nature: Option<usize>,
 }
 
-fn find_account_columns(
-    range: &calamine::Range<Data>,
-) -> Option<(usize, AccountImportColumns)> {
+fn find_account_columns(range: &calamine::Range<Data>) -> Option<(usize, AccountImportColumns)> {
     for (row_index, row) in range.rows().enumerate().take(HEADER_SCAN_ROWS) {
         let headers: Vec<String> = row
             .iter()
@@ -770,7 +849,12 @@ fn find_account_columns(
             level2_name: find(&["عنوان معین", "نام معین", "عنوانمعین"]),
             level2_nature: find(&["ماهیت معین", "ماهیت‌معین", "ماهیت‌معین"]),
             level3_code: find(&["کد تفصیلی 1", "کد تفصیلی۱", "کد تفصیلی", "کدتفصیلی1"]),
-            level3_name: find(&["عنوان تفصیلی 1", "عنوان تفصیلی۱", "عنوان تفصیلی", "نام تفصیلی 1"]),
+            level3_name: find(&[
+                "عنوان تفصیلی 1",
+                "عنوان تفصیلی۱",
+                "عنوان تفصیلی",
+                "نام تفصیلی 1",
+            ]),
             level3_nature: find(&["ماهیت تفصیلی 1", "ماهیت تفصیلی۱", "ماهیت تفصیلی"]),
         };
         if columns.group_code.is_some()
@@ -807,7 +891,9 @@ fn account_nature(raw: &str, fallback: &str) -> Result<String, String> {
     } else if value.contains("دوگانه") {
         Ok("dual".to_string())
     } else {
-        Err(format!("ماهیت «{value}» معتبر نیست؛ بدهکار، بستانکار یا دوگانه وارد کنید."))
+        Err(format!(
+            "ماهیت «{value}» معتبر نیست؛ بدهکار، بستانکار یا دوگانه وارد کنید."
+        ))
     }
 }
 
@@ -865,9 +951,9 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String
         .iter()
         .filter(|account| {
             account.level <= 3
-                && !accounts.iter().any(|child| {
-                    child.parent_code == account.code && child.level <= 3
-                })
+                && !accounts
+                    .iter()
+                    .any(|child| child.parent_code == account.code && child.level <= 3)
         })
         .collect();
     terminals.sort_by(|a, b| a.code.cmp(&b.code));
@@ -878,7 +964,10 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String
         let mut visited = std::collections::BTreeSet::new();
         while let Some(account) = current {
             if !visited.insert(account.code.clone()) {
-                return Err(format!("چرخه در ساختار حساب «{}» شناسایی شد.", db::to_fa_digits(&account.code)));
+                return Err(format!(
+                    "چرخه در ساختار حساب «{}» شناسایی شد.",
+                    db::to_fa_digits(&account.code)
+                ));
             }
             chain.push(account);
             current = if account.parent_code.is_empty() {
@@ -934,8 +1023,8 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
         return Ok(None);
     };
 
-    let mut workbook = open_workbook_auto(&path)
-        .map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
+    let mut workbook =
+        open_workbook_auto(&path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
     let range = match workbook.worksheet_range_at(0) {
         Some(Ok(range)) => range,
         Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
@@ -983,19 +1072,29 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                 read(row, columns.level3_nature),
             ),
         ];
-        if cells.iter().all(|cell| cell.0.is_empty() && cell.1.trim().is_empty()) {
+        if cells
+            .iter()
+            .all(|cell| cell.0.is_empty() && cell.1.trim().is_empty())
+        {
             continue;
         }
         let row_result = (|| -> Result<(usize, usize), String> {
             if group_code.is_empty() || !group_codes.contains(&group_code) {
-                return Err(format!("کد گروه «{}» در ردیف اکسل معتبر نیست.", db::to_fa_digits(&group_code)));
+                return Err(format!(
+                    "کد گروه «{}» در ردیف اکسل معتبر نیست.",
+                    db::to_fa_digits(&group_code)
+                ));
             }
             if cells[0].1.trim().is_empty() {
                 return Err("عنوان حساب کل خالی است.".to_string());
             }
             let first_empty = cells.iter().position(|cell| cell.1.trim().is_empty());
             if let Some(empty_at) = first_empty {
-                if cells.iter().skip(empty_at + 1).any(|cell| !cell.1.trim().is_empty()) {
+                if cells
+                    .iter()
+                    .skip(empty_at + 1)
+                    .any(|cell| !cell.1.trim().is_empty())
+                {
                     return Err("سطوح حساب باید به‌ترتیب و بدون فاصله تکمیل شوند.".to_string());
                 }
             }
@@ -1009,14 +1108,21 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                 }
                 let level = level_index as i64 + 1;
                 if raw_code.is_empty() {
-                    return Err(format!("کد سطح {} خالی است؛ کدها باید در فایل مشخص باشند.", level));
+                    return Err(format!(
+                        "کد سطح {} خالی است؛ کدها باید در فایل مشخص باشند.",
+                        level
+                    ));
                 }
                 let name = raw_name.split_whitespace().collect::<Vec<_>>().join(" ");
                 if name.chars().count() > 255 {
                     return Err(format!("نام حساب «{}» بیش از ۲۵۵ کاراکتر است.", name));
                 }
                 if level > 1 && !raw_code.starts_with(&parent_code) {
-                    return Err(format!("کد «{}» با کد حساب بالاتر «{}» آغاز نمی‌شود.", db::to_fa_digits(raw_code), db::to_fa_digits(&parent_code)));
+                    return Err(format!(
+                        "کد «{}» با کد حساب بالاتر «{}» آغاز نمی‌شود.",
+                        db::to_fa_digits(raw_code),
+                        db::to_fa_digits(&parent_code)
+                    ));
                 }
                 let nature = account_nature(raw_nature, &parent_nature)?;
                 if let Some(existing) = accounts.iter().find(|account| account.code == *raw_code) {
@@ -1026,7 +1132,10 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                         || existing.name != name
                         || existing.nature != nature
                     {
-                        return Err(format!("کد «{}» قبلاً با مشخصات متفاوت ثبت شده است.", db::to_fa_digits(raw_code)));
+                        return Err(format!(
+                            "کد «{}» قبلاً با مشخصات متفاوت ثبت شده است.",
+                            db::to_fa_digits(raw_code)
+                        ));
                     }
                     skipped_count += 1;
                     row_skipped += 1;
@@ -1054,7 +1163,8 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
         if let Err(error) = row_result {
             errors.push(format!("ردیف {}: {}", db::to_fa_digits(excel_row), error));
             if errors.len() >= 200 {
-                errors.push("ادامه خطاها برای جلوگیری از مصرف بیش از حد حافظه ثبت نشد.".to_string());
+                errors
+                    .push("ادامه خطاها برای جلوگیری از مصرف بیش از حد حافظه ثبت نشد.".to_string());
                 break;
             }
         }
@@ -1072,7 +1182,11 @@ trait EmptyFallback {
 }
 impl EmptyFallback for String {
     fn if_empty(self, fallback: &str) -> String {
-        if self.trim().is_empty() { fallback.to_string() } else { self }
+        if self.trim().is_empty() {
+            fallback.to_string()
+        } else {
+            self
+        }
     }
 }
 
@@ -1088,10 +1202,21 @@ mod tests {
     fn account_workbook_headers_match_webapp_template() {
         let mut range = calamine::Range::new((0, 0), (0, 10));
         for (column, value) in [
-            "کد گروه", "ماهیت", "کد کل", "عنوان کل", "ماهیت کل",
-            "کد معین", "عنوان معین", "ماهیت معین", "کد تفصیلی 1",
-            "عنوان تفصیلی 1", "ماهیت تفصیلی 1",
-        ].iter().enumerate() {
+            "کد گروه",
+            "ماهیت",
+            "کد کل",
+            "عنوان کل",
+            "ماهیت کل",
+            "کد معین",
+            "عنوان معین",
+            "ماهیت معین",
+            "کد تفصیلی 1",
+            "عنوان تفصیلی 1",
+            "ماهیت تفصیلی 1",
+        ]
+        .iter()
+        .enumerate()
+        {
             range.set_value((0, column as u32), text(value));
         }
         let (row, columns) = find_account_columns(&range).expect("WebApp account header row");
@@ -1118,7 +1243,10 @@ mod tests {
         assert_eq!(cell_amount(&text("")).unwrap(), 0);
         assert_eq!(cell_amount(&Data::Float(4200.0)).unwrap(), 4200);
         assert!(cell_amount(&Data::Float(4.5)).is_err());
-        assert_eq!(cell_amount(&Data::Float(999_999_999_999_999.0)).unwrap(), MAX_AMOUNT);
+        assert_eq!(
+            cell_amount(&Data::Float(999_999_999_999_999.0)).unwrap(),
+            MAX_AMOUNT
+        );
         assert!(cell_amount(&Data::Float(1_000_000_000_000_000.0)).is_err());
     }
 
@@ -1144,7 +1272,14 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../Book1.xlsx");
         let import = parse_bulk_vouchers(&path).expect("root workbook should parse");
         assert_eq!(import.vouchers.len(), 5282);
-        assert_eq!(import.vouchers.iter().map(|voucher| voucher.lines.len()).sum::<usize>(), 114_699);
+        assert_eq!(
+            import
+                .vouchers
+                .iter()
+                .map(|voucher| voucher.lines.len())
+                .sum::<usize>(),
+            114_699
+        );
         assert_eq!(import.vouchers[0].number, Some(1));
         assert_eq!(import.vouchers[0].lines.len(), 598);
         let database = crate::db::memory_database();

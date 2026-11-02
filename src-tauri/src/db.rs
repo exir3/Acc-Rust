@@ -15,14 +15,7 @@ const LEGACY_DB_FILE_NAME: &str = "audit-analyzer.sqlite3";
 const LEGACY_IDENTIFIER: &str = "ir.audit.account-analyzer";
 
 /// Account-group types accepted by the form and the database constraint.
-pub const ACCOUNT_GROUP_TYPES: [&str; 6] = [
-    "دارایی",
-    "بدهی",
-    "سرمایه",
-    "درآمد",
-    "هزینه",
-    "سایر",
-];
+pub const ACCOUNT_GROUP_TYPES: [&str; 6] = ["دارایی", "بدهی", "سرمایه", "درآمد", "هزینه", "سایر"];
 
 pub const ACCOUNT_NATURES: [&str; 3] = ["debtor", "creditor", "dual"];
 
@@ -94,10 +87,8 @@ const SCHEMA: &str = r#"
     INSERT OR IGNORE INTO app_meta(key, value) VALUES ('schema_version', '3');
 "#;
 
-const DEFAULT_SETTINGS: [(&str, &str); 2] = [
-    ("company_name", "شرکت نمونه"),
-    ("fiscal_year", "۱۴۰۵"),
-];
+const DEFAULT_SETTINGS: [(&str, &str); 2] =
+    [("company_name", "شرکت نمونه"), ("fiscal_year", "۱۴۰۵")];
 
 /// The starter chart used on first launch, so the application can be used
 /// immediately instead of opening on an empty account list.
@@ -120,26 +111,82 @@ const DEFAULT_ACCOUNTS: [(&str, &str, i64, &str, &str, &str, bool); 27] = [
     ("1101", "صندوق", 1, "1", "debtor", "", false),
     ("1102", "بانک‌ها", 1, "1", "debtor", "", false),
     ("1103", "تنخواه گردان‌ها", 1, "1", "debtor", "", false),
-    ("1201", "حساب‌های دریافتنی تجاری", 1, "1", "debtor", "", false),
+    (
+        "1201",
+        "حساب‌های دریافتنی تجاری",
+        1,
+        "1",
+        "debtor",
+        "",
+        false,
+    ),
     ("1301", "موجودی مواد و کالا", 1, "1", "debtor", "", false),
-    ("2101", "حساب‌های پرداختنی تجاری", 1, "4", "creditor", "", false),
+    (
+        "2101",
+        "حساب‌های پرداختنی تجاری",
+        1,
+        "4",
+        "creditor",
+        "",
+        false,
+    ),
     ("2201", "مالیات پرداختنی", 1, "4", "creditor", "", false),
     ("3101", "سرمایه", 1, "6", "creditor", "", false),
     ("4101", "درآمد فروش", 1, "7", "creditor", "", false),
-    ("5101", "بهای تمام‌شده کالای فروش‌رفته", 1, "9", "debtor", "", false),
-    ("6101", "هزینه‌های عمومی و اداری", 1, "8", "debtor", "", false),
+    (
+        "5101",
+        "بهای تمام‌شده کالای فروش‌رفته",
+        1,
+        "9",
+        "debtor",
+        "",
+        false,
+    ),
+    (
+        "6101",
+        "هزینه‌های عمومی و اداری",
+        1,
+        "8",
+        "debtor",
+        "",
+        false,
+    ),
     ("110101", "صندوق مرکزی", 2, "1", "debtor", "1101", true),
     ("110201", "بانک ملت", 2, "1", "debtor", "1102", true),
     ("110202", "بانک ملی ایران", 2, "1", "debtor", "1102", true),
     ("120101", "بدهکاران تجاری", 2, "1", "debtor", "1201", true),
     ("130101", "مواد اولیه", 2, "1", "debtor", "1301", true),
-    ("210101", "بستانکاران تجاری", 2, "4", "creditor", "2101", true),
-    ("220101", "مالیات بر ارزش افزوده", 2, "4", "creditor", "2201", true),
+    (
+        "210101",
+        "بستانکاران تجاری",
+        2,
+        "4",
+        "creditor",
+        "2101",
+        true,
+    ),
+    (
+        "220101",
+        "مالیات بر ارزش افزوده",
+        2,
+        "4",
+        "creditor",
+        "2201",
+        true,
+    ),
     ("310101", "سرمایه اولیه", 2, "6", "creditor", "3101", true),
     ("410101", "فروش محصولات", 2, "7", "creditor", "4101", true),
     ("610101", "حقوق و دستمزد", 2, "8", "debtor", "6101", true),
     ("610102", "اجاره", 2, "8", "debtor", "6101", true),
-    ("110201001", "حساب جاری بانک ملت", 3, "1", "debtor", "110201", true),
+    (
+        "110201001",
+        "حساب جاری بانک ملت",
+        3,
+        "1",
+        "debtor",
+        "110201",
+        true,
+    ),
     (
         "110201002",
         "حساب سپرده کوتاه‌مدت بانک ملت",
@@ -149,8 +196,24 @@ const DEFAULT_ACCOUNTS: [(&str, &str, i64, &str, &str, &str, bool); 27] = [
         "110201",
         true,
     ),
-    ("120101001", "شرکت پخش آریا", 3, "1", "debtor", "120101", true),
-    ("120101002", "شرکت بازرگانی پارس", 3, "1", "debtor", "120101", true),
+    (
+        "120101001",
+        "شرکت پخش آریا",
+        3,
+        "1",
+        "debtor",
+        "120101",
+        true,
+    ),
+    (
+        "120101002",
+        "شرکت بازرگانی پارس",
+        3,
+        "1",
+        "debtor",
+        "120101",
+        true,
+    ),
     (
         "210101001",
         "شرکت تأمین قطعات آریا",
@@ -526,7 +589,8 @@ impl Database {
         let parent_code = normalize_code(parent_code);
 
         self.with_conn(|conn| {
-            let existing = conn
+            let tx = conn.transaction().map_err(db_error)?;
+            let existing = tx
                 .query_row(
                     "SELECT code, level, group_code, COALESCE(parent_code, '') FROM accounts WHERE id = ?1",
                     params![id],
@@ -545,7 +609,7 @@ impl Database {
 
             let (code, level, old_group, old_parent_code) = existing;
 
-            let group_exists = conn
+            let group_exists = tx
                 .query_row(
                     "SELECT 1 FROM account_groups WHERE code = ?1",
                     params![group_code],
@@ -558,7 +622,7 @@ impl Database {
                 return Err("گروه حساب انتخاب‌شده وجود ندارد.".to_string());
             }
 
-            let children: i64 = conn
+            let children: i64 = tx
                 .query_row(
                     "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
                     params![code],
@@ -572,7 +636,7 @@ impl Database {
                         .to_string(),
                 );
             }
-            let has_history = account_has_lines(conn, &code)?;
+            let has_history = account_has_lines(&tx, &code)?;
             if has_history && (old_group != group_code || old_parent_code != parent_code) {
                 return Err(
                     "این حساب در اسناد ثبت‌شده استفاده شده است؛ تغییر گروه یا والد آن می‌تواند طبقه‌بندی و مانده گزارش‌های تاریخی را تغییر دهد. ابتدا حساب اصلاحی یا ساختار جایگزین تعریف کنید."
@@ -581,15 +645,15 @@ impl Database {
             }
 
             let (parent_code, parent_name) =
-                resolve_parent(conn, &code, level, &parent_code, &group_code)?;
+                resolve_parent(&tx, &code, level, &parent_code, &group_code)?;
             let postable = level > 1 && is_postable && children == 0;
-            if !postable && level > 1 && children == 0 && account_has_lines(conn, &code)? {
+            if !postable && level > 1 && children == 0 && account_has_lines(&tx, &code)? {
                 return Err(
                     "این حساب در اسناد استفاده شده است و باید قابل ثبت بماند.".to_string(),
                 );
             }
 
-            conn.execute(
+            tx.execute(
                 "UPDATE accounts
                     SET name = ?1, group_code = ?2, nature = ?3,
                         parent_code = ?4, parent_name = ?5, is_postable = ?6,
@@ -613,7 +677,19 @@ impl Database {
             )
             .map_err(db_error)?;
 
-            fetch_account(conn, id)
+            // parent_name is denormalized for fast hierarchy rendering. Keep
+            // direct children in sync with the parent's new display name.
+            tx.execute(
+                "UPDATE accounts
+                    SET parent_name = ?1, updated_at = datetime('now', 'localtime')
+                  WHERE parent_code = ?2",
+                params![name, code],
+            )
+            .map_err(db_error)?;
+
+            let updated = fetch_account(&tx, id)?;
+            tx.commit().map_err(db_error)?;
+            Ok(updated)
         })
     }
 
@@ -682,8 +758,8 @@ impl Database {
 
     pub fn get_settings(&self) -> Result<Settings, String> {
         self.with_conn(|conn| {
-            let company_name = get_setting(conn, "company_name")?
-                .unwrap_or_else(|| "شرکت نمونه".to_string());
+            let company_name =
+                get_setting(conn, "company_name")?.unwrap_or_else(|| "شرکت نمونه".to_string());
             let fiscal_year =
                 get_setting(conn, "fiscal_year")?.unwrap_or_else(|| "۱۴۰۵".to_string());
             Ok(Settings {
@@ -761,7 +837,10 @@ fn migrate_legacy_database(data_dir: &Path, destination: &Path) -> Result<(), St
         candidates.push(parent.join(LEGACY_IDENTIFIER).join(LEGACY_DB_FILE_NAME));
     }
 
-    let existing: Vec<PathBuf> = candidates.into_iter().filter(|path| path.exists()).collect();
+    let existing: Vec<PathBuf> = candidates
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect();
     if existing.is_empty() {
         return Ok(());
     }
@@ -774,7 +853,9 @@ fn migrate_legacy_database(data_dir: &Path, destination: &Path) -> Result<(), St
             Ok(()) => {
                 std::fs::rename(&temporary, destination).map_err(|error| {
                     let _ = std::fs::remove_file(&temporary);
-                    format!("پایگاه داده قدیمی کپی شد اما جایگزینی امن فایل مقصد ناموفق بود: {error}")
+                    format!(
+                        "پایگاه داده قدیمی کپی شد اما جایگزینی امن فایل مقصد ناموفق بود: {error}"
+                    )
                 })?;
                 return Ok(());
             }
@@ -813,13 +894,18 @@ fn apply_schema_migrations(conn: &Connection) -> Result<(), String> {
     }
 
     {
-        let mut statement = conn.prepare("PRAGMA table_info(accounts)").map_err(db_error)?;
+        let mut statement = conn
+            .prepare("PRAGMA table_info(accounts)")
+            .map_err(db_error)?;
         let columns = statement
             .query_map([], |row| row.get::<_, String>(1))
             .map_err(db_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(db_error)?;
-        if !columns.iter().any(|column| column == "postable_before_children") {
+        if !columns
+            .iter()
+            .any(|column| column == "postable_before_children")
+        {
             conn.execute(
                 "ALTER TABLE accounts ADD COLUMN postable_before_children INTEGER CHECK(postable_before_children IN (0, 1))",
                 [],
@@ -855,9 +941,8 @@ fn seed_default_groups(conn: &Connection) -> rusqlite::Result<()> {
         return Ok(());
     }
 
-    let mut stmt = conn.prepare(
-        "INSERT OR IGNORE INTO account_groups (code, name, type) VALUES (?1, ?2, ?3)",
-    )?;
+    let mut stmt = conn
+        .prepare("INSERT OR IGNORE INTO account_groups (code, name, type) VALUES (?1, ?2, ?3)")?;
     for (code, name, group_type) in DEFAULT_GROUPS {
         stmt.execute(params![code, name, group_type])?;
     }
@@ -908,7 +993,11 @@ fn seed_default_accounts(conn: &Connection) -> rusqlite::Result<()> {
                 level,
                 group_code,
                 nature,
-                if parent_code.is_empty() { None } else { Some(parent_code) },
+                if parent_code.is_empty() {
+                    None
+                } else {
+                    Some(parent_code)
+                },
                 parent_name,
                 i64::from(postable)
             ],
@@ -1251,7 +1340,15 @@ mod tests {
     fn creates_and_updates_account() {
         let db = test_database();
         let created = db
-            .create_account("120101003", "حساب آزمایشی", 3, "1", "debtor", "120101", true)
+            .create_account(
+                "120101003",
+                "حساب آزمایشی",
+                3,
+                "1",
+                "debtor",
+                "120101",
+                true,
+            )
             .unwrap();
         assert_eq!(created.group_name, "دارایی‌های جاری");
         assert_eq!(created.parent_name, "بدهکاران تجاری");
@@ -1276,6 +1373,41 @@ mod tests {
     }
 
     #[test]
+    fn renaming_parent_refreshes_denormalized_child_parent_names() {
+        let db = test_database();
+        let accounts = db.list_accounts().unwrap().accounts;
+        let parent = accounts
+            .iter()
+            .find(|account| account.code == "120101")
+            .unwrap()
+            .clone();
+        let child = accounts
+            .iter()
+            .find(|account| account.code == "120101001")
+            .unwrap();
+        assert_eq!(child.parent_name, "بدهکاران تجاری");
+
+        db.update_account(
+            parent.id,
+            "بدهکاران اصلاح‌شده",
+            &parent.group_code,
+            &parent.nature,
+            &parent.parent_code,
+            parent.is_postable,
+        )
+        .unwrap();
+
+        let refreshed = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "120101001")
+            .unwrap();
+        assert_eq!(refreshed.parent_name, "بدهکاران اصلاح‌شده");
+    }
+
+    #[test]
     fn rejects_invalid_account_code_and_parent() {
         let db = test_database();
         assert!(db
@@ -1288,7 +1420,15 @@ mod tests {
             .create_account("120104", "والد اشتباه", 3, "1", "debtor", "1101", true)
             .is_err());
         assert!(db
-            .create_account("130101", "کد با والد ناسازگار", 2, "1", "debtor", "1201", true)
+            .create_account(
+                "130101",
+                "کد با والد ناسازگار",
+                2,
+                "1",
+                "debtor",
+                "1201",
+                true
+            )
             .is_err());
     }
 
@@ -1305,7 +1445,11 @@ mod tests {
 
         apply_schema_migrations(&conn).unwrap();
         let version: String = conn
-            .query_row("SELECT value FROM app_meta WHERE key = 'schema_version'", [], |row| row.get(0))
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         let column_count: i64 = conn
             .query_row(
@@ -1315,7 +1459,9 @@ mod tests {
             )
             .unwrap();
         let account_code: String = conn
-            .query_row("SELECT code FROM accounts WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT code FROM accounts WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(version, "3");
         assert_eq!(column_count, 1);
@@ -1360,7 +1506,14 @@ mod tests {
             .update_account_group(group.id, &group.code, &group.name, "بدهی")
             .is_err());
         assert!(db
-            .update_account(account.id, &account.name, "4", &account.nature, &account.parent_code, true)
+            .update_account(
+                account.id,
+                &account.name,
+                "4",
+                &account.nature,
+                &account.parent_code,
+                true
+            )
             .is_err());
     }
 

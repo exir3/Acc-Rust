@@ -251,10 +251,6 @@
               <svg class="ico vf-ic-green"><use href="#i-save" /></svg>
               <span>ذخیره F2</span>
             </button>
-            <button type="button" class="vf-tool" data-action="new" title="سند جدید (Ctrl+N)">
-              <svg class="ico vf-ic-green"><use href="#i-plus" /></svg>
-              <span>سند جدید</span>
-            </button>
             <button type="button" class="vf-tool" data-action="copy" title="کپی سند جاری">
               <svg class="ico vf-ic-indigo"><use href="#i-copy" /></svg>
               <span>کپی سند</span>
@@ -269,10 +265,6 @@
             <button type="button" class="vf-tool" data-action="add-row" title="ایجاد ردیف">
               <svg class="ico vf-ic-green"><use href="#i-plus" /></svg>
               <span>ایجاد ردیف</span>
-            </button>
-            <button type="button" class="vf-tool" data-action="repeat-row" title="تکرار سطر جاری">
-              <svg class="ico vf-ic-sky"><use href="#i-repeat" /></svg>
-              <span>تکرار سطر</span>
             </button>
             <button type="button" class="vf-tool" data-action="delete-row" title="حذف ردیف">
               <svg class="ico vf-ic-red"><use href="#i-trash" /></svg>
@@ -303,12 +295,6 @@
           </div>
 
           <div class="vf-tool-group" role="group" aria-label="عملیات ردیف و انتقال">
-            <button type="button" class="vf-tool" data-action="copy-row" title="کپی سطر جاری به کلیپ‌بورد">
-              <svg class="ico vf-ic-indigo"><use href="#i-copy" /></svg><span>کپی سطر</span>
-            </button>
-            <button type="button" class="vf-tool" data-action="paste-row" title="چسباندن ردیف‌های کلیپ‌بورد">
-              <svg class="ico vf-ic-green"><use href="#i-open" /></svg><span>چسباندن سطر</span>
-            </button>
             <button type="button" class="vf-tool" data-action="transfer-copy" title="کپی ردیف‌های انتخابی به سند دیگر">
               <svg class="ico vf-ic-indigo"><use href="#i-copy" /></svg><span>کپی ردیف‌ها</span>
             </button>
@@ -326,12 +312,6 @@
         </div>
 
         <!-- ── Voucher grid ─────────────────────────────────────────── -->
-        <div class="vf-grid-filterbar">
-          <label for="vfGridSearch">جستجو در ردیف‌های سند</label>
-          <input id="vfGridSearch" type="search" autocomplete="off"
-                 placeholder="کد حساب، نام حساب، شرح یا مبلغ..." aria-label="فیلتر ردیف‌های سند" />
-          <span id="vfGridSearchCount" aria-live="polite"></span>
-        </div>
         <div class="vf-grid-wrap" id="vfGridWrap">
           <table class="vf-grid">
             <colgroup>

@@ -16,7 +16,9 @@ use vouchers::VoucherInput;
 /// A poisoned lock only means another thread panicked while holding it; the
 /// guarded value is plain data, so keep going instead of panicking too.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Default)]
@@ -510,7 +512,9 @@ fn open_voucher_window(
         WebviewWindowBuilder::new(&app, "voucher", WebviewUrl::App("voucher.html".into()))
             .title("صدور سند حسابداری")
             .decorations(true)
-            .resizable(true);
+            .resizable(true)
+            .maximizable(false)
+            .minimizable(false);
 
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
@@ -617,9 +621,7 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             let (connection, path) = db::initialize(app.handle()).map_err(std::io::Error::other)?;
-            app.state::<AppState>()
-                .database
-                .attach(connection, path);
+            app.state::<AppState>().database.attach(connection, path);
             Ok(())
         })
         .on_window_event(|window, event| {

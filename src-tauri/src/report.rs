@@ -136,13 +136,7 @@ fn period(report_from: &str, report_to: &str) -> String {
     }
 }
 
-fn page(
-    title: &str,
-    body: &str,
-    meta: &ReportMeta,
-    landscape: bool,
-    file_name: &str,
-) -> PrintDoc {
+fn page(title: &str, body: &str, meta: &ReportMeta, landscape: bool, file_name: &str) -> PrintDoc {
     let (width, height, page_css) = if landscape {
         (
             297.0,
@@ -261,7 +255,9 @@ pub fn journal_print_doc(report: &JournalReport, meta: &ReportMeta) -> PrintDoc 
         ));
     }
     if rows.is_empty() {
-        rows.push_str("<tr><td colspan=\"6\" class=\"rpt-empty\">سندی در این بازه ثبت نشده است.</td></tr>");
+        rows.push_str(
+            "<tr><td colspan=\"6\" class=\"rpt-empty\">سندی در این بازه ثبت نشده است.</td></tr>",
+        );
     }
 
     let body = format!(
@@ -284,13 +280,7 @@ pub fn journal_print_doc(report: &JournalReport, meta: &ReportMeta) -> PrintDoc 
         credit = money(report.total_credit),
     );
 
-    page(
-        "دفتر روزنامه",
-        &body,
-        meta,
-        true,
-        "دفتر-روزنامه.html",
-    )
+    page("دفتر روزنامه", &body, meta, true, "دفتر-روزنامه.html")
 }
 
 /* ── Ledger ─────────────────────────────────────────────────── */
@@ -467,13 +457,7 @@ pub fn trial_balance_print_doc(report: &TrialBalanceReport, meta: &ReportMeta) -
         cc = money(report.closing_credit),
     );
 
-    page(
-        "تراز آزمایشی",
-        &body,
-        meta,
-        true,
-        "تراز-آزمایشی.html",
-    )
+    page("تراز آزمایشی", &body, meta, true, "تراز-آزمایشی.html")
 }
 
 /* ── Income statement ───────────────────────────────────────── */
@@ -506,10 +490,7 @@ fn section(title: &str, rows: &[crate::vouchers::AmountRow], total: i64) -> Stri
     )
 }
 
-pub fn income_statement_print_doc(
-    report: &IncomeStatementReport,
-    meta: &ReportMeta,
-) -> PrintDoc {
+pub fn income_statement_print_doc(report: &IncomeStatementReport, meta: &ReportMeta) -> PrintDoc {
     let body = format!(
         r#"{head}
 {revenues}
@@ -593,7 +574,12 @@ pub fn balance_sheet_print_doc(report: &BalanceSheetReport, meta: &ReportMeta) -
             meta,
             &format!("در تاریخ {}", date(&report.as_of))
         ),
-        assets = balance_section("دارایی‌ها", &report.assets, report.assets_total, "جمع دارایی‌ها"),
+        assets = balance_section(
+            "دارایی‌ها",
+            &report.assets,
+            report.assets_total,
+            "جمع دارایی‌ها"
+        ),
         liabilities = balance_section(
             "بدهی‌ها",
             &report.liabilities,
@@ -615,13 +601,7 @@ pub fn balance_sheet_print_doc(report: &BalanceSheetReport, meta: &ReportMeta) -
         },
     );
 
-    page(
-        "ترازنامه",
-        &body,
-        meta,
-        false,
-        "ترازنامه.html",
-    )
+    page("ترازنامه", &body, meta, false, "ترازنامه.html")
 }
 
 /* ── Voucher ────────────────────────────────────────────────── */

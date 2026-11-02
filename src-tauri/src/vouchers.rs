@@ -217,7 +217,10 @@ fn build_reorganization_plan(
     let do_sort = operation != "merge";
     let mut lines_by_voucher = BTreeMap::<i64, Vec<&ReorganizationLine>>::new();
     for line in &snapshot.lines {
-        lines_by_voucher.entry(line.voucher_id).or_default().push(line);
+        lines_by_voucher
+            .entry(line.voucher_id)
+            .or_default()
+            .push(line);
     }
 
     let mut grouped = BTreeMap::<(String, String), Vec<&ReorganizationVoucher>>::new();
@@ -246,16 +249,26 @@ fn build_reorganization_plan(
         vouchers.sort_by_key(|voucher| (voucher.number, voucher.id));
         let all_lines: Vec<&ReorganizationLine> = vouchers
             .iter()
-            .flat_map(|voucher| lines_by_voucher.get(&voucher.id).into_iter().flatten().copied())
+            .flat_map(|voucher| {
+                lines_by_voucher
+                    .get(&voucher.id)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+            })
             .collect();
-        let total_debit = checked_sum(all_lines.iter().map(|line| line.debit), "جمع بدهکار گروه ادغام")?;
-        let total_credit = checked_sum(all_lines.iter().map(|line| line.credit), "جمع بستانکار گروه ادغام")?;
+        let total_debit = checked_sum(
+            all_lines.iter().map(|line| line.debit),
+            "جمع بدهکار گروه ادغام",
+        )?;
+        let total_credit = checked_sum(
+            all_lines.iter().map(|line| line.credit),
+            "جمع بستانکار گروه ادغام",
+        )?;
         let balanced = total_debit > 0
             && total_debit == total_credit
             && all_lines.iter().all(|line| {
-                line.debit >= 0
-                    && line.credit >= 0
-                    && ((line.debit > 0) ^ (line.credit > 0))
+                line.debit >= 0 && line.credit >= 0 && ((line.debit > 0) ^ (line.credit > 0))
             });
         let preview = VoucherMergePreview {
             date,
@@ -319,7 +332,10 @@ fn build_reorganization_plan(
         merge_groups,
         unbalanced_groups,
         removed_voucher_count,
-        number_changes: number_changes.iter().map(|(_, change)| change.clone()).collect(),
+        number_changes: number_changes
+            .iter()
+            .map(|(_, change)| change.clone())
+            .collect(),
         plan_token,
     };
     Ok(ReorganizationPlan {
@@ -557,12 +573,15 @@ fn checked_sub(left: i64, right: i64, label: &str) -> Result<i64, String> {
 }
 
 fn checked_neg(value: i64, label: &str) -> Result<i64, String> {
-    value.checked_neg()
+    value
+        .checked_neg()
         .ok_or_else(|| format!("مقدار محاسبه‌شده در بخش «{label}» از محدوده عددی مجاز بیشتر است."))
 }
 
 fn checked_sum(values: impl IntoIterator<Item = i64>, label: &str) -> Result<i64, String> {
-    values.into_iter().try_fold(0i64, |total, value| checked_add(total, value, label))
+    values
+        .into_iter()
+        .try_fold(0i64, |total, value| checked_add(total, value, label))
 }
 
 fn normalize_date(input: &str, label: &str) -> Result<String, String> {
@@ -583,6 +602,11 @@ fn normalize_date(input: &str, label: &str) -> Result<String, String> {
     let day = parts[2]
         .parse::<u32>()
         .map_err(|_| format!("{label} معتبر نیست."))?;
+    // Keep the supported calendar range aligned with WebApp's shared
+    // Jalali utilities (years 1 through 3177).
+    if !(1..=3177).contains(&year) {
+        return Err(format!("{label} خارج از بازه پشتیبانی تقویم شمسی است."));
+    }
     jalali_calendar::JalaliDate::new(year, month, day)
         .map_err(|_| format!("{label} یک تاریخ شمسی معتبر نیست."))?;
     Ok(format!("{year:04}/{month:02}/{day:02}"))
@@ -651,7 +675,11 @@ fn search_clause(p: &str) -> String {
 }
 
 fn search_predicate() -> String {
-    format!("(?3 = '' OR {} OR {})", search_clause("?3"), search_clause("?4"))
+    format!(
+        "(?3 = '' OR {} OR {})",
+        search_clause("?3"),
+        search_clause("?4")
+    )
 }
 
 fn check_range(from: &str, to: &str) -> Result<(), String> {
@@ -698,12 +726,7 @@ impl Database {
         })
     }
 
-    pub fn list_vouchers(
-        &self,
-        from: &str,
-        to: &str,
-        search: &str,
-    ) -> Result<VoucherList, String> {
+    pub fn list_vouchers(&self, from: &str, to: &str, search: &str) -> Result<VoucherList, String> {
         let from = normalize_filter_date(from, "تاریخ شروع")?;
         let to = normalize_filter_date(to, "تاریخ پایان")?;
         check_range(&from, &to)?;
@@ -711,11 +734,19 @@ impl Database {
 
         let (vouchers, total_count) = self.with_conn(|conn| {
             let vouchers = list_vouchers(conn, &from, &to, &terms)?;
-            let total = count(conn, "SELECT COUNT(*) FROM vouchers")?;
+            // The list is already filtered by date and search; its count
+            // must describe the visible result set, not the whole database.
+            let total = vouchers.len() as i64;
             Ok((vouchers, total))
         })?;
-        let total_debit = checked_sum(vouchers.iter().map(|v| v.total_debit), "جمع بدهکار فهرست اسناد")?;
-        let total_credit = checked_sum(vouchers.iter().map(|v| v.total_credit), "جمع بستانکار فهرست اسناد")?;
+        let total_debit = checked_sum(
+            vouchers.iter().map(|v| v.total_debit),
+            "جمع بدهکار فهرست اسناد",
+        )?;
+        let total_credit = checked_sum(
+            vouchers.iter().map(|v| v.total_credit),
+            "جمع بستانکار فهرست اسناد",
+        )?;
         Ok(VoucherList {
             vouchers,
             total_count,
@@ -1147,7 +1178,10 @@ impl Database {
                     .optional()
                     .map_err(db::db_error)?
                     .ok_or_else(|| {
-                        format!("حساب با کد {} یافت نشد.", db::to_fa_digits(&line.account_code))
+                        format!(
+                            "حساب با کد {} یافت نشد.",
+                            db::to_fa_digits(&line.account_code)
+                        )
                     })?;
                 if account.1 == 0 {
                     return Err(format!(
@@ -1158,9 +1192,11 @@ impl Database {
             }
 
             let existing_id = if id > 0 {
-                tx.query_row("SELECT id FROM vouchers WHERE id = ?1", params![id], |row| {
-                    row.get::<_, i64>(0)
-                })
+                tx.query_row(
+                    "SELECT id FROM vouchers WHERE id = ?1",
+                    params![id],
+                    |row| row.get::<_, i64>(0),
+                )
                 .optional()
                 .map_err(db::db_error)?
             } else {
@@ -1245,16 +1281,32 @@ impl Database {
         import: &crate::excel::BulkVoucherImport,
     ) -> Result<crate::excel::BulkVoucherPreview, String> {
         let file_name = import.file_name.clone();
-        let account_codes: Vec<String> = import.accounts.iter().map(|account| account.code.clone()).collect();
-        let numbers: Vec<i64> = import.vouchers.iter().filter_map(|voucher| voucher.number).collect();
+        let account_codes: Vec<String> = import
+            .accounts
+            .iter()
+            .map(|account| account.code.clone())
+            .collect();
+        let numbers: Vec<i64> = import
+            .vouchers
+            .iter()
+            .filter_map(|voucher| voucher.number)
+            .collect();
         let voucher_count = import.vouchers.len();
-        let line_count = import.vouchers.iter().map(|voucher| voucher.lines.len()).sum();
+        let line_count = import
+            .vouchers
+            .iter()
+            .map(|voucher| voucher.lines.len())
+            .sum();
         let account_count = account_codes.len();
         self.with_conn(move |conn| {
             let mut new_account_count = 0;
             for code in account_codes {
                 let exists = conn
-                    .query_row("SELECT 1 FROM accounts WHERE code = ?1", params![db::normalize_code(&code)], |_| Ok(()))
+                    .query_row(
+                        "SELECT 1 FROM accounts WHERE code = ?1",
+                        params![db::normalize_code(&code)],
+                        |_| Ok(()),
+                    )
                     .optional()
                     .map_err(db::db_error)?
                     .is_some();
@@ -1265,7 +1317,11 @@ impl Database {
             let mut number_conflict_count = 0;
             for number in numbers {
                 let exists = conn
-                    .query_row("SELECT 1 FROM vouchers WHERE number = ?1", params![number], |_| Ok(()))
+                    .query_row(
+                        "SELECT 1 FROM vouchers WHERE number = ?1",
+                        params![number],
+                        |_| Ok(()),
+                    )
                     .optional()
                     .map_err(db::db_error)?
                     .is_some();
@@ -1301,28 +1357,44 @@ impl Database {
             let description = validate_description(&input.description, "شرح سند", MAX_DESCRIPTION)?;
             let number = input.number.unwrap_or(0);
             if number <= 0 || !numbers.insert(number) {
-                return Err(format!("شماره سند {} نامعتبر یا تکراری است.", db::to_fa_digits(number)));
+                return Err(format!(
+                    "شماره سند {} نامعتبر یا تکراری است.",
+                    db::to_fa_digits(number)
+                ));
             }
             if input.lines.len() > MAX_LINES {
-                return Err(format!("تعداد ردیف‌های سند {} از حد مجاز بیشتر است.", db::to_fa_digits(number)));
+                return Err(format!(
+                    "تعداد ردیف‌های سند {} از حد مجاز بیشتر است.",
+                    db::to_fa_digits(number)
+                ));
             }
 
             let mut lines = Vec::with_capacity(input.lines.len());
             for line in input.lines {
                 let account_code = db::normalize_code(&line.account_code);
-                let line_description = validate_description(
-                    &line.description,
-                    "شرح ردیف",
-                    MAX_LINE_DESCRIPTION,
-                )?;
+                let line_description =
+                    validate_description(&line.description, "شرح ردیف", MAX_LINE_DESCRIPTION)?;
                 if account_code.is_empty() {
-                    return Err(format!("کد حساب در سند {} خالی است.", db::to_fa_digits(number)));
+                    return Err(format!(
+                        "کد حساب در سند {} خالی است.",
+                        db::to_fa_digits(number)
+                    ));
                 }
-                if line.debit < 0 || line.credit < 0 || line.debit > MAX_AMOUNT || line.credit > MAX_AMOUNT {
-                    return Err(format!("مبلغ سند {} خارج از محدوده مجاز است.", db::to_fa_digits(number)));
+                if line.debit < 0
+                    || line.credit < 0
+                    || line.debit > MAX_AMOUNT
+                    || line.credit > MAX_AMOUNT
+                {
+                    return Err(format!(
+                        "مبلغ سند {} خارج از محدوده مجاز است.",
+                        db::to_fa_digits(number)
+                    ));
                 }
                 if (line.debit == 0 && line.credit == 0) || (line.debit > 0 && line.credit > 0) {
-                    return Err(format!("مبلغ ردیف سند {} نامعتبر است.", db::to_fa_digits(number)));
+                    return Err(format!(
+                        "مبلغ ردیف سند {} نامعتبر است.",
+                        db::to_fa_digits(number)
+                    ));
                 }
                 lines.push(VoucherLineInput {
                     account_code,
@@ -1332,10 +1404,14 @@ impl Database {
                 });
             }
             if lines.len() < 2 {
-                return Err(format!("سند {} باید حداقل دو ردیف داشته باشد.", db::to_fa_digits(number)));
+                return Err(format!(
+                    "سند {} باید حداقل دو ردیف داشته باشد.",
+                    db::to_fa_digits(number)
+                ));
             }
             let total_debit = checked_sum(lines.iter().map(|line| line.debit), "جمع بدهکار سند")?;
-            let total_credit = checked_sum(lines.iter().map(|line| line.credit), "جمع بستانکار سند")?;
+            let total_credit =
+                checked_sum(lines.iter().map(|line| line.credit), "جمع بستانکار سند")?;
             if total_debit == 0 || total_debit != total_credit {
                 return Err(format!("سند {} تراز نیست.", db::to_fa_digits(number)));
             }
@@ -1500,12 +1576,7 @@ impl Database {
 
     /* ── Reports ─────────────────────────────────────────────── */
 
-    pub fn get_journal(
-        &self,
-        from: &str,
-        to: &str,
-        search: &str,
-    ) -> Result<JournalReport, String> {
+    pub fn get_journal(&self, from: &str, to: &str, search: &str) -> Result<JournalReport, String> {
         let from = normalize_filter_date(from, "تاریخ شروع")?;
         let to = normalize_filter_date(to, "تاریخ پایان")?;
         check_range(&from, &to)?;
@@ -1549,7 +1620,8 @@ impl Database {
                 .map_err(db::db_error)?;
 
             let total_debit = checked_sum(rows.iter().map(|r| r.debit), "جمع بدهکار دفتر روزنامه")?;
-            let total_credit = checked_sum(rows.iter().map(|r| r.credit), "جمع بستانکار دفتر روزنامه")?;
+            let total_credit =
+                checked_sum(rows.iter().map(|r| r.credit), "جمع بستانکار دفتر روزنامه")?;
             let voucher_count = rows
                 .iter()
                 .map(|r| r.voucher_id)
@@ -1568,7 +1640,12 @@ impl Database {
         })
     }
 
-    pub fn get_ledger(&self, account_code: &str, from: &str, to: &str) -> Result<LedgerReport, String> {
+    pub fn get_ledger(
+        &self,
+        account_code: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<LedgerReport, String> {
         let code = db::normalize_code(account_code);
         if code.is_empty() {
             return Err("برای گزارش دفتر کل، حساب را انتخاب کنید.".to_string());
@@ -1682,7 +1759,11 @@ impl Database {
                 row_account_name,
             ) in raw_rows
             {
-                running = checked_add(running, checked_sub(debit, credit, "گردش ردیف دفتر کل")?, "مانده جاری دفتر کل")?;
+                running = checked_add(
+                    running,
+                    checked_sub(debit, credit, "گردش ردیف دفتر کل")?,
+                    "مانده جاری دفتر کل",
+                )?;
                 total_debit = checked_add(total_debit, debit, "جمع بدهکار دفتر کل")?;
                 total_credit = checked_add(total_credit, credit, "جمع بستانکار دفتر کل")?;
                 rows.push(LedgerRow {
@@ -1755,8 +1836,10 @@ impl Database {
                 })
                 .map_err(db::db_error)?;
 
-            let mut balances: std::collections::BTreeMap<String, (String, String, i64, i64, i64, i64, i64)> =
-                std::collections::BTreeMap::new();
+            let mut balances: std::collections::BTreeMap<
+                String,
+                (String, String, i64, i64, i64, i64, i64),
+            > = std::collections::BTreeMap::new();
             for row in raw {
                 let (code, name, group_name, level, date, debit, credit) =
                     row.map_err(db::db_error)?;
@@ -1792,20 +1875,46 @@ impl Database {
                     group_name,
                     level,
                     opening_debit: opening_net.max(0),
-                    opening_credit: checked_neg(opening_net, "مانده بستانکار افتتاحیه تراز آزمایشی")?.max(0),
+                    opening_credit: checked_neg(
+                        opening_net,
+                        "مانده بستانکار افتتاحیه تراز آزمایشی",
+                    )?
+                    .max(0),
                     period_debit: pd,
                     period_credit: pc,
                     closing_debit: closing_net.max(0),
-                    closing_credit: checked_neg(closing_net, "مانده بستانکار پایان دوره تراز آزمایشی")?.max(0),
+                    closing_credit: checked_neg(
+                        closing_net,
+                        "مانده بستانکار پایان دوره تراز آزمایشی",
+                    )?
+                    .max(0),
                 });
             }
 
-            let opening_debit = checked_sum(rows.iter().map(|r| r.opening_debit), "جمع بدهکار افتتاحیه تراز آزمایشی")?;
-            let opening_credit = checked_sum(rows.iter().map(|r| r.opening_credit), "جمع بستانکار افتتاحیه تراز آزمایشی")?;
-            let period_debit = checked_sum(rows.iter().map(|r| r.period_debit), "جمع بدهکار دوره تراز آزمایشی")?;
-            let period_credit = checked_sum(rows.iter().map(|r| r.period_credit), "جمع بستانکار دوره تراز آزمایشی")?;
-            let closing_debit = checked_sum(rows.iter().map(|r| r.closing_debit), "جمع بدهکار پایان دوره تراز آزمایشی")?;
-            let closing_credit = checked_sum(rows.iter().map(|r| r.closing_credit), "جمع بستانکار پایان دوره تراز آزمایشی")?;
+            let opening_debit = checked_sum(
+                rows.iter().map(|r| r.opening_debit),
+                "جمع بدهکار افتتاحیه تراز آزمایشی",
+            )?;
+            let opening_credit = checked_sum(
+                rows.iter().map(|r| r.opening_credit),
+                "جمع بستانکار افتتاحیه تراز آزمایشی",
+            )?;
+            let period_debit = checked_sum(
+                rows.iter().map(|r| r.period_debit),
+                "جمع بدهکار دوره تراز آزمایشی",
+            )?;
+            let period_credit = checked_sum(
+                rows.iter().map(|r| r.period_credit),
+                "جمع بستانکار دوره تراز آزمایشی",
+            )?;
+            let closing_debit = checked_sum(
+                rows.iter().map(|r| r.closing_debit),
+                "جمع بدهکار پایان دوره تراز آزمایشی",
+            )?;
+            let closing_credit = checked_sum(
+                rows.iter().map(|r| r.closing_credit),
+                "جمع بستانکار پایان دوره تراز آزمایشی",
+            )?;
 
             Ok(TrialBalanceReport {
                 from,
@@ -1833,13 +1942,8 @@ impl Database {
         self.with_conn(|conn| {
             // Closing vouchers move income and expenses to equity; leaving
             // them in would show every closed period as having no activity.
-            let activities = account_activities(
-                conn,
-                &from,
-                &to,
-                false,
-                &[CLOSING_TEMPORARY, CLOSING_FINAL],
-            )?;
+            let activities =
+                account_activities(conn, &from, &to, false, &[CLOSING_TEMPORARY, CLOSING_FINAL])?;
             build_income_statement(from, to, activities)
         })
     }
@@ -1887,23 +1991,45 @@ impl Database {
             for activity in &account_activities(conn, "", "", false, &[CLOSING_FINAL])? {
                 let net = checked_sub(activity.debit, activity.credit, "مانده حساب داشبورد")?;
                 match classify(&activity.group_type, &activity.account_code) {
-                    AccountClass::Asset => assets_total = checked_add(assets_total, net, "جمع دارایی داشبورد")?,
-                    AccountClass::Liability => liabilities_total = checked_add(liabilities_total, checked_neg(net, "مانده بدهی داشبورد")?, "جمع بدهی داشبورد")?,
-                    AccountClass::Equity => equity_total = checked_add(equity_total, checked_neg(net, "مانده سرمایه داشبورد")?, "جمع سرمایه داشبورد")?,
+                    AccountClass::Asset => {
+                        assets_total = checked_add(assets_total, net, "جمع دارایی داشبورد")?
+                    }
+                    AccountClass::Liability => {
+                        liabilities_total = checked_add(
+                            liabilities_total,
+                            checked_neg(net, "مانده بدهی داشبورد")?,
+                            "جمع بدهی داشبورد",
+                        )?
+                    }
+                    AccountClass::Equity => {
+                        equity_total = checked_add(
+                            equity_total,
+                            checked_neg(net, "مانده سرمایه داشبورد")?,
+                            "جمع سرمایه داشبورد",
+                        )?
+                    }
                     AccountClass::Income | AccountClass::Expense => {}
                 }
             }
-            for activity in &account_activities(
-                conn,
-                "",
-                "",
-                false,
-                &[CLOSING_TEMPORARY, CLOSING_FINAL],
-            )? {
-                let net = checked_sub(activity.debit, activity.credit, "مانده درآمد و هزینه داشبورد")?;
+            for activity in
+                &account_activities(conn, "", "", false, &[CLOSING_TEMPORARY, CLOSING_FINAL])?
+            {
+                let net = checked_sub(
+                    activity.debit,
+                    activity.credit,
+                    "مانده درآمد و هزینه داشبورد",
+                )?;
                 match classify(&activity.group_type, &activity.account_code) {
-                    AccountClass::Income => income_total = checked_add(income_total, checked_neg(net, "درآمد داشبورد")?, "جمع درآمد داشبورد")?,
-                    AccountClass::Expense => expense_total = checked_add(expense_total, net, "جمع هزینه داشبورد")?,
+                    AccountClass::Income => {
+                        income_total = checked_add(
+                            income_total,
+                            checked_neg(net, "درآمد داشبورد")?,
+                            "جمع درآمد داشبورد",
+                        )?
+                    }
+                    AccountClass::Expense => {
+                        expense_total = checked_add(expense_total, net, "جمع هزینه داشبورد")?
+                    }
                     _ => {}
                 }
             }
@@ -2110,8 +2236,7 @@ fn account_activities(
 
     let mut activities: Vec<AccountActivity> = Vec::new();
     for row in raw {
-        let (code, name, group_code, group_type, debit, credit) =
-            row.map_err(db::db_error)?;
+        let (code, name, group_code, group_type, debit, credit) = row.map_err(db::db_error)?;
         if let Some(last) = activities
             .last_mut()
             .filter(|item| item.account_code.as_str() == code.as_str())
@@ -2175,7 +2300,11 @@ fn build_income_statement(
     let mut expenses = Vec::new();
 
     for activity in activities {
-        let net = checked_sub(activity.debit, activity.credit, "مانده حساب صورت سود و زیان")?;
+        let net = checked_sub(
+            activity.debit,
+            activity.credit,
+            "مانده حساب صورت سود و زیان",
+        )?;
         if net == 0 {
             continue;
         }
@@ -2200,8 +2329,7 @@ fn build_income_statement(
                     account_name: activity.account_name,
                     amount,
                 };
-                let is_cogs = activity.group_code == "9"
-                    || activity.account_code.starts_with('5');
+                let is_cogs = activity.group_code == "9" || activity.account_code.starts_with('5');
                 if is_cogs {
                     cogs.push(row);
                 } else {
@@ -2212,9 +2340,15 @@ fn build_income_statement(
         }
     }
 
-    let revenue_total = checked_sum(revenues.iter().map(|r| r.amount), "جمع درآمد صورت سود و زیان")?;
+    let revenue_total = checked_sum(
+        revenues.iter().map(|r| r.amount),
+        "جمع درآمد صورت سود و زیان",
+    )?;
     let cogs_total = checked_sum(cogs.iter().map(|r| r.amount), "جمع بهای تمام‌شده")?;
-    let expense_total = checked_sum(expenses.iter().map(|r| r.amount), "جمع هزینه صورت سود و زیان")?;
+    let expense_total = checked_sum(
+        expenses.iter().map(|r| r.amount),
+        "جمع هزینه صورت سود و زیان",
+    )?;
     let gross_profit = checked_sub(revenue_total, cogs_total, "سود ناخالص")?;
     let operating_profit = checked_sub(gross_profit, expense_total, "سود عملیاتی")?;
     Ok(IncomeStatementReport {
@@ -2263,7 +2397,13 @@ fn build_balance_sheet(
                 account_name: activity.account_name,
                 amount: checked_neg(net, "مانده سرمایه ترازنامه")?,
             }),
-            AccountClass::Income => revenue = checked_add(revenue, checked_neg(net, "درآمد ترازنامه")?, "جمع درآمد ترازنامه")?,
+            AccountClass::Income => {
+                revenue = checked_add(
+                    revenue,
+                    checked_neg(net, "درآمد ترازنامه")?,
+                    "جمع درآمد ترازنامه",
+                )?
+            }
             AccountClass::Expense => expenses = checked_add(expenses, net, "جمع هزینه ترازنامه")?,
         }
     }
@@ -2273,7 +2413,11 @@ fn build_balance_sheet(
     let equity_total = checked_sum(equity.iter().map(|r| r.amount), "جمع سرمایه ترازنامه")?;
     let profit = checked_sub(revenue, expenses, "سود ترازنامه")?;
     let total_liabilities_equity = checked_add(
-        checked_add(liabilities_total, equity_total, "جمع بدهی و سرمایه ترازنامه")?,
+        checked_add(
+            liabilities_total,
+            equity_total,
+            "جمع بدهی و سرمایه ترازنامه",
+        )?,
         profit,
         "جمع بدهی و سرمایه با سود ترازنامه",
     )?;
@@ -2334,10 +2478,7 @@ mod tests {
     fn cash_sale(date: &str, amount: i64) -> VoucherInput {
         voucher(
             date,
-            vec![
-                line("110101", amount, 0),
-                line("410101", 0, amount),
-            ],
+            vec![line("110101", amount, 0), line("410101", 0, amount)],
         )
     }
 
@@ -2346,6 +2487,31 @@ mod tests {
         assert_eq!(validate_voucher_date("۱۴۰۵/۱/۱").unwrap(), "1405/01/01");
         assert!(validate_voucher_date("1405/13/01").is_err());
         assert!(validate_voucher_date("1405/02/32").is_err());
+    }
+
+    #[test]
+    fn validates_jalali_leap_day_and_supported_year_range() {
+        assert_eq!(validate_voucher_date("۱۴۰۳/۱۲/۳۰").unwrap(), "1403/12/30");
+        assert!(validate_voucher_date("۱۴۰۴/۱۲/۳۰").is_err());
+        assert_eq!(validate_voucher_date("۱۴۰۴/۱۲/۲۹").unwrap(), "1404/12/29");
+        assert!(validate_voucher_date("0000/01/01").is_err());
+        assert!(validate_voucher_date("3178/01/01").is_err());
+    }
+
+    #[test]
+    fn voucher_list_total_count_matches_active_filters() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+        db.save_voucher(cash_sale("1405/02/10", 2_000)).unwrap();
+
+        let by_date = db.list_vouchers("۱۴۰۵/۰۲/۰۱", "۱۴۰۵/۰۲/۳۱", "").unwrap();
+        assert_eq!(by_date.vouchers.len(), 1);
+        assert_eq!(by_date.total_count, 1);
+
+        let by_search = db.list_vouchers("", "", "۲").unwrap();
+        assert_eq!(by_search.vouchers.len(), 1);
+        assert_eq!(by_search.vouchers[0].number, 2);
+        assert_eq!(by_search.total_count, by_search.vouchers.len() as i64);
     }
 
     #[test]
@@ -2465,7 +2631,11 @@ mod tests {
 
         let mut large_lines = vec![line("901101", 618, 0)];
         large_lines.extend((0..618).map(|_| line("110101", 0, 1)));
-        assert_eq!(db.import_vouchers(make_import(1, "901", "901101", large_lines), false).unwrap(), 1);
+        assert_eq!(
+            db.import_vouchers(make_import(1, "901", "901101", large_lines), false)
+                .unwrap(),
+            1
+        );
         assert_eq!(db.get_voucher(1).unwrap().unwrap().lines.len(), 619);
 
         let conflicting = make_import(
@@ -2475,11 +2645,21 @@ mod tests {
             vec![line("902101", 100, 0), line("110101", 0, 100)],
         );
         assert!(db.import_vouchers(conflicting.clone(), false).is_err());
-        assert!(!db.list_accounts().unwrap().accounts.iter().any(|account| account.code == "902"));
+        assert!(!db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .iter()
+            .any(|account| account.code == "902"));
 
         assert_eq!(db.import_vouchers(conflicting, true).unwrap(), 1);
         assert!(db.get_voucher(2).unwrap().is_some());
-        assert!(db.list_accounts().unwrap().accounts.iter().any(|account| account.code == "902101"));
+        assert!(db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .iter()
+            .any(|account| account.code == "902101"));
     }
 
     #[test]
@@ -2492,7 +2672,9 @@ mod tests {
         opening.voucher_type = VOUCHER_TYPES[1].to_string();
         db.save_voucher(opening).unwrap();
 
-        let preview = db.preview_voucher_reorganization("merge-then-sort").unwrap();
+        let preview = db
+            .preview_voucher_reorganization("merge-then-sort")
+            .unwrap();
         assert_eq!(preview.total_vouchers, 4);
         assert_eq!(preview.total_vouchers_after, 3);
         assert_eq!(preview.merge_groups.len(), 1);
@@ -2511,7 +2693,10 @@ mod tests {
         assert_eq!(merged.date, "1405/01/02");
         assert_eq!(merged.lines.len(), 4);
         assert_eq!(merged.total_debit, 1_500);
-        assert_eq!(db.get_voucher(3).unwrap().unwrap().voucher_type, VOUCHER_TYPES[1]);
+        assert_eq!(
+            db.get_voucher(3).unwrap().unwrap().voucher_type,
+            VOUCHER_TYPES[1]
+        );
         assert!(db.get_voucher(4).unwrap().is_none());
     }
 
@@ -2565,10 +2750,7 @@ mod tests {
         let both_sides = db
             .save_voucher(voucher(
                 "1405/01/10",
-                vec![
-                    line("110101", 100_000, 50_000),
-                    line("410101", 0, 50_000),
-                ],
+                vec![line("110101", 100_000, 50_000), line("410101", 0, 50_000)],
             ))
             .unwrap_err();
         assert!(both_sides.contains("فقط یکی"));
@@ -2613,10 +2795,7 @@ mod tests {
                 date: "1405/01/11".to_string(),
                 voucher_type: "سند حسابداری افتتاحیه".to_string(),
                 description: "اصلاح سند".to_string(),
-                lines: vec![
-                    line("110101", 800_000, 0),
-                    line("410101", 0, 800_000),
-                ],
+                lines: vec![line("110101", 800_000, 0), line("410101", 0, 800_000)],
             })
             .unwrap();
 
@@ -2641,10 +2820,7 @@ mod tests {
                 date: "1405/01/12".to_string(),
                 voucher_type: String::new(),
                 description: String::new(),
-                lines: vec![
-                    line("110101", 200_000, 0),
-                    line("410101", 0, 200_000),
-                ],
+                lines: vec![line("110101", 200_000, 0), line("410101", 0, 200_000)],
             })
             .unwrap_err();
         assert!(duplicate.contains("تکراری"));
@@ -2656,10 +2832,7 @@ mod tests {
                 date: "1405/01/12".to_string(),
                 voucher_type: String::new(),
                 description: String::new(),
-                lines: vec![
-                    line("110101", 200_000, 0),
-                    line("410101", 0, 200_000),
-                ],
+                lines: vec![line("110101", 200_000, 0), line("410101", 0, 200_000)],
             })
             .unwrap_err();
         assert!(missing.contains("یافت نشد"));
@@ -2669,7 +2842,10 @@ mod tests {
     fn deletes_voucher_and_its_lines() {
         let db = db::memory_database();
         let saved = db.save_voucher(cash_sale("1405/01/10", 300_000)).unwrap();
-        assert_eq!(db.get_voucher(saved.number).unwrap().unwrap().lines.len(), 2);
+        assert_eq!(
+            db.get_voucher(saved.number).unwrap().unwrap().lines.len(),
+            2
+        );
 
         db.delete_voucher(saved.id).unwrap();
         assert!(db.get_voucher(saved.number).unwrap().is_none());
@@ -2736,20 +2912,17 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(
-            db.list_vouchers("", "", "نقدی").unwrap().vouchers.len(),
-            1
-        );
+        assert_eq!(db.list_vouchers("", "", "نقدی").unwrap().vouchers.len(), 1);
         assert_eq!(
             db.list_vouchers("", "", "دریافت").unwrap().vouchers.len(),
             1
         );
-        assert_eq!(db.list_vouchers("", "", "ناموجود").unwrap().vouchers.len(), 0);
-        // Account names are searchable too.
         assert_eq!(
-            db.list_vouchers("", "", "صندوق").unwrap().vouchers.len(),
-            2
+            db.list_vouchers("", "", "ناموجود").unwrap().vouchers.len(),
+            0
         );
+        // Account names are searchable too.
+        assert_eq!(db.list_vouchers("", "", "صندوق").unwrap().vouchers.len(), 2);
 
         let journal = db.get_journal("", "", "دریافت").unwrap();
         assert_eq!(journal.rows.len(), 2);
@@ -2818,7 +2991,11 @@ mod tests {
 
         // The trial balance still shows every voucher, closing ones included.
         let trial = db.get_trial_balance("", "").unwrap();
-        let revenue = trial.rows.iter().find(|r| r.account_code == "410101").unwrap();
+        let revenue = trial
+            .rows
+            .iter()
+            .find(|r| r.account_code == "410101")
+            .unwrap();
         assert_eq!(revenue.closing_debit + revenue.closing_credit, 0);
         assert_eq!(trial.closing_debit, trial.closing_credit);
 

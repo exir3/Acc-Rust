@@ -656,12 +656,14 @@ function validateDraft(draft) {
   }
   const dateParts = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(draft.date);
   if (!dateParts) return 'تاریخ سند باید به شکل ۱۴۰۵/۰۱/۰۱ وارد شود.';
+  const year = Number(dateParts[1]);
   const month = Number(dateParts[2]);
   const day = Number(dateParts[3]);
-  const maxDay = month >= 1 && month <= 6 ? 31 : 30;
-  if (month < 1 || month > 12 || day < 1 || day > maxDay) {
-    return 'ماه یا روز تاریخ سند معتبر نیست.';
+  if (year < 1 || year > 3177 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return 'سال، ماه یا روز تاریخ سند معتبر نیست.';
   }
+  // Exact month length (including Esfand in leap/common years) is validated
+  // by Rust's Jalali calendar implementation before the voucher is saved.
   if (draft.lines.length < 2) return 'سند حسابداری باید حداقل دو ردیف داشته باشد.';
 
   let debit = 0n;
@@ -699,6 +701,7 @@ async function saveVoucher(options = {}) {
   }
 
   const draft = collectDraft();
+  const draftSnapshot = JSON.stringify(draft);
   const problem = validateDraft(draft);
   if (problem) {
     markAllCodesFinal();
@@ -712,17 +715,18 @@ async function saveVoucher(options = {}) {
     // The Rust/Jalali calendar implementation is authoritative, including
     // leap-year validation. This command gives the form early feedback.
     const normalizedDate = await invoke('validate_voucher_date', { date: draft.date });
-    const dateInput = $('#vfDocDate');
-    if (dateInput && typeof normalizedDate === 'string') dateInput.value = normalizedDate;
-    draft.date = normalizedDate;
-    // The form remains editable while the asynchronous calendar check runs.
-    // Abort rather than saving a stale snapshot if the user changed anything.
-    if (JSON.stringify(collectDraft()) !== JSON.stringify(draft)) {
+    // Check the original form before writing the normalized date back. Doing
+    // this in the opposite order could overwrite a date typed during the
+    // asynchronous validation and accidentally save the stale draft.
+    if (JSON.stringify(collectDraft()) !== draftSnapshot) {
       state.busy = false;
       setStatus('warn', 'فرم تغییر کرده است');
       toast('اطلاعات فرم هنگام اعتبارسنجی تغییر کرد؛ لطفاً دوباره ذخیره کنید.', 'warning');
       return null;
     }
+    const dateInput = $('#vfDocDate');
+    if (dateInput && typeof normalizedDate === 'string') dateInput.value = normalizedDate;
+    draft.date = normalizedDate;
     dateInput?.classList.remove('is-invalid');
     dateInput?.removeAttribute('aria-invalid');
     if (dateInput) dateInput.title = '';
