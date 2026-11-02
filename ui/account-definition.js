@@ -6,6 +6,7 @@
   const fa = v => String(v == null ? '' : v).replace(/[0-9]/g, d => FA[Number(d)]);
   const en = v => String(v == null ? '' : v).replace(/[۰-۹]/g, c => String(c.charCodeAt(0)-0x06f0)).replace(/[٠-٩]/g, c => String(c.charCodeAt(0)-0x0660));
   const nums = v => en(v).replace(/[^0-9]/g,'');
+  const searchText = v => en(v).replace(/[يى]/g,'ی').replace(/ك/g,'ک').replace(/\u200c/g,'').replace(/\s+/g,' ').trim().toLowerCase();
   const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const levelText = n => ({1:'کل',2:'معین',3:'تفصیلی ۱',4:'تفصیلی ۲ (قدیمی)'})[Number(n)] || '—';
   const natureText = n => ({debtor:'بدهکار',creditor:'بستانکار',dual:'دوگانه'})[n] || '—';
@@ -77,13 +78,13 @@
       $('[data-group]').value=state.group;
     };
     const filtered = () => {
-      const q=en(state.search).trim().toLowerCase(), hasFilter=!!(q||state.group||state.level);
+      const q=searchText(state.search), hasFilter=!!(q||state.group||state.level);
       const current=state.path[state.path.length-1]||'';
       return state.accounts.filter(a=>{
         if(!hasFilter && (current?a.parentCode!==current:Number(a.level)!==1)) return false;
         if(state.group && a.groupCode!==state.group) return false;
         if(state.level && Number(a.level)!==Number(state.level)) return false;
-        const hay=en([a.code,a.name,a.parentName,a.groupName].join(' ')).toLowerCase();
+        const hay=searchText([a.code,a.name,a.parentName,a.groupName].join(' '));
         return !q||hay.includes(q);
       }).sort((a,b)=>a.code.localeCompare(b.code,'en',{numeric:true}));
     };
@@ -125,7 +126,7 @@
     const parentsFor = (preferred) => {
       const n=Number(level.value);
       if(n===1){parent.innerHTML='<option value="">حساب سطح کل (بدون والد)</option>';parent.disabled=true;group.disabled=false;postable.checked=false;postable.disabled=true;if(state.mode==='new')code.value=fa(newCode(1,''));return;}
-      parent.disabled=false;postable.disabled=false;
+      parent.disabled=false;group.disabled=true;postable.disabled=false;
       const candidates=state.accounts.filter(a=>Number(a.level)===n-1&&a.groupCode===group.value);
       parent.innerHTML='<option value="">— انتخاب حساب بالاتر —</option>'+candidates.map(a=>'<option value="'+esc(a.code)+'">'+fa(a.code)+' — '+esc(a.name)+'</option>').join('');
       parent.value=preferred||candidates[0]?.code||'';
@@ -133,7 +134,8 @@
     };
     const startNew = () => {
       if(!state.groups.length){say('ابتدا یک گروه حساب تعریف کنید.','error');return;}
-      const pc=state.path[state.path.length-1]||'', p=getRow(pc), n=p?Math.min(3,Number(p.level)+1):1;
+      const pc=state.path[state.path.length-1]||'', p=getRow(pc), n=p?Number(p.level)+1:1;
+      if(n>3){say('در ساختار جدید فقط سه سطح کل، معین و تفصیلی ۱ پشتیبانی می‌شود. برای حساب‌های سطح چهارم قدیمی امکان ایجاد زیرحساب جدید وجود ندارد.','error');return;}
       state.mode='new';editor.hidden=false;form.reset();
       $('[data-editor-title]').textContent='تعریف حساب جدید';
       $('[data-editor-hint]').textContent='کد پیشنهادی مطابق کدهای موجود تولید می‌شود.';
