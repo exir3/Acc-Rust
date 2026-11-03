@@ -1,0 +1,176 @@
+//! Opening the database file and managing the process-wide connection.
+
+use rusqlite::{params, Connection, OpenFlags};
+use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Manager};
+
+use crate::db::common::{db_error, DB_FILE_NAME, LEGACY_DB_FILE_NAME, LEGACY_IDENTIFIER};
+use crate::db::model::Database;
+use crate::db::schema::{
+    apply_base_schema, apply_schema_migrations, seed_default_accounts, seed_default_groups,
+    seed_default_settings,
+};
+
+impl Database {
+    pub fn attach(&self, connection: Connection, path: PathBuf) {
+        // A panic in an earlier database operation must not make the
+        // application panic again while attaching/reopening its connection.
+        *self
+            .conn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(connection);
+        *self
+            .path
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(path);
+    }
+
+    pub fn path_string(&self) -> String {
+        self.path
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Re-enables database access after a failed restore, before reopening it.
+    pub fn clear_failed(&self) {
+        *self
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// Keeps the database blocked when reopening after a failed restore fails.
+    pub fn mark_failed(&self, reason: String) {
+        *self
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
+    }
+
+    pub(crate) fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if let Some(reason) = self
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            return Err(reason.clone());
+        }
+        // The connection remains owned and usable after mutex poisoning; a
+        // panicking caller will have dropped any in-flight SQLite transaction.
+        let mut guard = self
+            .conn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let conn = guard
+            .as_mut()
+            .ok_or_else(|| "پایگاه داده هنوز آماده نشده است.".to_string())?;
+        f(conn)
+    }
+}
+
+pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("مسیر داده برنامه در دسترس نیست: {e}"))?;
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|e| format!("ساخت پوشه پایگاه داده ناموفق بود: {e}"))?;
+
+    let path = data_dir.join(DB_FILE_NAME);
+
+    // Bring along data from the previous application versions so an existing
+    // chart of accounts does not disappear after the rename.
+    migrate_legacy_database(&data_dir, &path)?;
+
+    let mut connection =
+        Connection::open(&path).map_err(|e| format!("باز کردن پایگاه داده ناموفق بود: {e}"))?;
+
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;",
+        )
+        .map_err(db_error)?;
+    apply_base_schema(&connection)?;
+    apply_schema_migrations(&mut connection)?;
+    seed_default_groups(&mut connection).map_err(db_error)?;
+    seed_default_accounts(&mut connection).map_err(db_error)?;
+    seed_default_settings(&connection).map_err(db_error)?;
+
+    Ok((connection, path))
+}
+
+/// Copies the previous application's database into `destination` once. The
+/// old file may still have most of its data in a `-wal` sidecar, so copying
+/// only the main file would silently lose it. `VACUUM INTO` writes a single
+/// consistent file that includes everything the source connection can see.
+pub(crate) fn migrate_legacy_database(data_dir: &Path, destination: &Path) -> Result<(), String> {
+    if destination.exists() {
+        return Ok(());
+    }
+
+    let mut candidates = vec![data_dir.join(LEGACY_DB_FILE_NAME)];
+    if let Some(parent) = data_dir.parent() {
+        candidates.push(parent.join(LEGACY_IDENTIFIER).join(LEGACY_DB_FILE_NAME));
+    }
+
+    let mut existing: Vec<PathBuf> = candidates
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect();
+    if existing.is_empty() {
+        return Ok(());
+    }
+    // Prefer the most recently written database; a stale copy in the old
+    // identifier folder must not win over newer data in the app data folder.
+    existing.sort_by(|left, right| {
+        let modified = |path: &Path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+        modified(right).cmp(&modified(left))
+    });
+
+    let temporary = destination.with_extension("sqlite3.migrating");
+    let mut failures = Vec::new();
+    for source in existing {
+        let _ = std::fs::remove_file(&temporary);
+        match copy_sqlite_database(&source, &temporary) {
+            Ok(()) => {
+                std::fs::rename(&temporary, destination).map_err(|error| {
+                    let _ = std::fs::remove_file(&temporary);
+                    format!(
+                        "پایگاه داده قدیمی کپی شد اما جایگزینی امن فایل مقصد ناموفق بود: {error}"
+                    )
+                })?;
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&temporary);
+                failures.push(format!("{}: {}", source.display(), error));
+            }
+        }
+    }
+
+    Err(format!(
+        "انتقال پایگاه داده قدیمی ناموفق بود؛ برای جلوگیری از ساخت پایگاه داده خالی و پنهان‌شدن اطلاعات قبلی، اجرای برنامه متوقف شد. جزئیات: {}",
+        failures.join(" | ")
+    ))
+}
+
+fn copy_sqlite_database(source: &Path, destination: &Path) -> Result<(), String> {
+    let connection = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "VACUUM INTO ?1",
+            params![destination.to_string_lossy().into_owned()],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
