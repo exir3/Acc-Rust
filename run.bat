@@ -12,6 +12,7 @@ REM ============================================================
 
 setlocal enabledelayedexpansion
 chcp 65001 >nul
+set "STAMP="
 
 REM --- Project root = folder of this script -------------------
 set "ROOT=%~dp0"
@@ -29,14 +30,16 @@ set "LOCAL_TARGET=%CARGO_TARGET_DIR%"
 for %%I in ("%LOCAL_TARGET%") do set "LOCAL_TARGET=%%~fI"
 set "CARGO_TARGET_DIR=%LOCAL_TARGET%"
 
-REM --- Keep dev builds from accumulating large incremental caches ---
-REM  This can make recompiling Rust code slower, but does not affect app runtime.
-set "CARGO_INCREMENTAL=0"
-
 if /i "%~1"=="cleanup" goto :cleanup
 
 REM --- Debug (default) or release -----------------------------
 set "MODE=%~1"
+if not defined MODE set "MODE=debug"
+if /i not "%MODE%"=="debug" if /i not "%MODE%"=="release" (
+    echo [ERROR] Unknown mode: %MODE%
+    echo         Valid modes: debug, release, cleanup
+    goto :fail
+)
 if /i "%MODE%"=="release" (
     set "CARGO_ARGS=--release"
     set "PROFILE_NAME=release"
@@ -63,7 +66,17 @@ if errorlevel 1 (
 )
 
 REM --- Stop only this build's running copy so the exe can be replaced ---
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$target=[System.IO.Path]::GetFullPath($env:EXE); Get-Process -Name 'Hesabdari' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ([System.IO.Path]::GetFullPath($_.Path) -eq $target) } | Stop-Process -Force" >nul 2>nul
+REM  The result is read from the command's output, not from errorlevel:
+REM  PowerShell sets its exit code to 1 whenever the last statement left
+REM  $? false (Get-Process writing a silenced "not found" error does
+REM  that), even when nothing went wrong. So report OK/FAILED instead.
+set "KILL_STATE="
+for /f "usebackq delims=" %%K in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { $target=[System.IO.Path]::GetFullPath($env:EXE); $running=@(Get-Process -Name 'Hesabdari' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ([System.IO.Path]::GetFullPath($_.Path) -eq $target) }); foreach($p in $running){ try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { } }; $remaining=@(); if($running.Count -gt 0){ $deadline=(Get-Date).AddSeconds(10); do { [System.Threading.Thread]::Sleep(200); $remaining=@(Get-Process -Name 'Hesabdari' -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ([System.IO.Path]::GetFullPath($_.Path) -eq $target) }) } while($remaining.Count -gt 0 -and (Get-Date) -lt $deadline) }; if($remaining.Count -gt 0){ Write-Output 'FAILED' } else { Write-Output 'OK' } } catch { Write-Output 'FAILED' }"`) do set "KILL_STATE=%%K"
+
+if /i not "!KILL_STATE!"=="OK" (
+    echo [ERROR] Could not close the running app. Close it manually and retry.
+    goto :fail
+)
 
 REM --- Force a rebuild when any source or UI file changed -----
 REM  Cargo decides what to rebuild by file timestamps, not content.
@@ -74,10 +87,15 @@ REM  content hash of every build input instead, and touch lib.rs
 REM  (the crate that also embeds ui\) whenever that hash changes.
 set "STAMP=%LOCAL_TARGET%\.run-inputs.sha256"
 set "BUILD_STATE="
-for /f "usebackq delims=" %%S in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$root=$env:ROOT; $files=@(); $files+=Get-ChildItem -LiteralPath (Join-Path $root 'src-tauri\src') -Recurse -File -Filter *.rs -ErrorAction SilentlyContinue; $files+=Get-Item -LiteralPath (Join-Path $root 'src-tauri\Cargo.toml'),(Join-Path $root 'src-tauri\build.rs'),(Join-Path $root 'src-tauri\tauri.conf.json') -ErrorAction SilentlyContinue; $files+=Get-ChildItem -LiteralPath (Join-Path $root 'src-tauri\capabilities') -Recurse -File -ErrorAction SilentlyContinue; $files+=Get-ChildItem -LiteralPath (Join-Path $root 'ui') -Recurse -File -ErrorAction SilentlyContinue; $sha=[System.Security.Cryptography.SHA256]::Create(); $sb=New-Object System.Text.StringBuilder; foreach($f in ($files|Sort-Object FullName)){ [void]$sb.Append($f.FullName.Substring($root.Length)).Append('|'); $content=[System.IO.File]::ReadAllBytes($f.FullName); [void]$sb.Append([System.BitConverter]::ToString($sha.ComputeHash($content)).Replace('-','')).Append([char]10) }; $hash=[System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($sb.ToString()))).Replace('-','').ToLowerInvariant(); $stamp=Join-Path $env:LOCAL_TARGET '.run-inputs.sha256'; $old=''; if(Test-Path -LiteralPath $stamp){ $old=(Get-Content -LiteralPath $stamp -Raw).Trim() }; if($old -eq $hash){ Write-Output 'SAME' } else { $dir=Split-Path -Parent $stamp; if(-not (Test-Path -LiteralPath $dir)){ [void](New-Item -ItemType Directory -Path $dir -Force) }; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\src\lib.rs')).LastWriteTime=Get-Date; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\build.rs')).LastWriteTime=Get-Date; Set-Content -LiteralPath $stamp -Value $hash -NoNewline; Write-Output 'CHANGED' }"`) do set "BUILD_STATE=%%S"
+for /f "usebackq delims=" %%S in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=$env:ROOT; $files=@(); $files+=Get-ChildItem -LiteralPath (Join-Path $root 'src-tauri\src') -Recurse -File -Filter *.rs; $files+=Get-Item -LiteralPath (Join-Path $root 'src-tauri\Cargo.toml'),(Join-Path $root 'src-tauri\build.rs'),(Join-Path $root 'src-tauri\tauri.conf.json'); $files+=Get-ChildItem -LiteralPath (Join-Path $root 'src-tauri\capabilities') -Recurse -File; $files+=Get-ChildItem -LiteralPath (Join-Path $root 'ui') -Recurse -File; $sha=[System.Security.Cryptography.SHA256]::Create(); $sb=New-Object System.Text.StringBuilder; foreach($f in ($files|Sort-Object FullName)){ [void]$sb.Append($f.FullName.Substring($root.Length)).Append('|'); $content=[System.IO.File]::ReadAllBytes($f.FullName); [void]$sb.Append([System.BitConverter]::ToString($sha.ComputeHash($content)).Replace('-','')).Append([char]10) }; $hash=[System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($sb.ToString()))).Replace('-','').ToLowerInvariant(); $stamp=Join-Path $env:LOCAL_TARGET '.run-inputs.sha256'; $old=''; if(Test-Path -LiteralPath $stamp){ $old=(Get-Content -LiteralPath $stamp -Raw).Trim() }; if($old -eq $hash){ Write-Output 'SAME' } else { $dir=Split-Path -Parent $stamp; if(-not (Test-Path -LiteralPath $dir)){ [void](New-Item -ItemType Directory -Path $dir -Force) }; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\src\lib.rs')).LastWriteTime=Get-Date; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\build.rs')).LastWriteTime=Get-Date; Set-Content -LiteralPath $stamp -Value $hash -NoNewline; Write-Output 'CHANGED' }"`) do set "BUILD_STATE=%%S"
+
+if /i not "!BUILD_STATE!"=="SAME" if /i not "!BUILD_STATE!"=="CHANGED" (
+    echo [ERROR] Could not verify the current source files.
+    goto :fail
+)
 
 if /i "!BUILD_STATE!"=="SAME" (
-    echo [1/2] No input changes - using the existing build.
+    echo [1/2] No input changes detected.
 ) else (
     echo [1/2] Input changes detected - rebuilding the app ...
 )
@@ -93,9 +111,13 @@ if not exist "!EXE!" (
 
 echo [2/2] Starting ...
 start "" "!EXE!"
+if errorlevel 1 (
+    echo [ERROR] Could not start the newly built app.
+    goto :fail
+)
 
 echo.
-echo App started. Close this window or run the script again after changes.
+echo App started from the latest build. Run this script again after editing sources.
 timeout /t 3 >nul
 goto :eof
 

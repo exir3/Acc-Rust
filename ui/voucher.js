@@ -85,8 +85,25 @@ const state = {
 
 const accountForCode = (code) => state.accountByCode.get(digitsOnly(code)) || null;
 
+// Accounts already saved on the open voucher stay usable even after being
+// marked inactive; new lines may only pick an active definition.
+function voucherAlreadyUsesAccount(code) {
+  const target = digitsOnly(code);
+  return (state.voucher?.lines || []).some(
+    (savedLine) => digitsOnly(savedLine.accountCode) === target
+  );
+}
+
+function accountAllowedForNewLine(account) {
+  if (!account) return false;
+  const alreadyOnVoucher = voucherAlreadyUsesAccount(account.code);
+  const activeOk = account.isActive !== false || alreadyOnVoucher;
+  const postableOk = account.isPostable || (Number(account.level) > 3 && alreadyOnVoucher);
+  return activeOk && postableOk;
+}
+
 function levelLabel(level) {
-  return ({ 1: 'کل', 2: 'معین', 3: 'تفصیلی ۱', 4: 'تفصیلی ۲' })[Number(level)] || '—';
+  return ({ 1: 'کل', 2: 'معین', 3: 'تفصیلی ۱', 4: 'تفصیلی ۲ (قدیمی)' })[Number(level)] || '—';
 }
 
 /* ── Small in-window notice ─────────────────────────────────── */
@@ -123,11 +140,52 @@ function formatAmount(value) {
 
 const parseAmount = (value) => BigInt(digitsOnly(value) || '0');
 
-// Largest amount per line, same as the backend (1e15 − 1 Rials). Beyond it
-// JavaScript numbers lose precision.
-const MAX_AMOUNT_DIGITS = 15;
-const MAX_VOUCHER_LINES = 1000;
-const MAX_VOUCHER_NUMBER = Number.MAX_SAFE_INTEGER;
+// Fallbacks mirror the backend. `loadSettings` replaces them with the values
+// returned by `get_settings`, so a limit change needs no front-end edit.
+let MAX_AMOUNT = 999_999_999_999_999n;
+let MAX_VOUCHER_LINES = 1000;
+let MAX_VOUCHER_NUMBER = Number.MAX_SAFE_INTEGER;
+let MAX_DESCRIPTION = 1000;
+let MAX_LINE_DESCRIPTION = 500;
+
+function applyLimits(limits) {
+  if (!limits) return;
+  const lines = Number(limits.maxVoucherLines);
+  if (Number.isSafeInteger(lines) && lines > 0) MAX_VOUCHER_LINES = lines;
+  const maxAmount = Number(limits.maxAmount);
+  if (Number.isSafeInteger(maxAmount) && maxAmount > 0) MAX_AMOUNT = BigInt(maxAmount);
+  const maxNumber = Number(limits.maxVoucherNumber);
+  if (Number.isSafeInteger(maxNumber) && maxNumber > 0) MAX_VOUCHER_NUMBER = maxNumber;
+
+  const maxDescription = Number(limits.maxDescription);
+  if (Number.isSafeInteger(maxDescription) && maxDescription > 0) {
+    MAX_DESCRIPTION = maxDescription;
+    const area = $('#vfDocDesc');
+    if (area) area.maxLength = maxDescription;
+    updateDescCounter();
+  }
+  const maxLineDescription = Number(limits.maxLineDescription);
+  if (Number.isSafeInteger(maxLineDescription) && maxLineDescription > 0) {
+    MAX_LINE_DESCRIPTION = maxLineDescription;
+    $$('.vf-desc-input').forEach((input) => { input.maxLength = maxLineDescription; });
+  }
+}
+
+// Mirrors jalali_calendar's 33-year leap rule so the form can reject impossible
+// dates (e.g. 31 Mehr or 30 Esfand in a common year) before a network round-trip.
+function isJalaliLeapYear(year) {
+  const countLeapDays = (value) => Math.trunc(value / 33) * 8
+    + Math.trunc((((value % 33) + 3) / 4));
+  const shifted = year + 1595;
+  return countLeapDays(shifted + 1) - countLeapDays(shifted) === 1;
+}
+
+function jalaliMonthLength(year, month) {
+  if (month >= 1 && month <= 6) return 31;
+  if (month >= 7 && month <= 11) return 30;
+  if (month === 12) return isJalaliLeapYear(year) ? 30 : 29;
+  return 0;
+}
 
 /* ── Voucher grid ───────────────────────────────────────────── */
 
@@ -136,8 +194,8 @@ function voucherRowTemplate() {
     <tr>
       <td class="vf-rowno"></td>
       <td><input class="vf-code-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="کد حساب" title="برای انتخاب حساب Space یا F4 را بزنید" /></td>
-      <td class="vf-detail2" aria-label="تفصیلی 2"></td>
-      <td><input class="vf-desc-input" type="text" dir="rtl" maxlength="500" autocomplete="off" aria-label="شرح" /></td>
+      <td class="vf-detail1" aria-label="تفصیلی ۱"></td>
+      <td><input class="vf-desc-input" type="text" dir="rtl" maxlength="${MAX_LINE_DESCRIPTION}" autocomplete="off" aria-label="شرح" /></td>
       <td><input class="vf-amount-input vf-debit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بدهکار" /></td>
       <td><input class="vf-amount-input vf-credit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بستانکار" /></td>
     </tr>`;
@@ -272,18 +330,18 @@ function updateRowAccount(row, final = false) {
   const input = row.querySelector('.vf-code-input');
   const code = digitsOnly(input?.value || '');
   const account = accountForCode(code);
-  const detailCell = row.querySelector('.vf-detail2');
-  const level4 = account ? accountHierarchy(account).find((item) => Number(item.level) === 4) : null;
+  const detailCell = row.querySelector('.vf-detail1');
+  const detail1 = account ? accountHierarchy(account).find((item) => Number(item.level) === 3) : null;
 
   if (detailCell) {
-    detailCell.textContent = level4 ? `${vfFa(level4.code)} — ${level4.name}` : '—';
-    detailCell.title = level4 ? `${level4.code} — ${level4.name}` : '';
+    detailCell.textContent = detail1 ? `${vfFa(detail1.code)} — ${detail1.name}` : '—';
+    detailCell.title = detail1 ? `${detail1.code} — ${detail1.name}` : '';
   }
   if (input) {
     input.title = account
-      ? `${account.code} — ${account.name}${account.isPostable ? '' : ' (قابل ثبت نیست)'}`
+      ? `${account.code} — ${account.name}${accountAllowedForNewLine(account) ? '' : account.isActive === false ? ' (غیرفعال)' : ' (قابل ثبت نیست)'}`
       : 'برای انتخاب حساب Space یا F4 را بزنید';
-    if (account && account.isPostable) input.classList.remove('is-invalid');
+    if (accountAllowedForNewLine(account)) input.classList.remove('is-invalid');
     else if (!code) input.classList.remove('is-invalid');
     else if (final) input.classList.add('is-invalid');
   }
@@ -313,7 +371,8 @@ function updateLedger(row) {
     .filter((item) => levels.includes(Number(item.level)))
     .map((item) => `${vfFa(item.code)} — ${item.name}`)
     .join(' / ') || '—';
-  const headings = [renderLevel([1, 2]), renderLevel([3]), renderLevel([4])];
+  const accountGroup = account.groupName ? `گروه: ${account.groupName}` : '';
+  const headings = [[accountGroup, renderLevel([1, 2])].filter(Boolean).join(' / '), renderLevel([3])];
   values.forEach((el, index) => {
     const value = headings[index] || '—';
     el.textContent = value;
@@ -382,11 +441,11 @@ function bindVoucherGrid() {
         toast('مبلغ باید عدد صحیح ریالی باشد؛ اعشار مجاز نیست.', 'error');
       }
       let cleaned = digitsOnly(input.value);
-      if (input.classList.contains('vf-amount-input') && cleaned.length > MAX_AMOUNT_DIGITS) {
+      if (input.classList.contains('vf-amount-input') && parseAmount(cleaned) > MAX_AMOUNT) {
         input.value = cleaned;
         input.classList.add('is-invalid');
         input.setAttribute('aria-invalid', 'true');
-        toast('مبلغ هر ردیف حداکثر ۱۵ رقم می‌تواند باشد.', 'error');
+        toast(`مبلغ هر ردیف حداکثر ${vfFa(formatAmount(MAX_AMOUNT))} ریال می‌تواند باشد.`, 'error');
       } else {
         if (input.classList.contains('vf-amount-input')) {
           input.classList.remove('is-invalid');
@@ -604,19 +663,27 @@ function fillGrid(lines) {
     toast(`این سند ${vfFa(lines.length)} ردیف دارد و ظرفیت فرم ${vfFa(MAX_VOUCHER_LINES)} ردیف است؛ سند فقط‌خواندنی باز شد.`, 'error');
   }
   tbody.textContent = '';
-  (lines || []).forEach((line) => {
-    const row = appendGridRow();
-    if (!row) return;
-    row.querySelector('.vf-code-input').value = line.accountCode || '';
-    row.querySelector('.vf-desc-input').value = line.description || '';
-    if (Number(line.debit) > 0) {
-      row.querySelector('.vf-debit-input').value = formatAmount(line.debit);
-    }
-    if (Number(line.credit) > 0) {
-      row.querySelector('.vf-credit-input').value = formatAmount(line.credit);
-    }
-    updateRowAccount(row);
-  });
+  const rendered = (lines || []).slice(0, MAX_VOUCHER_LINES);
+  if (rendered.length) {
+    // Build all rows in one HTML insertion. Calling appendGridRow per line made
+    // every call rescan the existing rows, turning a 1000-line voucher into a
+    // quadratic amount of DOM work.
+    tbody.insertAdjacentHTML('beforeend', rendered.map(() => voucherRowTemplate()).join(''));
+    const rows = Array.from(tbody.children);
+    rendered.forEach((line, index) => {
+      const row = rows[index];
+      if (!row) return;
+      row.querySelector('.vf-code-input').value = line.accountCode || '';
+      row.querySelector('.vf-desc-input').value = line.description || '';
+      if (Number(line.debit) > 0) {
+        row.querySelector('.vf-debit-input').value = formatAmount(line.debit);
+      }
+      if (Number(line.credit) > 0) {
+        row.querySelector('.vf-credit-input').value = formatAmount(line.credit);
+      }
+      updateRowAccount(row);
+    });
+  }
   ensureTrailingBlank();
   syncVoucherRowCount();
   refreshFormState();
@@ -690,11 +757,12 @@ function validateDraft(draft) {
   const year = Number(dateParts[1]);
   const month = Number(dateParts[2]);
   const day = Number(dateParts[3]);
-  if (year < 1 || year > 3177 || month < 1 || month > 12 || day < 1 || day > 31) {
+  if (year < 1 || year > 3177 || month < 1 || month > 12 || day < 1
+      || day > jalaliMonthLength(year, month)) {
     return 'سال، ماه یا روز تاریخ سند معتبر نیست.';
   }
-  // Exact month length (including Esfand in leap/common years) is validated
-  // by Rust's Jalali calendar implementation before the voucher is saved.
+  // The Rust/Jalali calendar remains authoritative and is still called before
+  // saving; this check only avoids a round-trip for impossible dates.
   if (draft.lines.length < 2) return 'سند حسابداری باید حداقل دو ردیف داشته باشد.';
 
   let debit = 0n;
@@ -705,13 +773,20 @@ function validateDraft(draft) {
     if (!line.accountCode) return `کد حساب ردیف ${rowNo} را وارد کنید.`;
     const account = accountForCode(line.accountCode);
     if (!account) return `حساب با کد ${vfFa(line.accountCode)} یافت نشد.`;
-    if (!account.isPostable) return `حساب «${account.name}» قابل ثبت نیست؛ حساب معین یا تفصیلی انتخاب کنید.`;
+    if (!voucherAlreadyUsesAccount(line.accountCode) && account.isActive === false) {
+      return `حساب «${account.name}» غیرفعال است و برای ردیف جدید سند قابل انتخاب نیست.`;
+    }
+    const legacyAccountAlreadyOnThisVoucher = Number(account.level) > 3
+      && voucherAlreadyUsesAccount(line.accountCode);
+    if (!account.isPostable && !legacyAccountAlreadyOnThisVoucher) {
+      return `حساب «${account.name}» (سطح ${levelLabel(account.level)}) قابل ثبت نیست. لطفاً یک حساب معین یا تفصیلی ۱ قابل ثبت انتخاب کنید.`;
+    }
     if (!line.debit && !line.credit) return `مبلغ ردیف ${rowNo} را وارد کنید.`;
     if (line.debit && line.credit) return `در ردیف ${rowNo} فقط یکی از بدهکار یا بستانکار را وارد کنید.`;
     if (line.debit < 0 || line.credit < 0) return `مبلغ ردیف ${rowNo} نمی‌تواند منفی باشد.`;
     if (!Number.isSafeInteger(line.debit) || !Number.isSafeInteger(line.credit)
-      || line.debit > 999999999999999 || line.credit > 999999999999999) {
-      return `مبلغ ردیف ${rowNo} باید عدد صحیح و حداکثر ۹۹۹٬۹۹۹٬۹۹۹٬۹۹۹٬۹۹۹ ریال باشد.`;
+      || BigInt(line.debit) > MAX_AMOUNT || BigInt(line.credit) > MAX_AMOUNT) {
+      return `مبلغ ردیف ${rowNo} باید عدد صحیح و حداکثر ${vfFa(formatAmount(MAX_AMOUNT))} ریال باشد.`;
     }
     debit += BigInt(line.debit);
     credit += BigInt(line.credit);
@@ -1134,14 +1209,15 @@ const accountPickerOpen = () => {
 function filterAccountPicker(term) {
   const q = normalizeSearch(term);
   const parent = state.accountPickerPath[state.accountPickerPath.length - 1] || null;
-  let source = state.accounts;
+  const selectable = state.accounts.filter((account) => account.isActive !== false || voucherAlreadyUsesAccount(account.code));
+  let source = selectable;
   if (!q && !state.accountPickerShowAll) {
     source = parent
-      ? state.accounts.filter((account) => digitsOnly(account.parentCode) === digitsOnly(parent.code))
-      : state.accounts.filter((account) => Number(account.level) === 1 || !account.parentCode);
+      ? selectable.filter((account) => digitsOnly(account.parentCode) === digitsOnly(parent.code))
+      : selectable.filter((account) => Number(account.level) === 1 || !account.parentCode);
   }
   if (!q) return source.slice();
-  return state.accounts.filter((account) =>
+  return selectable.filter((account) =>
     normalizeSearch(account.code).includes(q) ||
     normalizeSearch(account.name).includes(q) ||
     normalizeSearch(levelLabel(account.level)).includes(q) ||
@@ -1204,13 +1280,16 @@ function renderAccountPickerRows(resetIndex = true) {
     row.className = 'ap-row';
     if (i === apIndex) row.classList.add('selected');
     if (!account.isPostable) row.classList.add('not-postable');
+    if (account.isActive === false) row.classList.add('inactive');
     row.setAttribute('role', 'row');
     row.tabIndex = -1;
     row.dataset.pickerIndex = String(i);
     row.setAttribute('aria-selected', i === apIndex ? 'true' : 'false');
-    row.title = account.isPostable
-      ? `${account.code} — ${account.name}`
-      : 'این حساب قابل ثبت نیست؛ حساب معین یا تفصیلی انتخاب کنید';
+    row.title = account.isActive === false
+      ? 'این حساب غیرفعال است و فقط برای ردیف‌های ذخیره‌شدهٔ همین سند قابل استفاده است'
+      : account.isPostable
+        ? `${account.code} — ${account.name}`
+        : 'این حساب قابل ثبت نیست؛ یک حساب معین یا تفصیلی ۱ قابل ثبت انتخاب کنید';
 
     row.append(
       apCell(vfFa(i + 1), 'rownum center'),
@@ -1324,7 +1403,7 @@ function chooseAccountPickerRow() {
   const account = apVisible[apIndex];
   if (!account) return;
 
-  if (!account.isPostable) {
+  if (!accountAllowedForNewLine(account)) {
     const hasChildren = state.accounts.some((item) =>
       digitsOnly(item.parentCode) === digitsOnly(account.code)
     );
@@ -1332,7 +1411,10 @@ function chooseAccountPickerRow() {
       drillOrChooseAccountPickerRow(account);
       return;
     }
-    toast('این حساب قابل ثبت نیست؛ حساب معین یا تفصیلی انتخاب کنید.', 'error');
+    const reason = account.isActive === false
+      ? 'غیرفعال است'
+      : `${levelLabel(account.level)} قابل ثبت نیست`;
+    toast(`حساب «${account.name}» ${reason}؛ یک حساب معین یا تفصیلی ۱ فعال و قابل ثبت انتخاب کنید.`, 'error');
     return;
   }
 
@@ -1389,7 +1471,13 @@ function bindAccountPicker() {
     if (ev.target.id === 'accountPickerModal') closeAccountPicker(true);
   });
 
-  if (search) search.addEventListener('input', () => renderAccountPickerRows());
+  if (search) {
+    let apSearchDebounceTimer = 0;
+    search.addEventListener('input', () => {
+      clearTimeout(apSearchDebounceTimer);
+      apSearchDebounceTimer = setTimeout(() => renderAccountPickerRows(), 120);
+    });
+  }
 
   rows.addEventListener('click', (ev) => {
     const row = ev.target.closest('.ap-row[data-picker-index]');
@@ -1590,11 +1678,11 @@ function updateDescCounter() {
   const output = $('#vfDocDescCount');
   if (!area || !output) return;
   let chars = Array.from(area.value);
-  if (chars.length > 1000) {
-    area.value = chars.slice(0, 1000).join('');
-    chars = chars.slice(0, 1000);
+  if (chars.length > MAX_DESCRIPTION) {
+    area.value = chars.slice(0, MAX_DESCRIPTION).join('');
+    chars = chars.slice(0, MAX_DESCRIPTION);
   }
-  output.textContent = `${vfFa(chars.length)}/۱۰۰۰`;
+  output.textContent = `${vfFa(chars.length)}/${vfFa(MAX_DESCRIPTION)}`;
 }
 
 function bindDocMeta() {
@@ -2342,8 +2430,9 @@ function parseVoucherClipboardRows(raw) {
       debitText = cells[2] || ''; creditText = cells[3] || '';
     }
     const accountCode = digitsOnly(code);
-    if (description.length > 500) {
-      throw new Error(`شرح ردیف کلیپ‌بورد بیش از ۵۰۰ نویسه است (${vfFa(description.length)} نویسه).`);
+    const descriptionLength = [...description].length;
+    if (descriptionLength > MAX_LINE_DESCRIPTION) {
+      throw new Error(`شرح ردیف کلیپ‌بورد بیش از ${vfFa(MAX_LINE_DESCRIPTION)} نویسه است (${vfFa(descriptionLength)} نویسه).`);
     }
     const parseClipboardAmount = (text) => {
       const normalized = toAsciiDigits(text).replace(/[,٬\s\u200c\u00a0]/g, '');
@@ -2352,7 +2441,7 @@ function parseVoucherClipboardRows(raw) {
       if (!normalized) return 0;
       if (!/^\d+$/.test(normalized)) throw new Error(`مبلغ «${text}» معتبر نیست.`);
       const amount = Number(normalized);
-      if (!Number.isSafeInteger(amount) || amount > 999999999999999)
+      if (!Number.isSafeInteger(amount) || amount > Number(MAX_AMOUNT))
         throw new Error('یکی از مبالغ کلیپ‌بورد خارج از محدوده مجاز است.');
       return amount;
     };
@@ -2360,7 +2449,7 @@ function parseVoucherClipboardRows(raw) {
     const credit = parseClipboardAmount(creditText);
     if (!accountCode && !description && !debit && !credit) continue;
     if (!Number.isSafeInteger(debit) || !Number.isSafeInteger(credit) ||
-        debit > 999999999999999 || credit > 999999999999999)
+        debit > Number(MAX_AMOUNT) || credit > Number(MAX_AMOUNT))
       throw new Error('یکی از مبالغ کلیپ‌بورد خارج از محدوده مجاز است.');
     if (debit > 0 && credit > 0)
       throw new Error('در ردیف چسبانده‌شده، هم‌زمان بدهکار و بستانکار پر شده است.');
@@ -2670,9 +2759,9 @@ function renderExcelPreview(imported) {
     if (!code) errors.push('کد حساب خالی');
     else if (!account) errors.push('حساب یافت نشد');
     else if (!account.isPostable) errors.push('حساب قابل ثبت نیست');
-    if (String(line.description || '').length > 500) errors.push('شرح بیش از ۵۰۰ نویسه');
+    if ([...String(line.description || '')].length > MAX_LINE_DESCRIPTION) errors.push(`شرح بیش از ${vfFa(MAX_LINE_DESCRIPTION)} نویسه`);
     if (!Number.isSafeInteger(debit) || !Number.isSafeInteger(credit) ||
-        debit < 0 || credit < 0 || debit > 999999999999999 || credit > 999999999999999)
+        debit < 0 || credit < 0 || debit > Number(MAX_AMOUNT) || credit > Number(MAX_AMOUNT))
       errors.push('مبلغ نامعتبر');
     else if ((debit === 0) === (credit === 0))
       errors.push('دقیقاً یکی از بدهکار/بستانکار باید مثبت باشد');
@@ -2951,7 +3040,10 @@ async function loadAccounts() {
 async function loadSettings() {
   if (!invoke) return;
   const settings = await invoke('get_settings');
-  if (settings) state.settings = settings;
+  if (settings) {
+    state.settings = settings;
+    applyLimits(settings.limits);
+  }
 }
 
 async function refreshNextNumber() {

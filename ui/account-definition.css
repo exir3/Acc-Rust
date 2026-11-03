@@ -155,6 +155,8 @@ body:has(.adp2-window) {
 }
 .adp2-grid tbody tr:nth-child(even) td { background: #f7f9fb; }
 .adp2-grid tbody tr:hover td { background: #edf5fc; }
+.adp2-grid tbody tr.inactive td { color: #9aa3ad; }
+.adp2-grid tbody tr.inactive td.name { text-decoration: line-through; }
 .adp2-grid tbody tr.selected td:not(:first-child) { color: #fff; background: #286ba8; }
 .adp2-grid td.name { text-align: right; }
 .adp2-grid td.mono { font-variant-numeric: tabular-nums; }

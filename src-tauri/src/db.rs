@@ -13,10 +13,13 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 
-use crate::vouchers::MAX_VOUCHER_NUMBER;
+use crate::vouchers::{
+    DEFAULT_JOURNAL_PAGE_SIZE, DEFAULT_VOUCHER_PAGE_SIZE, MAX_AMOUNT, MAX_DESCRIPTION,
+    MAX_LINE_DESCRIPTION, MAX_LINES, MAX_PAGE_SIZE, MAX_VOUCHER_NUMBER,
+};
 
 pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 const LEGACY_DB_FILE_NAME: &str = "audit-analyzer.sqlite3";
 const LEGACY_IDENTIFIER: &str = "ir.audit.account-analyzer";
 
@@ -24,6 +27,29 @@ const LEGACY_IDENTIFIER: &str = "ir.audit.account-analyzer";
 pub const ACCOUNT_GROUP_TYPES: [&str; 6] = ["دارایی", "بدهی", "سرمایه", "درآمد", "هزینه", "سایر"];
 
 pub const ACCOUNT_NATURES: [&str; 3] = ["debtor", "creditor", "dual"];
+
+/// Financial-statement sections a group can be assigned to by default.
+/// These keys match the WebApp ``Section`` values.
+pub const ACCOUNT_GROUP_SECTIONS: [&str; 14] = [
+    "non_current_asset",
+    "current_asset",
+    "equity",
+    "non_current_liability",
+    "current_liability",
+    "revenue",
+    "cogs",
+    "selling_expense",
+    "admin_expense",
+    "other_operating",
+    "finance_cost",
+    "other_non_operating",
+    "income_tax",
+    "memorandum",
+];
+
+/// Account rows are numbered independently from account groups: 1=کل، 2=معین، 3=تفصیلی ۱.
+/// Level 4 is retained in the physical schema only to read older databases; it is not creatable.
+pub const MAX_ACCOUNT_LEVEL: i64 = 3;
 
 const SCHEMA: &str = r#"
     CREATE TABLE IF NOT EXISTS app_meta (
@@ -41,6 +67,7 @@ const SCHEMA: &str = r#"
         code       TEXT NOT NULL UNIQUE,
         name       TEXT NOT NULL,
         type       TEXT NOT NULL CHECK(type IN ('دارایی', 'بدهی', 'سرمایه', 'درآمد', 'هزینه', 'سایر')),
+        default_section TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
@@ -49,12 +76,14 @@ const SCHEMA: &str = r#"
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         code        TEXT NOT NULL UNIQUE,
         name        TEXT NOT NULL,
+        -- Level 4 is retained for legacy database compatibility; application writes stop at MAX_ACCOUNT_LEVEL.
         level       INTEGER NOT NULL CHECK(level BETWEEN 1 AND 4),
         group_code  TEXT NOT NULL REFERENCES account_groups(code) ON UPDATE CASCADE,
         nature      TEXT NOT NULL DEFAULT 'debtor' CHECK(nature IN ('debtor', 'creditor', 'dual')),
         parent_code TEXT REFERENCES accounts(code),
         parent_name TEXT NOT NULL DEFAULT '',
         is_postable INTEGER NOT NULL DEFAULT 1 CHECK(is_postable IN (0, 1)),
+        is_active   INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
         postable_before_children INTEGER CHECK(postable_before_children IN (0, 1)),
         created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
         updated_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
@@ -127,9 +156,22 @@ const SCHEMA: &str = r#"
     BEGIN
         SELECT RAISE(ABORT, 'invalid voucher line');
     END;
-
-    INSERT OR IGNORE INTO app_meta(key, value) VALUES ('schema_version', '3');
 "#;
+
+/// Creates the base tables and records the current schema version.
+///
+/// The version marker is written from `CURRENT_SCHEMA_VERSION` instead of being
+/// duplicated inside `SCHEMA`, so bumping the constant can never leave a fresh
+/// database tagged with an older version.
+fn apply_base_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(SCHEMA).map_err(db_error)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO app_meta(key, value) VALUES ('schema_version', ?1)",
+        params![CURRENT_SCHEMA_VERSION.to_string()],
+    )
+    .map_err(db_error)?;
+    Ok(())
+}
 
 const DEFAULT_SETTINGS: [(&str, &str); 2] =
     [("company_name", "شرکت نمونه"), ("fiscal_year", "۱۴۰۵")];
@@ -340,6 +382,7 @@ pub struct AccountGroup {
     pub name: String,
     #[serde(rename = "type")]
     pub group_type: String,
+    pub default_section: String,
     pub account_count: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -366,6 +409,7 @@ pub struct Account {
     pub parent_code: String,
     pub parent_name: String,
     pub is_postable: bool,
+    pub is_active: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -377,12 +421,62 @@ pub struct AccountList {
     pub database_path: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkAccountDeleteFailure {
+    pub code: String,
+    pub name: String,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkAccountDeleteResult {
+    pub deleted_count: usize,
+    pub blocked: Vec<BulkAccountDeleteFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Limits {
+    /// Maximum number of lines accepted in one voucher.
+    pub max_voucher_lines: usize,
+    /// Largest amount accepted on one line.
+    pub max_amount: i64,
+    /// Highest voucher number the backend accepts.
+    pub max_voucher_number: i64,
+    /// Longest voucher description.
+    pub max_description: usize,
+    /// Longest description on one voucher line.
+    pub max_line_description: usize,
+    pub voucher_page_size: i64,
+    pub journal_page_size: i64,
+    pub max_page_size: i64,
+}
+
+impl Limits {
+    pub fn current() -> Self {
+        Self {
+            max_voucher_lines: MAX_LINES,
+            max_amount: MAX_AMOUNT,
+            max_voucher_number: MAX_VOUCHER_NUMBER,
+            max_description: MAX_DESCRIPTION,
+            max_line_description: MAX_LINE_DESCRIPTION,
+            voucher_page_size: DEFAULT_VOUCHER_PAGE_SIZE,
+            journal_page_size: DEFAULT_JOURNAL_PAGE_SIZE,
+            max_page_size: MAX_PAGE_SIZE,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub company_name: String,
     pub fiscal_year: String,
     pub today: String,
+    /// Backend limits sent to the UI so both layers use the same values.
+    pub limits: Limits,
 }
 
 /// Holds the single write connection. SQLite access is cheap and the forms
@@ -406,6 +500,7 @@ pub struct NewAccount {
     pub nature: String,
     pub parent_code: String,
     pub is_postable: bool,
+    pub is_active: bool,
 }
 
 impl NewAccount {
@@ -427,7 +522,15 @@ impl NewAccount {
             nature: nature.to_string(),
             parent_code: parent_code.to_string(),
             is_postable,
+            is_active: true,
         }
+    }
+
+    /// Marks the account inactive at creation time. A new account is active
+    /// unless the caller explicitly asks for an inactive definition.
+    pub fn with_active(mut self, is_active: bool) -> Self {
+        self.is_active = is_active;
+        self
     }
 }
 
@@ -463,6 +566,7 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
         account.level,
         &account.parent_code,
         &account.group_code,
+        false,
     )?;
 
     // An account that already carries vouchers cannot also become a heading
@@ -479,8 +583,8 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
     let postable = account.level > 1 && account.is_postable;
     conn.execute(
         "INSERT INTO accounts
-            (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (code, name, level, group_code, nature, parent_code, parent_name, is_postable, is_active)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             account.code,
             account.name,
@@ -489,7 +593,8 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
             account.nature,
             parent_code,
             parent_name,
-            i64::from(postable)
+            i64::from(postable),
+            i64::from(account.is_active)
         ],
     )
     .map_err(db_error)?;
@@ -532,6 +637,22 @@ impl Database {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default()
+    }
+
+    /// Re-enables database access after a failed restore, before reopening it.
+    pub fn clear_failed(&self) {
+        *self
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// Keeps the database blocked when reopening after a failed restore fails.
+    pub fn mark_failed(&self, reason: String) {
+        *self
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
     }
 
     pub fn backup_to(&self, destination: &Path) -> Result<(), String> {
@@ -661,10 +782,12 @@ impl Database {
         code: &str,
         name: &str,
         group_type: &str,
+        default_section: &str,
     ) -> Result<AccountGroup, String> {
         let code = validate_group_code(code)?;
         let name = validate_name(name, "نام گروه")?;
         let group_type = validate_type(group_type)?;
+        let default_section = validate_section(default_section)?;
 
         self.with_conn(|conn| {
             let duplicate = conn
@@ -680,8 +803,9 @@ impl Database {
             }
 
             conn.execute(
-                "INSERT INTO account_groups (code, name, type) VALUES (?1, ?2, ?3)",
-                params![code, name, group_type],
+                "INSERT INTO account_groups (code, name, type, default_section)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![code, name, group_type, default_section],
             )
             .map_err(db_error)?;
             fetch_group(conn, conn.last_insert_rowid())
@@ -694,6 +818,7 @@ impl Database {
         code: &str,
         name: &str,
         group_type: &str,
+        default_section: &str,
     ) -> Result<AccountGroup, String> {
         if id <= 0 {
             return Err("شناسه گروه حساب نامعتبر است.".to_string());
@@ -701,6 +826,7 @@ impl Database {
         let code = validate_group_code(code)?;
         let name = validate_name(name, "نام گروه")?;
         let group_type = validate_type(group_type)?;
+        let default_section = validate_section(default_section)?;
 
         self.with_conn(|conn| {
             let tx = conn
@@ -739,9 +865,10 @@ impl Database {
 
             tx.execute(
                 "UPDATE account_groups
-                    SET name = ?1, type = ?2, updated_at = datetime('now', 'localtime')
-                  WHERE id = ?3",
-                params![name, group_type, id],
+                    SET name = ?1, type = ?2, default_section = ?3,
+                        updated_at = datetime('now', 'localtime')
+                  WHERE id = ?4",
+                params![name, group_type, default_section, id],
             )
             .map_err(db_error)?;
             let group = fetch_group(&tx, id)?;
@@ -756,7 +883,7 @@ impl Database {
         }
 
         self.with_conn(|conn| {
-            let tx = conn.unchecked_transaction().map_err(db_error)?;
+            let tx = conn.transaction().map_err(db_error)?;
 
             let code = tx
                 .query_row(
@@ -809,6 +936,9 @@ impl Database {
         })
     }
 
+    /// Kept flat because the Tauri command layer passes one field per
+    /// JavaScript argument; grouping them would change the public invoke API.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_account(
         &self,
         code: &str,
@@ -819,6 +949,33 @@ impl Database {
         parent_code: &str,
         is_postable: bool,
     ) -> Result<Account, String> {
+        self.create_account_active(
+            code,
+            name,
+            level,
+            group_code,
+            nature,
+            parent_code,
+            is_postable,
+            true,
+        )
+    }
+
+    /// Creates one account and lets the caller choose its active flag.
+    /// The seven-argument `create_account` above remains the default entry
+    /// point used by older callers and tests.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_account_active(
+        &self,
+        code: &str,
+        name: &str,
+        level: i64,
+        group_code: &str,
+        nature: &str,
+        parent_code: &str,
+        is_postable: bool,
+        is_active: bool,
+    ) -> Result<Account, String> {
         let mut created = self.create_accounts_atomic(vec![NewAccount::new(
             code,
             name,
@@ -827,7 +984,8 @@ impl Database {
             nature,
             parent_code,
             is_postable,
-        )])?;
+        )
+        .with_active(is_active)])?;
         created
             .pop()
             .ok_or_else(|| "ساخت حساب انجام نشد.".to_string())
@@ -850,6 +1008,7 @@ impl Database {
                 nature: validate_nature(&account.nature)?,
                 parent_code: normalize_code(&account.parent_code),
                 is_postable: account.is_postable,
+                is_active: account.is_active,
             });
         }
 
@@ -937,8 +1096,17 @@ impl Database {
                 );
             }
 
-            let (parent_code, parent_name) =
-                resolve_parent(&tx, &code, level, &parent_code, &group_code)?;
+            // Keeping an existing parent is allowed even when it has been
+            // deactivated, so historical accounts stay editable. Choosing a
+            // different inactive parent is rejected, matching the WebApp.
+            let (parent_code, parent_name) = resolve_parent(
+                &tx,
+                &code,
+                level,
+                &parent_code,
+                &group_code,
+                old_parent_code == parent_code,
+            )?;
             let new_parent_code = parent_code.as_deref().unwrap_or("");
             if old_parent_code != new_parent_code
                 && !new_parent_code.is_empty()
@@ -1031,6 +1199,28 @@ impl Database {
         })
     }
 
+    /// Toggles whether a definition may be chosen for new voucher lines.
+    /// Historical vouchers keep their lines and stay editable.
+    pub fn set_account_active(&self, id: i64, is_active: bool) -> Result<Account, String> {
+        if id <= 0 {
+            return Err("شناسه حساب نامعتبر است.".to_string());
+        }
+        self.with_conn(|conn| {
+            let updated = conn
+                .execute(
+                    "UPDATE accounts
+                        SET is_active = ?1, updated_at = datetime('now', 'localtime')
+                      WHERE id = ?2",
+                    params![i64::from(is_active), id],
+                )
+                .map_err(db_error)?;
+            if updated == 0 {
+                return Err("حساب یافت نشد.".to_string());
+            }
+            fetch_account(conn, id)
+        })
+    }
+
     pub fn delete_account(&self, id: i64) -> Result<(), String> {
         if id <= 0 {
             return Err("شناسه حساب نامعتبر است.".to_string());
@@ -1038,57 +1228,51 @@ impl Database {
 
         self.with_conn(|conn| {
             let tx = conn.transaction().map_err(db_error)?;
-            let (code, parent_code) = tx
-                .query_row(
-                    "SELECT code, COALESCE(parent_code, '') FROM accounts WHERE id = ?1",
-                    params![id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()
-                .map_err(db_error)?
-                .ok_or_else(|| "حساب با این شناسه یافت نشد.".to_string())?;
-
-            let children: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
-                    params![code],
-                    |row| row.get(0),
-                )
-                .map_err(db_error)?;
-            if children > 0 {
-                return Err("این حساب دارای زیرحساب است؛ ابتدا زیرحساب‌ها را حذف کنید.".to_string());
-            }
-
-            if account_has_lines(&tx, &code)? {
-                return Err("این حساب در اسناد حسابداری استفاده شده و قابل حذف نیست.".to_string());
-            }
-
-            tx.execute("DELETE FROM accounts WHERE id = ?1", params![id])
-                .map_err(db_error)?;
-
-            if !parent_code.is_empty() {
-                let remaining_children: i64 = tx
-                    .query_row(
-                        "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
-                        params![parent_code],
-                        |row| row.get(0),
-                    )
-                    .map_err(db_error)?;
-                if remaining_children == 0 {
-                    tx.execute(
-                        "UPDATE accounts
-                            SET is_postable = COALESCE(postable_before_children, is_postable),
-                                postable_before_children = NULL,
-                                updated_at = datetime('now', 'localtime')
-                          WHERE code = ?1",
-                        params![parent_code],
-                    )
-                    .map_err(db_error)?;
-                }
-            }
-
+            delete_account_tx(&tx, id)?;
             tx.commit().map_err(db_error)?;
             Ok(())
+        })
+    }
+
+    /// Deletes many accounts in one transaction. Accounts that have children
+    /// or voucher lines are reported instead of aborting the whole operation,
+    /// while an unexpected database error rolls everything back.
+    pub fn delete_accounts_bulk(&self, ids: Vec<i64>) -> Result<BulkAccountDeleteResult, String> {
+        if ids.is_empty() {
+            return Err("حسابی برای حذف انتخاب نشده است.".to_string());
+        }
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(db_error)?;
+            let mut deleted_count = 0;
+            let mut blocked = Vec::new();
+            for id in ids {
+                let label = tx
+                    .query_row(
+                        "SELECT code, name FROM accounts WHERE id = ?1",
+                        params![id],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )
+                    .optional()
+                    .map_err(db_error)?;
+                match delete_account_tx(&tx, id) {
+                    Ok(()) => deleted_count += 1,
+                    Err(error) => {
+                        let (code, name) = label.unwrap_or_else(|| {
+                            ("—".to_string(), format!("شناسه {}", to_fa_digits(id)))
+                        });
+                        blocked.push(BulkAccountDeleteFailure {
+                            code,
+                            name,
+                            error,
+                        });
+                    }
+                }
+            }
+            tx.commit().map_err(db_error)?;
+            Ok(BulkAccountDeleteResult {
+                deleted_count,
+                blocked,
+            })
         })
     }
 
@@ -1096,14 +1280,15 @@ impl Database {
 
     pub fn get_settings(&self) -> Result<Settings, String> {
         self.with_conn(|conn| {
-            let company_name =
-                get_setting(conn, "company_name")?.unwrap_or_else(|| "شرکت نمونه".to_string());
-            let fiscal_year =
-                get_setting(conn, "fiscal_year")?.unwrap_or_else(|| "۱۴۰۵".to_string());
+            let company_name = get_setting(conn, "company_name")?
+                .unwrap_or_else(|| DEFAULT_SETTINGS[0].1.to_string());
+            let fiscal_year = get_setting(conn, "fiscal_year")?
+                .unwrap_or_else(|| DEFAULT_SETTINGS[1].1.to_string());
             Ok(Settings {
                 company_name,
                 fiscal_year,
                 today: today_jalali(),
+                limits: Limits::current(),
             })
         })
     }
@@ -1113,6 +1298,16 @@ impl Database {
         let fiscal_year = fiscal_year.trim();
         if fiscal_year.chars().count() > 40 {
             return Err("عنوان سال مالی نمی‌تواند بیشتر از ۴۰ کاراکتر باشد.".to_string());
+        }
+        if !fiscal_year.is_empty()
+            && (!fiscal_year.chars().any(char::is_numeric)
+                || !fiscal_year
+                    .chars()
+                    .all(|ch| ch.is_numeric() || matches!(ch, '/' | '-' | ' ' | '\u{200c}')))
+        {
+            return Err(
+                "عنوان سال مالی باید فقط شامل رقم و جداکننده‌های / یا - باشد.".to_string(),
+            );
         }
 
         self.with_conn(|conn| {
@@ -1124,6 +1319,7 @@ impl Database {
                 company_name,
                 fiscal_year: fiscal_year.to_string(),
                 today: today_jalali(),
+                limits: Limits::current(),
             })
         })
     }
@@ -1144,7 +1340,7 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
     // chart of accounts does not disappear after the rename.
     migrate_legacy_database(&data_dir, &path)?;
 
-    let connection =
+    let mut connection =
         Connection::open(&path).map_err(|e| format!("باز کردن پایگاه داده ناموفق بود: {e}"))?;
 
     connection
@@ -1154,10 +1350,10 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
              PRAGMA busy_timeout = 5000;",
         )
         .map_err(db_error)?;
-    connection.execute_batch(SCHEMA).map_err(db_error)?;
-    apply_schema_migrations(&connection)?;
-    seed_default_groups(&connection).map_err(db_error)?;
-    seed_default_accounts(&connection).map_err(db_error)?;
+    apply_base_schema(&connection)?;
+    apply_schema_migrations(&mut connection)?;
+    seed_default_groups(&mut connection).map_err(db_error)?;
+    seed_default_accounts(&mut connection).map_err(db_error)?;
     seed_default_settings(&connection).map_err(db_error)?;
 
     Ok((connection, path))
@@ -1218,9 +1414,33 @@ fn migrate_legacy_database(data_dir: &Path, destination: &Path) -> Result<(), St
     ))
 }
 
+fn table_exists(conn: &Connection, table: &str) -> Result<bool, String> {
+    let found: i64 = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            params![table],
+            |row| row.get(0),
+        )
+        .map_err(db_error)?;
+    Ok(found != 0)
+}
+
+/// Collects the column names of a table so migrations can be idempotent.
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare(&format!("PRAGMA table_info(\"{table}\")"))
+        .map_err(db_error)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(db_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db_error)?;
+    Ok(columns)
+}
+
 /// Applies additive, versioned schema changes. Migration 3 remembers whether
 /// a parent account was manually postable before its first child was added.
-fn apply_schema_migrations(conn: &Connection) -> Result<(), String> {
+fn apply_schema_migrations(conn: &mut Connection) -> Result<(), String> {
     let version_text: String = conn
         .query_row(
             "SELECT value FROM app_meta WHERE key = 'schema_version'",
@@ -1240,27 +1460,39 @@ fn apply_schema_migrations(conn: &Connection) -> Result<(), String> {
 
     // DDL and the version marker must move together. If any step fails, the
     // transaction is rolled back instead of leaving a half-applied migration.
-    let tx = conn.unchecked_transaction().map_err(db_error)?;
-    let columns = {
-        let mut statement = tx
-            .prepare("PRAGMA table_info(accounts)")
+    let tx = conn.transaction().map_err(db_error)?;
+    if table_exists(&tx, "accounts")? {
+        let account_columns = table_columns(&tx, "accounts")?;
+        if !account_columns
+            .iter()
+            .any(|column| column == "postable_before_children")
+        {
+            tx.execute(
+                "ALTER TABLE accounts ADD COLUMN postable_before_children INTEGER CHECK(postable_before_children IN (0, 1))",
+                [],
+            )
             .map_err(db_error)?;
-        let columns = statement
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(db_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
+        }
+        if !account_columns.iter().any(|column| column == "is_active") {
+            tx.execute(
+                "ALTER TABLE accounts ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1))",
+                [],
+            )
             .map_err(db_error)?;
-        columns
-    };
-    if !columns
-        .iter()
-        .any(|column| column == "postable_before_children")
-    {
-        tx.execute(
-            "ALTER TABLE accounts ADD COLUMN postable_before_children INTEGER CHECK(postable_before_children IN (0, 1))",
-            [],
-        )
-        .map_err(db_error)?;
+        }
+    }
+    if table_exists(&tx, "account_groups")? {
+        let group_columns = table_columns(&tx, "account_groups")?;
+        if !group_columns
+            .iter()
+            .any(|column| column == "default_section")
+        {
+            tx.execute(
+                "ALTER TABLE account_groups ADD COLUMN default_section TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(db_error)?;
+        }
     }
     if version < CURRENT_SCHEMA_VERSION {
         tx.execute(
@@ -1299,7 +1531,7 @@ fn reset_schema_triggers(conn: &Connection) -> Result<(), String> {
         conn.execute(&format!("DROP TRIGGER IF EXISTS \"{trigger}\""), [])
             .map_err(db_error)?;
     }
-    conn.execute_batch(SCHEMA).map_err(db_error)
+    apply_base_schema(conn)
 }
 
 fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
@@ -1452,6 +1684,16 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
             "نوع گروه «{code}» در فایل پشتیبان معتبر نیست."
         ));
     }
+    if let Some(name) = backup_first_text(
+        conn,
+        "SELECT name FROM account_groups
+          WHERE trim(name) = '' OR length(name) > 255
+          LIMIT 1",
+    )? {
+        return Err(format!(
+            "نام گروه «{name}» در فایل پشتیبان خالی یا بیش از حد بلند است."
+        ));
+    }
 
     if let Some(code) = backup_first_text(
         conn,
@@ -1460,6 +1702,16 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
           LIMIT 1",
     )? {
         return Err(format!("کد حساب «{code}» در فایل پشتیبان معتبر نیست."));
+    }
+    if let Some(name) = backup_first_text(
+        conn,
+        "SELECT name FROM accounts
+          WHERE trim(name) = '' OR length(name) > 255
+          LIMIT 1",
+    )? {
+        return Err(format!(
+            "نام حساب «{name}» در فایل پشتیبان خالی یا بیش از حد بلند است."
+        ));
     }
     if let Some(code) = backup_first_text(
         conn,
@@ -1677,8 +1929,8 @@ fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn seed_default_groups(conn: &Connection) -> rusqlite::Result<()> {
-    let tx = conn.unchecked_transaction()?;
+fn seed_default_groups(conn: &mut Connection) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
     let count: i64 = tx.query_row("SELECT COUNT(*) FROM account_groups", [], |row| row.get(0))?;
     if count > 0 {
         return Ok(());
@@ -1694,8 +1946,8 @@ fn seed_default_groups(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn seed_default_accounts(conn: &Connection) -> rusqlite::Result<()> {
-    let tx = conn.unchecked_transaction()?;
+fn seed_default_accounts(conn: &mut Connection) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
     let count: i64 = tx.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
     if count > 0 {
         return Ok(());
@@ -1766,7 +2018,7 @@ fn seed_default_settings(conn: &Connection) -> rusqlite::Result<()> {
 fn list_groups(conn: &Connection) -> Result<Vec<AccountGroup>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT g.id, g.code, g.name, g.type, g.created_at, g.updated_at,
+            "SELECT g.id, g.code, g.name, g.type, g.default_section, g.created_at, g.updated_at,
                     (SELECT COUNT(*) FROM accounts a WHERE a.group_code = g.code)
                FROM account_groups g
               ORDER BY CAST(g.code AS INTEGER), g.code",
@@ -1781,10 +2033,22 @@ fn list_accounts(conn: &mut Connection) -> Result<Vec<Account>, String> {
         .prepare(
             "SELECT a.id, a.code, a.name, a.level, a.group_code, g.name, g.type,
                     a.nature, COALESCE(a.parent_code, ''), COALESCE(p.name, ''),
-                    CASE WHEN EXISTS(
-                        SELECT 1 FROM accounts child WHERE child.parent_code = a.code
-                    ) THEN 0 ELSE a.is_postable END,
-                    a.created_at, a.updated_at
+                    CASE
+                        WHEN a.level > 3 THEN 0
+                        WHEN EXISTS(
+                            SELECT 1 FROM accounts child
+                             WHERE child.parent_code = a.code AND child.level <= 3
+                        ) THEN 0
+                        WHEN a.level = 3 AND EXISTS(
+                            SELECT 1 FROM accounts child
+                             WHERE child.parent_code = a.code AND child.level > 3
+                        ) THEN COALESCE(a.postable_before_children, 1)
+                        WHEN EXISTS(
+                            SELECT 1 FROM accounts child WHERE child.parent_code = a.code
+                        ) THEN 0
+                        ELSE a.is_postable
+                    END,
+                    a.is_active, a.created_at, a.updated_at
                FROM accounts a
                JOIN account_groups g ON g.code = a.group_code
                LEFT JOIN accounts p ON p.code = a.parent_code
@@ -1797,7 +2061,7 @@ fn list_accounts(conn: &mut Connection) -> Result<Vec<Account>, String> {
 
 fn fetch_group(conn: &Connection, id: i64) -> Result<AccountGroup, String> {
     conn.query_row(
-        "SELECT g.id, g.code, g.name, g.type, g.created_at, g.updated_at,
+        "SELECT g.id, g.code, g.name, g.type, g.default_section, g.created_at, g.updated_at,
                 (SELECT COUNT(*) FROM accounts a WHERE a.group_code = g.code)
            FROM account_groups g
           WHERE g.id = ?1",
@@ -1813,10 +2077,22 @@ fn fetch_account(conn: &Connection, id: i64) -> Result<Account, String> {
     conn.query_row(
         "SELECT a.id, a.code, a.name, a.level, a.group_code, g.name, g.type,
                 a.nature, COALESCE(a.parent_code, ''), COALESCE(p.name, ''),
-                CASE WHEN EXISTS(
-                    SELECT 1 FROM accounts child WHERE child.parent_code = a.code
-                ) THEN 0 ELSE a.is_postable END,
-                a.created_at, a.updated_at
+                CASE
+                    WHEN a.level > 3 THEN 0
+                    WHEN EXISTS(
+                        SELECT 1 FROM accounts child
+                         WHERE child.parent_code = a.code AND child.level <= 3
+                    ) THEN 0
+                    WHEN a.level = 3 AND EXISTS(
+                        SELECT 1 FROM accounts child
+                         WHERE child.parent_code = a.code AND child.level > 3
+                    ) THEN COALESCE(a.postable_before_children, 1)
+                    WHEN EXISTS(
+                        SELECT 1 FROM accounts child WHERE child.parent_code = a.code
+                    ) THEN 0
+                    ELSE a.is_postable
+                END,
+                a.is_active, a.created_at, a.updated_at
            FROM accounts a
            JOIN account_groups g ON g.code = a.group_code
            LEFT JOIN accounts p ON p.code = a.parent_code
@@ -1835,14 +2111,16 @@ fn row_to_group(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountGroup> {
         code: row.get(1)?,
         name: row.get(2)?,
         group_type: row.get(3)?,
-        created_at: row.get(4)?,
-        updated_at: row.get(5)?,
-        account_count: row.get(6)?,
+        default_section: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        account_count: row.get(7)?,
     })
 }
 
 fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     let postable: i64 = row.get(10)?;
+    let active: i64 = row.get(11)?;
     Ok(Account {
         id: row.get(0)?,
         code: row.get(1)?,
@@ -1855,8 +2133,9 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         parent_code: row.get(8)?,
         parent_name: row.get(9)?,
         is_postable: postable != 0,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
+        is_active: active != 0,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
     })
 }
 
@@ -1867,6 +2146,63 @@ fn account_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
         |row| row.get(0),
     )
     .map_err(db_error)
+}
+
+/// Deletes one account inside an existing transaction and restores its
+/// parent's postable flag when the last child disappears.
+fn delete_account_tx(conn: &Connection, id: i64) -> Result<(), String> {
+    if id <= 0 {
+        return Err("شناسه حساب نامعتبر است.".to_string());
+    }
+    let (code, parent_code) = conn
+        .query_row(
+            "SELECT code, COALESCE(parent_code, '') FROM accounts WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(db_error)?
+        .ok_or_else(|| "حساب با این شناسه یافت نشد.".to_string())?;
+
+    let children: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
+            params![code],
+            |row| row.get(0),
+        )
+        .map_err(db_error)?;
+    if children > 0 {
+        return Err("این حساب دارای زیرحساب است؛ ابتدا زیرحساب‌ها را حذف کنید.".to_string());
+    }
+
+    if account_has_lines(conn, &code)? {
+        return Err("این حساب در اسناد حسابداری استفاده شده و قابل حذف نیست.".to_string());
+    }
+
+    conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])
+        .map_err(db_error)?;
+
+    if !parent_code.is_empty() {
+        let remaining_children: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
+                params![parent_code],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if remaining_children == 0 {
+            conn.execute(
+                "UPDATE accounts
+                    SET is_postable = COALESCE(postable_before_children, is_postable),
+                        postable_before_children = NULL,
+                        updated_at = datetime('now', 'localtime')
+                  WHERE code = ?1",
+                params![parent_code],
+            )
+            .map_err(db_error)?;
+        }
+    }
+    Ok(())
 }
 
 fn account_subtree_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
@@ -1893,6 +2229,7 @@ fn resolve_parent(
     level: i64,
     parent_code: &str,
     group_code: &str,
+    allow_inactive_parent: bool,
 ) -> Result<(Option<String>, String), String> {
     if level == 1 {
         return Ok((None, String::new()));
@@ -1903,13 +2240,14 @@ fn resolve_parent(
 
     let parent = conn
         .query_row(
-            "SELECT name, level, group_code FROM accounts WHERE code = ?1",
+            "SELECT name, level, group_code, is_active FROM accounts WHERE code = ?1",
             params![parent_code],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
                 ))
             },
         )
@@ -1922,6 +2260,9 @@ fn resolve_parent(
     }
     if parent.2 != group_code {
         return Err("حساب بالاتر باید به همان گروه حساب تعلق داشته باشد.".to_string());
+    }
+    if parent.3 == 0 && !allow_inactive_parent {
+        return Err("حساب بالاتر غیرفعال است؛ ابتدا آن را فعال کنید.".to_string());
     }
     if !code.starts_with(parent_code) || code.len() <= parent_code.len() {
         return Err("کد حساب باید با کد حساب بالاتر آغاز شود.".to_string());
@@ -2018,7 +2359,7 @@ fn validate_name(input: &str, label: &str) -> Result<String, String> {
 }
 
 fn validate_level(input: i64) -> Result<i64, String> {
-    if (1..=3).contains(&input) {
+    if (1..=MAX_ACCOUNT_LEVEL).contains(&input) {
         Ok(input)
     } else {
         Err("سطح حساب جدید باید یکی از سطوح کل، معین یا تفصیلی ۱ باشد.".to_string())
@@ -2043,6 +2384,15 @@ fn validate_type(input: &str) -> Result<String, String> {
     }
 }
 
+fn validate_section(input: &str) -> Result<String, String> {
+    let value = input.trim();
+    if value.is_empty() || ACCOUNT_GROUP_SECTIONS.contains(&value) {
+        Ok(value.to_string())
+    } else {
+        Err("بخش پیش‌فرض صورت مالی انتخاب‌شده معتبر نیست.".to_string())
+    }
+}
+
 pub(crate) fn to_fa_digits(value: impl ToString) -> String {
     value
         .to_string()
@@ -2056,11 +2406,11 @@ pub(crate) fn to_fa_digits(value: impl ToString) -> String {
 
 #[cfg(test)]
 pub(crate) fn memory_database() -> Database {
-    let conn = Connection::open_in_memory().unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-    conn.execute_batch(SCHEMA).unwrap();
-    seed_default_groups(&conn).unwrap();
-    seed_default_accounts(&conn).unwrap();
+    apply_base_schema(&conn).unwrap();
+    seed_default_groups(&mut conn).unwrap();
+    seed_default_accounts(&mut conn).unwrap();
     seed_default_settings(&conn).unwrap();
     let db = Database::default();
     db.attach(conn, PathBuf::from(":memory:"));
@@ -2076,12 +2426,12 @@ mod tests {
     }
 
     fn file_database(path: &Path) -> Database {
-        let conn = Connection::open(path).unwrap();
+        let mut conn = Connection::open(path).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        apply_schema_migrations(&conn).unwrap();
-        seed_default_groups(&conn).unwrap();
-        seed_default_accounts(&conn).unwrap();
+        apply_base_schema(&conn).unwrap();
+        apply_schema_migrations(&mut conn).unwrap();
+        seed_default_groups(&mut conn).unwrap();
+        seed_default_accounts(&mut conn).unwrap();
         seed_default_settings(&conn).unwrap();
         let db = Database::default();
         db.attach(conn, path.to_path_buf());
@@ -2253,7 +2603,7 @@ mod tests {
         let backup_path = dir.join("backup.sqlite3");
         let db = file_database(&active_path);
         let group = db
-            .create_account_group("90", "گروه پشتیبان", "دارایی")
+            .create_account_group("90", "گروه پشتیبان", "دارایی", "")
             .unwrap();
 
         db.backup_to(&backup_path).unwrap();
@@ -2281,7 +2631,7 @@ mod tests {
         assert!(db.restore_from(&invalid_path).is_err());
         let old_schema_path = dir.join("old-schema.sqlite3");
         let old_schema = Connection::open(&old_schema_path).unwrap();
-        old_schema.execute_batch(SCHEMA).unwrap();
+        apply_base_schema(&old_schema).unwrap();
         old_schema
             .execute(
                 "UPDATE app_meta SET value = '2' WHERE key = 'schema_version'",
@@ -2305,12 +2655,12 @@ mod tests {
 
     #[test]
     fn backup_validation_rejects_inconsistent_rows() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        apply_schema_migrations(&conn).unwrap();
-        seed_default_groups(&conn).unwrap();
-        seed_default_accounts(&conn).unwrap();
+        apply_base_schema(&conn).unwrap();
+        apply_schema_migrations(&mut conn).unwrap();
+        seed_default_groups(&mut conn).unwrap();
+        seed_default_accounts(&mut conn).unwrap();
         seed_default_settings(&conn).unwrap();
         validate_backup_connection(&conn).unwrap();
 
@@ -2356,12 +2706,12 @@ mod tests {
 
     #[test]
     fn backup_validation_rejects_unexpected_triggers() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
-        conn.execute_batch(SCHEMA).unwrap();
-        apply_schema_migrations(&conn).unwrap();
-        seed_default_groups(&conn).unwrap();
-        seed_default_accounts(&conn).unwrap();
+        apply_base_schema(&conn).unwrap();
+        apply_schema_migrations(&mut conn).unwrap();
+        seed_default_groups(&mut conn).unwrap();
+        seed_default_accounts(&mut conn).unwrap();
         seed_default_settings(&conn).unwrap();
         conn.execute_batch(
             "CREATE TRIGGER unexpected_voucher_trigger AFTER INSERT ON vouchers
@@ -2413,13 +2763,14 @@ mod tests {
     fn creates_updates_and_deletes_group() {
         let db = test_database();
         let created = db
-            .create_account_group("۱۲", "  گروه   آزمایشی ", "دارایی")
+            .create_account_group("۱۲", "  گروه   آزمایشی ", "دارایی", "current_asset")
             .unwrap();
         assert_eq!(created.code, "12");
         assert_eq!(created.name, "گروه آزمایشی");
+        assert_eq!(created.default_section, "current_asset");
 
         let updated = db
-            .update_account_group(created.id, "12", "گروه اصلاح‌شده", "هزینه")
+            .update_account_group(created.id, "12", "گروه اصلاح‌شده", "هزینه", "")
             .unwrap();
         assert_eq!(updated.name, "گروه اصلاح‌شده");
         assert_eq!(updated.group_type, "هزینه");
@@ -2445,12 +2796,27 @@ mod tests {
         assert_eq!(created.group_name, "دارایی‌های جاری");
         assert_eq!(created.parent_name, "صندوق مرکزی");
         assert!(created.is_postable);
+        assert!(created.is_active);
+
+        // A definition can be paused without touching its vouchers, and the
+        // list reports the new state.
+        assert!(!db.set_account_active(created.id, false).unwrap().is_active);
+        let paused = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.id == created.id)
+            .unwrap();
+        assert!(!paused.is_active);
+        assert!(db.set_account_active(created.id, true).unwrap().is_active);
 
         let updated = db
             .update_account(created.id, "حساب آزمایشی ۲", "1", "debtor", "110101", false)
             .unwrap();
         assert_eq!(updated.name, "حساب آزمایشی ۲");
         assert!(!updated.is_postable);
+        assert!(updated.is_active);
 
         db.delete_account(created.id).unwrap();
         let restored_parent = db
@@ -2462,6 +2828,53 @@ mod tests {
             .unwrap();
         assert!(restored_parent.is_postable);
         assert_eq!(db.list_accounts().unwrap().accounts.len(), 34);
+    }
+
+    #[test]
+    fn rejects_inactive_parent_for_new_accounts_but_keeps_existing_ones_editable() {
+        let db = test_database();
+        let parent = db
+            .create_account("995", "کل موقت", 1, "1", "debtor", "", false)
+            .unwrap();
+        let child = db
+            .create_account("99501", "معین موقت", 2, "1", "debtor", "995", true)
+            .unwrap();
+
+        db.set_account_active(parent.id, false).unwrap();
+
+        let error = db
+            .create_account("99502", "معین دوم", 2, "1", "debtor", "995", true)
+            .unwrap_err();
+        assert!(error.contains("غیرفعال"));
+
+        // Editing an account that keeps its (now inactive) parent is allowed.
+        let updated = db
+            .update_account(child.id, "معین اصلاح‌شده", "1", "debtor", "995", true)
+            .unwrap();
+        assert_eq!(updated.name, "معین اصلاح‌شده");
+    }
+
+    #[test]
+    fn bulk_delete_keeps_successful_deletions_and_reports_blocked_accounts() {
+        let db = test_database();
+        let parent = db
+            .create_account("993", "کل آزمایشی", 1, "1", "debtor", "", false)
+            .unwrap();
+        let child = db
+            .create_account("99301", "معین آزمایشی", 2, "1", "debtor", "993", true)
+            .unwrap();
+
+        let result = db
+            .delete_accounts_bulk(vec![parent.id, child.id])
+            .unwrap();
+        assert_eq!(result.deleted_count, 1);
+        assert_eq!(result.blocked.len(), 1);
+        assert_eq!(result.blocked[0].code, "993");
+        assert!(result.blocked[0].error.contains("زیرحساب"));
+
+        let accounts = db.list_accounts().unwrap().accounts;
+        assert!(accounts.iter().any(|account| account.code == "993"));
+        assert!(!accounts.iter().any(|account| account.code == "99301"));
     }
 
     #[test]
@@ -2594,7 +3007,7 @@ mod tests {
 
     #[test]
     fn migrates_schema_v2_to_v3_without_losing_account_rows() {
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE accounts (id INTEGER PRIMARY KEY, code TEXT NOT NULL);
@@ -2603,7 +3016,7 @@ mod tests {
         )
         .unwrap();
 
-        apply_schema_migrations(&conn).unwrap();
+        apply_schema_migrations(&mut conn).unwrap();
         let version: String = conn
             .query_row(
                 "SELECT value FROM app_meta WHERE key = 'schema_version'",
@@ -2623,7 +3036,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, "3");
+        assert_eq!(version, "4");
         assert_eq!(column_count, 1);
         assert_eq!(account_code, "110101");
     }
@@ -2663,7 +3076,7 @@ mod tests {
         .unwrap();
 
         assert!(db
-            .update_account_group(group.id, &group.code, &group.name, "بدهی")
+            .update_account_group(group.id, &group.code, &group.name, "بدهی", "")
             .is_err());
         assert!(db
             .update_account(
@@ -2836,5 +3249,23 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("اسناد ثبت‌شده"));
+    }
+
+    #[test]
+    fn settings_expose_the_same_limits_as_voucher_validation() {
+        let db = test_database();
+        let settings = db.get_settings().unwrap();
+        assert_eq!(settings.limits.max_voucher_lines, MAX_LINES);
+        assert_eq!(settings.limits.max_amount, MAX_AMOUNT);
+        assert_eq!(settings.limits.max_voucher_number, MAX_VOUCHER_NUMBER);
+        assert_eq!(settings.limits.max_description, MAX_DESCRIPTION);
+        assert_eq!(settings.limits.max_line_description, MAX_LINE_DESCRIPTION);
+        assert_eq!(settings.limits.voucher_page_size, DEFAULT_VOUCHER_PAGE_SIZE);
+        assert_eq!(settings.limits.journal_page_size, DEFAULT_JOURNAL_PAGE_SIZE);
+        assert_eq!(settings.limits.max_page_size, MAX_PAGE_SIZE);
+
+        let saved = db.save_settings("شرکت آزمایشی", "۱۴۰۵").unwrap();
+        assert_eq!(saved.limits.max_voucher_lines, MAX_LINES);
+        assert_eq!(saved.limits.max_amount, MAX_AMOUNT);
     }
 }

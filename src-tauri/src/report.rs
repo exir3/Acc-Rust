@@ -31,6 +31,9 @@ pub struct ReportMeta {
     pub company: String,
     pub fiscal_year: String,
     pub today: String,
+    /// Set by the trial-balance print command when the user unchecks
+    /// "نمایش ساعت و تاریخ چاپ".
+    pub show_print_date_time: bool,
 }
 
 impl ReportMeta {
@@ -170,6 +173,14 @@ fn page(title: &str, body: &str, meta: &ReportMeta, landscape: bool, file_name: 
             "@page { size: A4 portrait; margin: 14mm 12mm; }",
         )
     };
+    let today = if meta.show_print_date_time {
+        format!(
+            "<span>تاریخ تهیه: {today}</span>",
+            today = date(&meta.today)
+        )
+    } else {
+        String::new()
+    };
     let html_doc = format!(
         r#"<!DOCTYPE html>
 <html dir="rtl" lang="fa">
@@ -183,14 +194,14 @@ fn page(title: &str, body: &str, meta: &ReportMeta, landscape: bool, file_name: 
 <body>
 <div class="report-doc">
 {body}
-<div class="rpt-foot"><span>نرم‌افزار حسابداری</span><span>تاریخ تهیه: {today}</span></div>
+<div class="rpt-foot"><span>نرم‌افزار حسابداری</span>{today}</div>
 </div>
 </body>
 </html>"#,
         title = html(title),
         company = meta.company(),
         body = body,
-        today = date(&meta.today),
+        today = today,
         page_css = page_css,
     );
 
@@ -226,6 +237,14 @@ fn head(title: &str, meta: &ReportMeta, period_text: &str) -> String {
     } else {
         format!("<span>دوره: <b>{period_text}</b></span>")
     };
+    let today_cell = if meta.show_print_date_time {
+        format!(
+            "<span>تاریخ تهیه: <b>{today}</b></span>",
+            today = date(&meta.today)
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<div class="rpt-head">
   <div class="rpt-company">{company}</div>
@@ -233,14 +252,14 @@ fn head(title: &str, meta: &ReportMeta, period_text: &str) -> String {
   <div class="rpt-meta">
     {period}
     <span>سال مالی: <b>{year}</b></span>
-    <span>تاریخ تهیه: <b>{today}</b></span>
+    {today_cell}
   </div>
 </div>"#,
         company = meta.company(),
         title = html(title),
         period = period_cell,
         year = meta.year(),
-        today = date(&meta.today),
+        today_cell = today_cell,
     )
 }
 
@@ -249,6 +268,7 @@ fn head(title: &str, meta: &ReportMeta, period_text: &str) -> String {
 pub fn journal_print_doc(report: &JournalReport, meta: &ReportMeta) -> PrintDoc {
     let mut rows = String::new();
     for row in &report.rows {
+        let account = format!("{} — {}", code(&row.account_code), html(&row.account_name));
         rows.push_str(&format!(
             r#"<tr>
 <td class="code">{date}</td>
@@ -260,11 +280,7 @@ pub fn journal_print_doc(report: &JournalReport, meta: &ReportMeta) -> PrintDoc 
 </tr>"#,
             date = date(&row.date),
             number = to_fa_digits(row.number),
-            account = format!(
-                "{} — {}",
-                code(&row.account_code),
-                html(&row.account_name)
-            ),
+            account = account,
             description = html(if row.line_description.trim().is_empty() {
                 &row.voucher_description
             } else {
@@ -416,63 +432,248 @@ pub fn ledger_print_doc(report: &LedgerReport, meta: &ReportMeta) -> PrintDoc {
 
 /* ── Trial balance ──────────────────────────────────────────── */
 
-pub fn trial_balance_print_doc(report: &TrialBalanceReport, meta: &ReportMeta) -> PrintDoc {
+pub fn trial_balance_print_doc(
+    report: &TrialBalanceReport,
+    meta: &ReportMeta,
+    balance_type: &str,
+    multi_level: bool,
+    show_account_code: bool,
+    show_account_name: bool,
+) -> PrintDoc {
+    let is_four_column = balance_type == "چهار ستونی";
+    let show_opening = balance_type == "شش ستونی" || balance_type == "هشت ستونی";
+    let show_accumulated = balance_type == "هشت ستونی";
+    let amount_columns = if show_accumulated {
+        8
+    } else if show_opening {
+        6
+    } else {
+        4
+    };
+    let identity_columns = 1 + usize::from(show_account_code) + usize::from(show_account_name);
+
+    let code_head = if show_account_code {
+        r#"<th rowspan="2" style="width:78px">کد حساب</th>"#
+    } else {
+        ""
+    };
+    let name_head = if show_account_name {
+        r#"<th rowspan="2">عنوان حساب</th>"#
+    } else {
+        ""
+    };
+
+    let turnover_debit_title = if is_four_column {
+        "جمع بدهکار"
+    } else {
+        "گردش بدهکار"
+    };
+    let turnover_credit_title = if is_four_column {
+        "جمع بستانکار"
+    } else {
+        "گردش بستانکار"
+    };
+
+    let opening_header = if show_opening {
+        r#"<th colspan="2">مانده افتتاحیه</th>"#
+    } else {
+        ""
+    };
+    let accumulated_header = if show_accumulated {
+        r#"<th colspan="2">جمع دوره</th>"#
+    } else {
+        ""
+    };
+    let opening_cells = if show_opening {
+        r#"<th style="width:84px">بدهکار</th><th style="width:84px">بستانکار</th>"#
+    } else {
+        ""
+    };
+    let accumulated_cells = if show_accumulated {
+        r#"<th style="width:84px">بدهکار</th><th style="width:84px">بستانکار</th>"#
+    } else {
+        ""
+    };
+
     let mut rows = String::new();
     for row in &report.rows {
+        let indent = if multi_level {
+            ((row.level - 1).max(0) as usize) * 16
+        } else {
+            0
+        };
+        // Four-column mode folds the opening balance into the turnover
+        // columns, exactly like the WebApp report.
+        let (turnover_debit, turnover_credit) = if is_four_column {
+            (
+                row.opening_debit
+                    .checked_add(row.period_debit)
+                    .unwrap_or(i64::MAX),
+                row.opening_credit
+                    .checked_add(row.period_credit)
+                    .unwrap_or(i64::MAX),
+            )
+        } else {
+            (row.period_debit, row.period_credit)
+        };
+        let opening = if show_opening {
+            format!(
+                r#"<td class="num">{}</td><td class="num">{}</td>"#,
+                money(row.opening_debit),
+                money(row.opening_credit)
+            )
+        } else {
+            String::new()
+        };
+        let accumulated = if show_accumulated {
+            format!(
+                r#"<td class="num">{}</td><td class="num">{}</td>"#,
+                money(
+                    row.opening_debit
+                        .checked_add(row.period_debit)
+                        .unwrap_or(i64::MAX)
+                ),
+                money(
+                    row.opening_credit
+                        .checked_add(row.period_credit)
+                        .unwrap_or(i64::MAX)
+                )
+            )
+        } else {
+            String::new()
+        };
+        let name_style = if indent > 0 {
+            format!(r#" style="padding-right:{indent}px""#)
+        } else {
+            String::new()
+        };
+        let code_cell = if show_account_code {
+            format!(r#"<td class="code">{}</td>"#, code(&row.account_code))
+        } else {
+            String::new()
+        };
+        let name_cell = if show_account_name {
+            format!(
+                r#"<td class="title"{name_style}>{}</td>"#,
+                html(&row.account_name)
+            )
+        } else {
+            String::new()
+        };
         rows.push_str(&format!(
             r#"<tr>
-<td class="code">{code}</td>
-<td class="title">{name}</td>
-<td class="title">{group}</td>
-<td class="num">{od}</td><td class="num">{oc}</td>
-<td class="num">{pd}</td><td class="num">{pc}</td>
+{code_cell}{name_cell}<td class="title">{group}</td>
+{opening}<td class="num">{pd}</td><td class="num">{pc}</td>{accumulated}
 <td class="num">{cd}</td><td class="num">{cc}</td>
 </tr>"#,
-            code = code(&row.account_code),
-            name = html(&row.account_name),
+            code_cell = code_cell,
+            name_cell = name_cell,
             group = html(&row.group_name),
-            od = money(row.opening_debit),
-            oc = money(row.opening_credit),
-            pd = money(row.period_debit),
-            pc = money(row.period_credit),
+            opening = opening,
+            pd = money(turnover_debit),
+            pc = money(turnover_credit),
+            accumulated = accumulated,
             cd = money(row.closing_debit),
             cc = money(row.closing_credit),
         ));
     }
     if rows.is_empty() {
-        rows.push_str("<tr><td colspan=\"9\" class=\"rpt-empty\">حسابی با گردش یا مانده در این بازه وجود ندارد.</td></tr>");
+        rows.push_str(&format!(
+            "<tr><td colspan=\"{}\" class=\"rpt-empty\">حسابی با گردش یا مانده در این بازه وجود ندارد.</td></tr>",
+            identity_columns + amount_columns
+        ));
     }
+
+    let opening_total = if show_opening {
+        format!(
+            r#"<td class="num">{}</td><td class="num">{}</td>"#,
+            money(report.opening_debit),
+            money(report.opening_credit)
+        )
+    } else {
+        String::new()
+    };
+    let (total_turnover_debit, total_turnover_credit) = if is_four_column {
+        (
+            report
+                .opening_debit
+                .checked_add(report.period_debit)
+                .unwrap_or(i64::MAX),
+            report
+                .opening_credit
+                .checked_add(report.period_credit)
+                .unwrap_or(i64::MAX),
+        )
+    } else {
+        (report.period_debit, report.period_credit)
+    };
+
+    let accumulated_total = if show_accumulated {
+        format!(
+            r#"<td class="num">{}</td><td class="num">{}</td>"#,
+            money(
+                report
+                    .opening_debit
+                    .checked_add(report.period_debit)
+                    .unwrap_or(i64::MAX)
+            ),
+            money(
+                report
+                    .opening_credit
+                    .checked_add(report.period_credit)
+                    .unwrap_or(i64::MAX)
+            )
+        )
+    } else {
+        String::new()
+    };
 
     let body = format!(
         r#"{head}
 <table class="rpt-table">
 <thead>
 <tr>
-<th rowspan="2" style="width:78px">کد حساب</th>
-<th rowspan="2">عنوان حساب</th>
+{code_head}{name_head}
 <th rowspan="2">گروه</th>
-<th colspan="2">مانده افتتاحیه</th>
-<th colspan="2">گردش دوره</th>
+{opening_header}
+<th colspan="2">{turnover_title}</th>
+{accumulated_header}
 <th colspan="2">مانده اختتامیه</th>
 </tr>
-<tr><th style="width:88px">بدهکار</th><th style="width:88px">بستانکار</th>
-<th style="width:88px">بدهکار</th><th style="width:88px">بستانکار</th>
-<th style="width:88px">بدهکار</th><th style="width:88px">بستانکار</th></tr>
+<tr>{opening_cells}
+<th style="width:84px">{turnover_debit_title}</th><th style="width:84px">{turnover_credit_title}</th>
+{accumulated_cells}
+<th style="width:84px">بدهکار</th><th style="width:84px">بستانکار</th></tr>
 </thead>
 <tbody>{rows}</tbody>
 <tfoot><tr>
-<td colspan="3" class="title">جمع کل</td>
-<td class="num">{od}</td><td class="num">{oc}</td>
+<td colspan="{identity_columns}" class="title">جمع کل</td>
+{opening_total}
 <td class="num">{pd}</td><td class="num">{pc}</td>
+{accumulated_total}
 <td class="num">{cd}</td><td class="num">{cc}</td>
 </tr></tfoot>
 </table>"#,
         head = head("تراز آزمایشی", meta, &period(&report.from, &report.to)),
+        code_head = code_head,
+        name_head = name_head,
+        identity_columns = identity_columns,
+        opening_header = opening_header,
+        turnover_title = if is_four_column {
+            "جمع دوره"
+        } else {
+            "گردش دوره"
+        },
+        accumulated_header = accumulated_header,
+        opening_cells = opening_cells,
+        turnover_debit_title = turnover_debit_title,
+        turnover_credit_title = turnover_credit_title,
+        accumulated_cells = accumulated_cells,
         rows = rows,
-        od = money(report.opening_debit),
-        oc = money(report.opening_credit),
-        pd = money(report.period_debit),
-        pc = money(report.period_credit),
+        opening_total = opening_total,
+        pd = money(total_turnover_debit),
+        pc = money(total_turnover_credit),
+        accumulated_total = accumulated_total,
         cd = money(report.closing_debit),
         cc = money(report.closing_credit),
     );
@@ -734,6 +935,7 @@ mod tests {
             company: String::new(),
             fiscal_year: String::new(),
             today: String::new(),
+            show_print_date_time: true,
         };
 
         assert!(balance_sheet_print_doc(&report, &meta)
@@ -766,6 +968,7 @@ mod tests {
             company: "شرکت <script>".to_string(),
             fiscal_year: "1405".to_string(),
             today: "1405/01/01".to_string(),
+            show_print_date_time: true,
         };
 
         let doc = voucher_print_doc(&voucher, &meta);
@@ -774,6 +977,49 @@ mod tests {
         assert!(!doc.html.contains("<img src=x"));
         assert!(doc.html.contains("&lt;script&gt;"));
         assert!(doc.html.contains("۱۴۰۵/۰۱/۰۱&lt;script&gt;"));
+    }
+
+    #[test]
+    fn trial_balance_print_hides_optional_identity_and_date_columns() {
+        let report = TrialBalanceReport {
+            from: "1405/01/01".to_string(),
+            to: "1405/01/31".to_string(),
+            rows: vec![crate::vouchers::TrialBalanceRow {
+                account_code: "1101".to_string(),
+                account_name: "صندوق".to_string(),
+                group_name: "دارایی‌های جاری".to_string(),
+                level: 1,
+                opening_debit: 100,
+                opening_credit: 0,
+                period_debit: 25,
+                period_credit: 5,
+                closing_debit: 120,
+                closing_credit: 0,
+            }],
+            opening_debit: 100,
+            opening_credit: 0,
+            period_debit: 25,
+            period_credit: 5,
+            closing_debit: 120,
+            closing_credit: 0,
+        };
+        let meta = ReportMeta {
+            company: "شرکت آزمایشی".to_string(),
+            fiscal_year: "1405".to_string(),
+            today: "1405/02/01".to_string(),
+            show_print_date_time: false,
+        };
+
+        let minimal = trial_balance_print_doc(&report, &meta, "شش ستونی", false, false, false);
+        assert!(!minimal.html.contains("کد حساب"));
+        assert!(!minimal.html.contains("عنوان حساب"));
+        assert!(!minimal.html.contains("تاریخ تهیه"));
+        assert!(minimal.html.contains("گروه"));
+        assert!(minimal.html.contains("جمع کل"));
+
+        let full = trial_balance_print_doc(&report, &meta, "شش ستونی", false, true, true);
+        assert!(full.html.contains("کد حساب"));
+        assert!(full.html.contains("عنوان حساب"));
     }
 
     #[test]

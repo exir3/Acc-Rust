@@ -4,10 +4,11 @@
 //! before it is written, so the reports can rely on a sound ledger.
 
 use crate::db::{self, normalize_digits, Database};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize, Serializer};
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::PathBuf;
 
 fn serialize_exact_amount<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -31,6 +32,12 @@ pub(crate) const MAX_DESCRIPTION: usize = 1000;
 pub(crate) const MAX_LINE_DESCRIPTION: usize = 500;
 pub(crate) const MAX_LINES: usize = 1000;
 pub const MAX_VOUCHER_NUMBER: i64 = 9_007_199_254_740_991;
+
+/// Rows returned by the paged lists. A caller that omits `limit` still gets
+/// every row, so reports and tests keep their previous behavior.
+pub const DEFAULT_VOUCHER_PAGE_SIZE: i64 = 200;
+pub const DEFAULT_JOURNAL_PAGE_SIZE: i64 = 500;
+pub const MAX_PAGE_SIZE: i64 = 2000;
 
 /// Largest amount accepted on one line (1e15 Rials). It stays below 2^53 so
 /// the UI, which holds numbers as JavaScript doubles, never loses precision,
@@ -136,6 +143,233 @@ pub struct VoucherReorganizationResult {
     pub merged_group_count: usize,
     pub removed_voucher_count: usize,
     pub renumbered_count: usize,
+}
+
+/* ── Bulk voucher deletion ──────────────────────────────────── */
+
+/// Largest number of vouchers one bulk-delete operation may target. It keeps
+/// the preview rows and the final transaction bounded, like the WebApp form.
+pub const MAX_BULK_DELETE_TARGETS: usize = 5000;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkVoucherDeleteInput {
+    /// `all`, `dateRange` or `numberRange`.
+    pub scope: String,
+    #[serde(default)]
+    pub from_date: String,
+    #[serde(default)]
+    pub to_date: String,
+    #[serde(default)]
+    pub from_number: Option<i64>,
+    #[serde(default)]
+    pub to_number: Option<i64>,
+}
+
+#[derive(Debug, Clone, Hash)]
+enum BulkVoucherDeleteScope {
+    All,
+    DateRange { from: String, to: String },
+    NumberRange { from: i64, to: i64 },
+}
+
+impl BulkVoucherDeleteScope {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::DateRange { .. } => "dateRange",
+            Self::NumberRange { .. } => "numberRange",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash)]
+struct BulkVoucherDeleteTarget {
+    id: i64,
+    number: i64,
+    date: String,
+    voucher_type: String,
+    description: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkVoucherDeleteSample {
+    pub voucher_number: i64,
+    pub display_date: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkVoucherDeleteDateRange {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkVoucherDeleteNumberRange {
+    pub from: i64,
+    pub to: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkVoucherDeletePreview {
+    pub scope: String,
+    pub plan_token: String,
+    pub total_matched: usize,
+    pub deletable_count: usize,
+    /// Reserved for parity with the WebApp form. This application has no
+    /// permanent-voucher flag, so every matched voucher is deletable.
+    pub locked_count: usize,
+    pub locked_sample: Vec<BulkVoucherDeleteSample>,
+    pub deletable_sample: Vec<BulkVoucherDeleteSample>,
+    pub date_range: Option<BulkVoucherDeleteDateRange>,
+    pub number_range: Option<BulkVoucherDeleteNumberRange>,
+    pub timestamp: String,
+    /// Where an automatic pre-delete backup is written, when known.
+    pub backup_directory: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkVoucherDeleteResult {
+    pub scope: String,
+    pub message: String,
+    pub deleted_count: usize,
+    pub locked_count: usize,
+    pub timestamp: String,
+    pub with_backup: bool,
+    pub pre_delete_backup_file: Option<String>,
+}
+
+fn parse_bulk_delete_scope(
+    input: &BulkVoucherDeleteInput,
+) -> Result<BulkVoucherDeleteScope, String> {
+    match input.scope.trim() {
+        "all" => Ok(BulkVoucherDeleteScope::All),
+        "dateRange" => {
+            let from = normalize_date(&input.from_date, "تاریخ شروع")?;
+            let to = normalize_date(&input.to_date, "تاریخ پایان")?;
+            check_range(&from, &to)?;
+            Ok(BulkVoucherDeleteScope::DateRange { from, to })
+        }
+        "numberRange" => {
+            let from = input
+                .from_number
+                .ok_or_else(|| "شماره سند شروع الزامی است.".to_string())?;
+            let to = input
+                .to_number
+                .ok_or_else(|| "شماره سند پایان الزامی است.".to_string())?;
+            if from <= 0 || to <= 0 {
+                return Err("شماره سند باید بزرگ‌تر از صفر باشد.".to_string());
+            }
+            if from > to {
+                return Err("شماره سند شروع نمی‌تواند بزرگ‌تر از شماره پایان باشد.".to_string());
+            }
+            if to > MAX_VOUCHER_NUMBER {
+                return Err(format!(
+                    "شماره سند پایان نمی‌تواند بیشتر از {} باشد.",
+                    db::to_fa_digits(MAX_VOUCHER_NUMBER.to_string())
+                ));
+            }
+            Ok(BulkVoucherDeleteScope::NumberRange { from, to })
+        }
+        _ => Err("محدوده حذف انتخاب‌شده معتبر نیست.".to_string()),
+    }
+}
+
+fn read_bulk_delete_targets(
+    conn: &Connection,
+    scope: &BulkVoucherDeleteScope,
+) -> Result<Vec<BulkVoucherDeleteTarget>, String> {
+    const COLUMNS: &str = "SELECT id, number, date, type, description, updated_at FROM vouchers";
+    // Read one row beyond the cap so an oversized range is rejected without
+    // loading the whole ledger into memory.
+    let limit = MAX_BULK_DELETE_TARGETS + 1;
+    let read_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<BulkVoucherDeleteTarget> {
+        Ok(BulkVoucherDeleteTarget {
+            id: row.get(0)?,
+            number: row.get(1)?,
+            date: row.get(2)?,
+            voucher_type: row.get(3)?,
+            description: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    };
+
+    match scope {
+        BulkVoucherDeleteScope::All => conn
+            .prepare(&format!("{COLUMNS} ORDER BY number, id LIMIT {limit}"))
+            .map_err(db::db_error)?
+            .query_map([], read_row)
+            .map_err(db::db_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db::db_error),
+        BulkVoucherDeleteScope::DateRange { from, to } => conn
+            .prepare(&format!(
+                "{COLUMNS} WHERE date >= ?1 AND date <= ?2 ORDER BY number, id LIMIT {limit}"
+            ))
+            .map_err(db::db_error)?
+            .query_map(params![from, to], read_row)
+            .map_err(db::db_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db::db_error),
+        BulkVoucherDeleteScope::NumberRange { from, to } => conn
+            .prepare(&format!(
+                "{COLUMNS} WHERE number >= ?1 AND number <= ?2 ORDER BY number, id LIMIT {limit}"
+            ))
+            .map_err(db::db_error)?
+            .query_map(params![from, to], read_row)
+            .map_err(db::db_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db::db_error),
+    }
+}
+
+fn bulk_delete_fingerprint(
+    scope: &BulkVoucherDeleteScope,
+    targets: &[BulkVoucherDeleteTarget],
+) -> String {
+    let mut hasher = DefaultHasher::new();
+    scope.hash(&mut hasher);
+    targets.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn bulk_delete_sample(target: &BulkVoucherDeleteTarget) -> BulkVoucherDeleteSample {
+    BulkVoucherDeleteSample {
+        voucher_number: target.number,
+        display_date: target.date.clone(),
+        description: target.description.clone(),
+    }
+}
+
+fn bulk_delete_targets_error(count: usize) -> String {
+    format!(
+        "تعداد اسناد این محدوده ({} سند) از سقف مجاز ({} سند) بیشتر است؛ بازه را کوچک‌تر کنید.",
+        db::to_fa_digits(count),
+        db::to_fa_digits(MAX_BULK_DELETE_TARGETS)
+    )
+}
+
+fn check_bulk_delete_limit(targets: &[BulkVoucherDeleteTarget]) -> Result<(), String> {
+    if targets.len() > MAX_BULK_DELETE_TARGETS {
+        return Err(bulk_delete_targets_error(targets.len()));
+    }
+    Ok(())
+}
+
+fn local_timestamp(conn: &Connection) -> Result<String, String> {
+    conn.query_row(
+        "SELECT strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(db::db_error)
 }
 
 #[derive(Debug, Clone, Hash)]
@@ -483,6 +717,8 @@ pub struct JournalReport {
     pub to: String,
     pub search: String,
     pub rows: Vec<JournalRow>,
+    /// Number of journal rows matching the filter, before paging.
+    pub row_count: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub total_debit: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
@@ -642,36 +878,6 @@ pub struct BalanceSheetReport {
     pub balanced: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Dashboard {
-    pub company_name: String,
-    pub fiscal_year: String,
-    pub today: String,
-    pub database_path: String,
-    pub account_count: i64,
-    pub group_count: i64,
-    pub voucher_count: i64,
-    pub line_count: i64,
-    #[serde(serialize_with = "serialize_exact_amount")]
-    pub total_debit: i64,
-    #[serde(serialize_with = "serialize_exact_amount")]
-    pub total_credit: i64,
-    #[serde(serialize_with = "serialize_exact_amount")]
-    pub assets_total: i64,
-    #[serde(serialize_with = "serialize_exact_amount")]
-    pub liabilities_total: i64,
-    #[serde(serialize_with = "serialize_exact_amount")]
-    pub equity_total: i64,
-    #[serde(serialize_with = "serialize_exact_amount")]
-    pub income_total: i64,
-    #[serde(serialize_with = "serialize_exact_amount")]
-    pub expense_total: i64,
-    #[serde(serialize_with = "serialize_exact_amount")]
-    pub net_profit: i64,
-    pub recent: Vec<VoucherSummary>,
-}
-
 /* ── Validation helpers ─────────────────────────────────────── */
 
 /// Validates and normalizes a user-entered Jalali date for immediate form feedback.
@@ -700,6 +906,87 @@ fn checked_sum(values: impl IntoIterator<Item = i64>, label: &str) -> Result<i64
     values
         .into_iter()
         .try_fold(0i64, |total, value| checked_add(total, value, label))
+}
+
+/// One account's own ledger amounts before parent roll-up.
+struct TrialAccountRaw {
+    code: String,
+    name: String,
+    group_name: String,
+    level: i64,
+    parent_code: String,
+    opening_debit: i64,
+    opening_credit: i64,
+    period_debit: i64,
+    period_credit: i64,
+}
+
+/// Adds all child amounts to their parent, recursively, and memoizes results.
+fn roll_up_trial_amounts(
+    code: &str,
+    accounts: &[TrialAccountRaw],
+    index_by_code: &std::collections::HashMap<String, usize>,
+    children: &std::collections::HashMap<String, Vec<String>>,
+    memo: &mut std::collections::HashMap<String, (i64, i64, i64, i64)>,
+) -> Result<(i64, i64, i64, i64), String> {
+    if let Some(amounts) = memo.get(code) {
+        return Ok(*amounts);
+    }
+    let Some(&index) = index_by_code.get(code) else {
+        return Ok((0, 0, 0, 0));
+    };
+    let account = &accounts[index];
+    let mut total = (
+        account.opening_debit,
+        account.opening_credit,
+        account.period_debit,
+        account.period_credit,
+    );
+    if let Some(child_codes) = children.get(code) {
+        for child in child_codes {
+            let amounts = roll_up_trial_amounts(child, accounts, index_by_code, children, memo)?;
+            total.0 = checked_add(total.0, amounts.0, "جمع تراز آزمایشی")?;
+            total.1 = checked_add(total.1, amounts.1, "جمع تراز آزمایشی")?;
+            total.2 = checked_add(total.2, amounts.2, "جمع تراز آزمایشی")?;
+            total.3 = checked_add(total.3, amounts.3, "جمع تراز آزمایشی")?;
+        }
+    }
+    memo.insert(code.to_string(), total);
+    Ok(total)
+}
+
+/// Account codes are compared level by level (two digits per level), so
+/// "2" sorts after "10" and a range like "11".."11" covers its whole subtree.
+fn trial_code_segments(code: &str) -> Vec<u32> {
+    let digits = normalize_code_filter(code);
+    digits
+        .as_bytes()
+        .chunks(2)
+        .map(|chunk| {
+            std::str::from_utf8(chunk)
+                .ok()
+                .and_then(|text| text.parse::<u32>().ok())
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+fn compare_trial_segments(left: &[u32], right: &[u32]) -> std::cmp::Ordering {
+    let length = left.len().min(right.len());
+    for index in 0..length {
+        match left[index].cmp(&right[index]) {
+            std::cmp::Ordering::Equal => continue,
+            other => return other,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+fn normalize_code_filter(input: &str) -> String {
+    db::normalize_code(input)
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect()
 }
 
 fn normalize_date(input: &str, label: &str) -> Result<String, String> {
@@ -869,26 +1156,38 @@ impl Database {
         })
     }
 
+    pub fn voucher_count(&self) -> Result<i64, String> {
+        self.with_conn(|conn| count(conn, "SELECT COUNT(*) FROM vouchers"))
+    }
+
     pub fn list_vouchers(&self, from: &str, to: &str, search: &str) -> Result<VoucherList, String> {
+        self.list_vouchers_page(from, to, search, None, None)
+    }
+
+    /// Returns one page of the voucher list. Both totals and `matched_count`
+    /// are still calculated over every voucher matching the filter, not only
+    /// the returned page.
+    pub fn list_vouchers_page(
+        &self,
+        from: &str,
+        to: &str,
+        search: &str,
+        offset: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<VoucherList, String> {
         let from = normalize_filter_date(from, "تاریخ شروع")?;
         let to = normalize_filter_date(to, "تاریخ پایان")?;
         check_range(&from, &to)?;
         let terms = search_terms(search);
+        let page = page_window(offset, limit)?;
 
-        let (vouchers, total_count) = self.with_conn(|conn| {
-            let vouchers = list_vouchers(conn, &from, &to, &terms)?;
-            let total = count(conn, "SELECT COUNT(*) FROM vouchers")?;
-            Ok((vouchers, total))
-        })?;
-        let matched_count = vouchers.len() as i64;
-        let total_debit = checked_sum(
-            vouchers.iter().map(|v| v.total_debit),
-            "جمع بدهکار فهرست اسناد",
-        )?;
-        let total_credit = checked_sum(
-            vouchers.iter().map(|v| v.total_credit),
-            "جمع بستانکار فهرست اسناد",
-        )?;
+        let (vouchers, total_count, matched_count, total_debit, total_credit) =
+            self.with_conn(|conn| {
+                let vouchers = list_vouchers(conn, &from, &to, &terms, page)?;
+                let total = count(conn, "SELECT COUNT(*) FROM vouchers")?;
+                let (matched, debit, credit) = voucher_list_totals(conn, &from, &to, &terms)?;
+                Ok((vouchers, total, matched, debit, credit))
+            })?;
         Ok(VoucherList {
             vouchers,
             total_count,
@@ -1002,6 +1301,156 @@ impl Database {
         })
     }
 
+    fn bulk_delete_backup_directory(&self) -> Option<PathBuf> {
+        let database_path = PathBuf::from(self.path_string());
+        if database_path.as_os_str().is_empty() || database_path.as_os_str() == ":memory:" {
+            return None;
+        }
+        let parent = database_path.parent()?;
+        if parent.as_os_str().is_empty() {
+            return None;
+        }
+        Some(parent.join("backups").join("pre-delete"))
+    }
+
+    pub fn preview_bulk_voucher_delete(
+        &self,
+        input: &BulkVoucherDeleteInput,
+    ) -> Result<BulkVoucherDeletePreview, String> {
+        let input = input.clone();
+        let backup_directory = self
+            .bulk_delete_backup_directory()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.with_conn(move |conn| {
+            let scope = parse_bulk_delete_scope(&input)?;
+            let targets = read_bulk_delete_targets(conn, &scope)?;
+            check_bulk_delete_limit(&targets)?;
+            let plan_token = bulk_delete_fingerprint(&scope, &targets);
+            let timestamp = local_timestamp(conn)?;
+            let deletable_sample = targets.iter().take(20).map(bulk_delete_sample).collect();
+            Ok(BulkVoucherDeletePreview {
+                scope: scope.as_str().to_string(),
+                plan_token,
+                total_matched: targets.len(),
+                deletable_count: targets.len(),
+                locked_count: 0,
+                locked_sample: Vec::new(),
+                deletable_sample,
+                date_range: match &scope {
+                    BulkVoucherDeleteScope::DateRange { from, to } => {
+                        Some(BulkVoucherDeleteDateRange {
+                            from: from.clone(),
+                            to: to.clone(),
+                        })
+                    }
+                    _ => None,
+                },
+                number_range: match &scope {
+                    BulkVoucherDeleteScope::NumberRange { from, to } => {
+                        Some(BulkVoucherDeleteNumberRange {
+                            from: *from,
+                            to: *to,
+                        })
+                    }
+                    _ => None,
+                },
+                timestamp,
+                backup_directory,
+            })
+        })
+    }
+
+    pub fn apply_bulk_voucher_delete(
+        &self,
+        input: &BulkVoucherDeleteInput,
+        plan_token: &str,
+        with_backup: bool,
+    ) -> Result<BulkVoucherDeleteResult, String> {
+        let token = plan_token.trim();
+        if token.is_empty() {
+            return Err("پیش‌نمایش منقضی یا نامعتبر است؛ دوباره پیش‌نمایش بگیرید.".to_string());
+        }
+        let token = token.to_string();
+        let input = input.clone();
+
+        // Reject a stale preview before writing a backup file.
+        {
+            let input = input.clone();
+            let token = token.clone();
+            self.with_conn(move |conn| {
+                let scope = parse_bulk_delete_scope(&input)?;
+                let targets = read_bulk_delete_targets(conn, &scope)?;
+                check_bulk_delete_limit(&targets)?;
+                if bulk_delete_fingerprint(&scope, &targets) != token {
+                    return Err(
+                        "اسناد پس از پیش‌نمایش تغییر کرده‌اند؛ پیش‌نمایش جدید بگیرید.".to_string()
+                    );
+                }
+                Ok(())
+            })?;
+        }
+
+        let backup_path = if with_backup {
+            let directory = self.bulk_delete_backup_directory().ok_or_else(|| {
+                "مسیر پایگاه داده برای تهیه پشتیبان مشخص نیست؛ حذف انجام نشد.".to_string()
+            })?;
+            std::fs::create_dir_all(&directory)
+                .map_err(|error| format!("ساخت پوشه پشتیبان ناموفق بود: {error}"))?;
+            let stamp: String = self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT strftime('%Y%m%d_%H%M%S', 'now', 'localtime')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(db::db_error)
+            })?;
+            let suffix = &token[..token.len().min(8)];
+            Some(directory.join(format!("pre_delete_{stamp}_{suffix}.sqlite3")))
+        } else {
+            None
+        };
+
+        // The backup must succeed before anything is deleted.
+        if let Some(path) = &backup_path {
+            self.backup_to(path)?;
+        }
+        let backup_file = backup_path.map(|path| path.to_string_lossy().to_string());
+
+        self.with_conn(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db::db_error)?;
+            let scope = parse_bulk_delete_scope(&input)?;
+            let targets = read_bulk_delete_targets(&tx, &scope)?;
+            check_bulk_delete_limit(&targets)?;
+            if bulk_delete_fingerprint(&scope, &targets) != token {
+                return Err("اسناد پس از پیش‌نمایش تغییر کرده‌اند؛ پیش‌نمایش جدید بگیرید.".to_string());
+            }
+            for target in &targets {
+                tx.execute("DELETE FROM vouchers WHERE id = ?1", params![target.id])
+                    .map_err(db::db_error)?;
+            }
+            let deleted_count = targets.len();
+            let timestamp = local_timestamp(&tx)?;
+            tx.commit().map_err(db::db_error)?;
+            let message = if deleted_count == 0 {
+                "هیچ سندی در این محدوده یافت نشد.".to_string()
+            } else {
+                format!("{} سند با موفقیت حذف شد.", db::to_fa_digits(deleted_count))
+            };
+            Ok(BulkVoucherDeleteResult {
+                scope: scope.as_str().to_string(),
+                message,
+                deleted_count,
+                locked_count: 0,
+                timestamp,
+                with_backup,
+                pre_delete_backup_file: backup_file,
+            })
+        })
+    }
+
     pub fn get_voucher(&self, number: i64) -> Result<Option<Voucher>, String> {
         if number <= 0 {
             return Ok(None);
@@ -1109,6 +1558,7 @@ impl Database {
                         db::to_fa_digits(*row_no)
                     ));
                 }
+                assert_active_account(&tx, &line.account_code)?;
             }
 
             let selected_debit = checked_sum(
@@ -1347,11 +1797,54 @@ impl Database {
         }
 
         self.with_conn(move |conn| {
-            let tx = conn.unchecked_transaction().map_err(db::db_error)?;
+            let tx = conn.transaction().map_err(db::db_error)?;
 
-            // Every line must point at a real, postable account.
+            // A legacy level-4 account may remain on an already-saved voucher,
+            // but it must never be selectable on a new voucher or copied into
+            // another voucher. This grandfathering preserves historical edits
+            // without keeping the retired level available for new postings.
+            let grandfathered_legacy_codes: HashSet<String> = if id > 0 {
+                let mut statement = tx.prepare(
+                    "SELECT DISTINCT a.code
+                       FROM voucher_lines line
+                       JOIN accounts a ON a.code = line.account_code
+                      WHERE line.voucher_id = ?1 AND a.level > ?2"
+                ).map_err(db::db_error)?;
+                let codes = statement
+                    .query_map(params![id, db::MAX_ACCOUNT_LEVEL], |row| row.get(0))
+                    .map_err(db::db_error)?
+                    .collect::<rusqlite::Result<HashSet<_>>>()
+                    .map_err(db::db_error)?;
+                codes
+            } else {
+                HashSet::new()
+            };
+            // An account that is already on the open voucher may have been
+            // deactivated afterwards; keep those saved lines editable while
+            // refusing it for any newly added line.
+            let saved_codes: HashSet<String> = if id > 0 {
+                let mut statement = tx
+                    .prepare("SELECT DISTINCT account_code FROM voucher_lines WHERE voucher_id = ?1")
+                    .map_err(db::db_error)?;
+                let codes = statement
+                    .query_map(params![id], |row| row.get(0))
+                    .map_err(db::db_error)?
+                    .collect::<rusqlite::Result<HashSet<_>>>()
+                    .map_err(db::db_error)?;
+                codes
+            } else {
+                HashSet::new()
+            };
             for line in &lines {
-                assert_postable_leaf(&tx, &line.account_code)?;
+                if let Err(error) = assert_postable_leaf(&tx, &line.account_code) {
+                    if !grandfathered_legacy_codes.contains(&line.account_code) {
+                        return Err(error);
+                    }
+                    assert_existing_legacy_account(&tx, &line.account_code)?;
+                }
+                if !saved_codes.contains(&line.account_code) {
+                    assert_active_account(&tx, &line.account_code)?;
+                }
             }
             assert_voucher_type_matches_lines(&tx, &voucher_type, &lines)?;
 
@@ -1477,10 +1970,14 @@ impl Database {
         import: &crate::excel::BulkVoucherImport,
     ) -> Result<crate::excel::BulkVoucherPreview, String> {
         let file_name = import.file_name.clone();
-        let account_codes: Vec<String> = import
+        let account_rows: Vec<(String, String)> = import
             .accounts
             .iter()
-            .map(|account| account.code.clone())
+            .map(|account| (account.code.clone(), account.group_code.clone()))
+            .collect();
+        let account_codes: Vec<String> = account_rows
+            .iter()
+            .map(|(code, _)| code.clone())
             .collect();
         let numbers: Vec<i64> = import
             .vouchers
@@ -1495,6 +1992,53 @@ impl Database {
             .sum();
         let account_count = account_codes.len();
         self.with_conn(move |conn| {
+            // A group referenced by the workbook may have been deleted since the
+            // default chart was seeded. Report it during preview instead of
+            // failing halfway through the import.
+            let mut missing_groups: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
+            for (code, group_code) in &account_rows {
+                let group_code = db::normalize_code(group_code);
+                let exists = conn
+                    .query_row(
+                        "SELECT 1 FROM account_groups WHERE code = ?1",
+                        params![group_code],
+                        |_| Ok(()),
+                    )
+                    .optional()
+                    .map_err(db::db_error)?
+                    .is_some();
+                if !exists {
+                    missing_groups
+                        .entry(group_code)
+                        .or_default()
+                        .push(code.clone());
+                }
+            }
+            if !missing_groups.is_empty() {
+                let detail = missing_groups
+                    .iter()
+                    .map(|(group, codes)| {
+                        let shown = codes
+                            .iter()
+                            .take(5)
+                            .map(db::to_fa_digits)
+                            .collect::<Vec<_>>()
+                            .join("، ");
+                        let more = if codes.len() > 5 {
+                            format!(" و {} حساب دیگر", db::to_fa_digits(codes.len() - 5))
+                        } else {
+                            String::new()
+                        };
+                        format!("گروه «{}» برای حساب‌های {shown}{more}", db::to_fa_digits(group))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                return Err(format!(
+                    "پیش از ورود اسناد، گروه حساب‌های نامعتبر را اصلاح کنید: {detail}"
+                ));
+            }
+
             let mut new_account_count = 0;
             for code in account_codes {
                 let exists = conn
@@ -1639,7 +2183,7 @@ impl Database {
                     || !code.chars().all(|ch| ch.is_ascii_digit())
                     || name.is_empty()
                     || name.chars().count() > 255
-                    || !matches!(account.level, 1 | 2)
+                    || !(1..=db::MAX_ACCOUNT_LEVEL).contains(&account.level)
                 {
                     return Err("اطلاعات یکی از حساب‌های فایل اکسل معتبر نیست.".to_string());
                 }
@@ -1697,7 +2241,7 @@ impl Database {
                         .optional()
                         .map_err(db::db_error)?
                         .ok_or_else(|| format!("حساب بالاتر {} برای {} پیدا نشد.", db::to_fa_digits(&parent_code), db::to_fa_digits(&code)))?;
-                    if parent.1 != 1 || parent.2 != group_code {
+                    if parent.1 != account.level - 1 || parent.2 != group_code {
                         return Err(format!("گروه یا سطح حساب بالاتر {} با حساب {} سازگار نیست.", db::to_fa_digits(&parent_code), db::to_fa_digits(&code)));
                     }
                     let parent_has_lines = tx
@@ -1720,7 +2264,7 @@ impl Database {
                 let parent_code_value = if parent_code.is_empty() { None } else { Some(parent_code) };
                 tx.execute(
                     "INSERT INTO accounts (code, name, level, group_code, nature, parent_code, parent_name, is_postable) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![code, name, account.level, group_code, account.nature, parent_code_value, parent_name, i64::from(account.level == 2)],
+                    params![code, name, account.level, group_code, account.nature, parent_code_value, parent_name, i64::from(account.level > 1)],
                 )
                 .map_err(db::db_error)?;
             }
@@ -1728,6 +2272,7 @@ impl Database {
             for (number, date, voucher_type, description, lines) in prepared {
                 for line in &lines {
                     assert_postable_leaf(&tx, &line.account_code)?;
+                    assert_active_account(&tx, &line.account_code)?;
                 }
                 let mut stored_number = number;
                 if used_numbers.contains(&number) {
@@ -1815,14 +2360,39 @@ impl Database {
     /// Checks that every line points at a real, postable leaf account. The
     /// Excel export validates amounts itself, so this keeps an invalid draft
     /// from becoming a file that cannot be imported again.
-    pub fn validate_voucher_accounts(&self, lines: &[VoucherLineInput]) -> Result<(), String> {
+    pub fn validate_voucher_accounts(
+        &self,
+        voucher_id: Option<i64>,
+        lines: &[VoucherLineInput],
+    ) -> Result<(), String> {
         self.with_conn(|conn| {
+            let legacy_codes: HashSet<String> = if let Some(id) = voucher_id.filter(|id| *id > 0) {
+                let mut statement = conn.prepare(
+                    "SELECT DISTINCT a.code
+                       FROM voucher_lines line
+                       JOIN accounts a ON a.code = line.account_code
+                      WHERE line.voucher_id = ?1 AND a.level > ?2"
+                ).map_err(db::db_error)?;
+                let codes = statement
+                    .query_map(params![id, db::MAX_ACCOUNT_LEVEL], |row| row.get(0))
+                    .map_err(db::db_error)?
+                    .collect::<rusqlite::Result<HashSet<_>>>()
+                    .map_err(db::db_error)?;
+                codes
+            } else {
+                HashSet::new()
+            };
             for line in lines {
                 let account_code = db::normalize_code(&line.account_code);
                 if account_code.is_empty() {
                     return Err("برای هر ردیف، کد حساب الزامی است.".to_string());
                 }
-                assert_postable_leaf(conn, &account_code)?;
+                if let Err(error) = assert_postable_leaf(conn, &account_code) {
+                    if !legacy_codes.contains(&account_code) {
+                        return Err(error);
+                    }
+                    assert_existing_legacy_account(conn, &account_code)?;
+                }
             }
             Ok(())
         })
@@ -1831,56 +2401,104 @@ impl Database {
     /* ── Reports ─────────────────────────────────────────────── */
 
     pub fn get_journal(&self, from: &str, to: &str, search: &str) -> Result<JournalReport, String> {
+        self.get_journal_page(from, to, search, None, None)
+    }
+
+    /// Returns one page of journal rows while keeping the totals and voucher
+    /// count for the whole filter.
+    pub fn get_journal_page(
+        &self,
+        from: &str,
+        to: &str,
+        search: &str,
+        offset: Option<i64>,
+        limit: Option<i64>,
+    ) -> Result<JournalReport, String> {
         let from = normalize_filter_date(from, "تاریخ شروع")?;
         let to = normalize_filter_date(to, "تاریخ پایان")?;
         check_range(&from, &to)?;
         let terms = search_terms(search);
         let search = search.trim().to_string();
+        let page = page_window(offset, limit)?;
 
         self.with_conn(|conn| {
-            let sql = format!(
+            let where_clause = format!(
+                "WHERE (?1 = '' OR v.date >= ?1)
+                    AND (?2 = '' OR v.date <= ?2)
+                    AND {}",
+                search_predicate()
+            );
+            let totals_sql = format!(
+                "SELECT COUNT(*),
+                        COUNT(DISTINCT v.id),
+                        COALESCE(SUM(l.debit), 0),
+                        COALESCE(SUM(l.credit), 0)
+                   FROM voucher_lines l
+                   JOIN vouchers v ON v.id = l.voucher_id
+                   JOIN accounts a ON a.code = l.account_code
+                 {where_clause}"
+            );
+            let (row_count, voucher_count, total_debit, total_credit) = conn
+                .query_row(
+                    &totals_sql,
+                    params![from, to, terms.folded, terms.raw],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+                .map_err(db::db_error)?;
+
+            let mut sql = format!(
                 "SELECT v.id, v.number, v.date, v.type, v.description,
                         l.row_no, l.account_code, a.name, l.description,
                         l.debit, l.credit
                    FROM voucher_lines l
                    JOIN vouchers v ON v.id = l.voucher_id
                    JOIN accounts a ON a.code = l.account_code
-                  WHERE (?1 = '' OR v.date >= ?1)
-                    AND (?2 = '' OR v.date <= ?2)
-                    AND {}
-                  ORDER BY v.date, v.number, l.row_no",
-                search_predicate()
+                 {where_clause}
+                  ORDER BY v.date, v.number, l.row_no"
             );
+            if page.is_some() {
+                sql.push_str(" LIMIT ?5 OFFSET ?6");
+            }
             let mut stmt = conn.prepare(&sql).map_err(db::db_error)?;
-
-            let rows = stmt
-                .query_map(params![from, to, terms.folded, terms.raw], |row| {
-                    Ok(JournalRow {
-                        voucher_id: row.get(0)?,
-                        number: row.get(1)?,
-                        date: row.get(2)?,
-                        voucher_type: row.get(3)?,
-                        voucher_description: row.get(4)?,
-                        row_no: row.get(5)?,
-                        account_code: row.get(6)?,
-                        account_name: row.get(7)?,
-                        line_description: row.get(8)?,
-                        debit: row.get(9)?,
-                        credit: row.get(10)?,
-                    })
+            let map_row = |row: &rusqlite::Row<'_>| {
+                Ok(JournalRow {
+                    voucher_id: row.get(0)?,
+                    number: row.get(1)?,
+                    date: row.get(2)?,
+                    voucher_type: row.get(3)?,
+                    voucher_description: row.get(4)?,
+                    row_no: row.get(5)?,
+                    account_code: row.get(6)?,
+                    account_name: row.get(7)?,
+                    line_description: row.get(8)?,
+                    debit: row.get(9)?,
+                    credit: row.get(10)?,
                 })
+            };
+            let rows = if let Some((limit, offset)) = page {
+                stmt.query_map(
+                    params![from, to, terms.folded, terms.raw, limit, offset],
+                    map_row,
+                )
                 .map_err(db::db_error)?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(db::db_error)?;
-
-            let total_debit = checked_sum(rows.iter().map(|r| r.debit), "جمع بدهکار دفتر روزنامه")?;
-            let total_credit =
-                checked_sum(rows.iter().map(|r| r.credit), "جمع بستانکار دفتر روزنامه")?;
-            let voucher_count = rows
-                .iter()
-                .map(|r| r.voucher_id)
-                .collect::<std::collections::HashSet<_>>()
-                .len() as i64;
+                .map_err(db::db_error)?
+            } else {
+                stmt.query_map(
+                    params![from, to, terms.folded, terms.raw],
+                    map_row,
+                )
+                .map_err(db::db_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db::db_error)?
+            };
 
             Ok(JournalReport {
                 from,
@@ -1889,6 +2507,7 @@ impl Database {
                 rows,
                 total_debit,
                 total_credit,
+                row_count,
                 voucher_count,
             })
         })
@@ -2060,74 +2679,201 @@ impl Database {
     }
 
     pub fn get_trial_balance(&self, from: &str, to: &str) -> Result<TrialBalanceReport, String> {
+        // Kept for callers and tests that predate the report filters. It shows
+        // every level and every account of an active branch, including rows
+        // whose closing balance is zero.
+        self.get_trial_balance_filtered(from, to, "", "", true, true)
+    }
+
+    /// Hierarchical trial balance with the WebApp report filters.
+    ///
+    /// - `account_from` / `account_to` limit the code range; either side may be
+    ///   empty. When a range is given every level is searched.
+    /// - `show_zero` keeps accounts whose closing balance is zero.
+    /// - `multi_level` shows the whole tree; otherwise only level-1 accounts.
+    pub fn get_trial_balance_filtered(
+        &self,
+        from: &str,
+        to: &str,
+        account_from: &str,
+        account_to: &str,
+        show_zero: bool,
+        multi_level: bool,
+    ) -> Result<TrialBalanceReport, String> {
         let from = normalize_filter_date(from, "تاریخ شروع")?;
         let to = normalize_filter_date(to, "تاریخ پایان")?;
         check_range(&from, &to)?;
+        let code_from = normalize_code_filter(account_from);
+        let code_to = normalize_code_filter(account_to);
+        let has_code_range = !code_from.is_empty() || !code_to.is_empty();
 
         self.with_conn(|conn| {
+            // Aggregate in SQLite so only one row per account crosses into Rust.
+            // Parent accounts are rolled up from these raw amounts below.
             let mut stmt = conn
                 .prepare(
-                    "SELECT a.code, a.name, g.name, a.level, v.date, l.debit, l.credit
+                    "SELECT a.code, a.name, g.name, a.level, COALESCE(a.parent_code, ''),
+                            COALESCE(SUM(CASE WHEN ?1 <> '' AND v.date < ?1
+                                              THEN l.debit END), 0) AS opening_debit,
+                            COALESCE(SUM(CASE WHEN ?1 <> '' AND v.date < ?1
+                                              THEN l.credit END), 0) AS opening_credit,
+                            COALESCE(SUM(CASE WHEN (?1 = '' OR v.date >= ?1)
+                                               AND (?2 = '' OR v.date <= ?2)
+                                              THEN l.debit END), 0) AS period_debit,
+                            COALESCE(SUM(CASE WHEN (?1 = '' OR v.date >= ?1)
+                                               AND (?2 = '' OR v.date <= ?2)
+                                              THEN l.credit END), 0) AS period_credit
                        FROM accounts a
                        JOIN account_groups g ON g.code = a.group_code
                        LEFT JOIN voucher_lines l ON l.account_code = a.code
                        LEFT JOIN vouchers v ON v.id = l.voucher_id
-                      ORDER BY a.code, v.date",
+                      GROUP BY a.code
+                      ORDER BY a.code",
                 )
                 .map_err(db::db_error)?;
 
             let raw = stmt
-                .query_map([], |row| {
+                .query_map(params![from, to], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<i64>>(5)?,
-                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
                     ))
                 })
                 .map_err(db::db_error)?;
 
-            let mut balances: std::collections::BTreeMap<
-                String,
-                (String, String, i64, i64, i64, i64, i64),
-            > = std::collections::BTreeMap::new();
+            let mut accounts = Vec::new();
             for row in raw {
-                let (code, name, group_name, level, date, debit, credit) =
+                let (code, name, group_name, level, parent_code, od, oc, pd, pc) =
                     row.map_err(db::db_error)?;
-                let entry = balances
-                    .entry(code)
-                    .or_insert((name, group_name, level, 0, 0, 0, 0));
-                let (Some(date), Some(debit), Some(credit)) = (date, debit, credit) else {
+                accounts.push(TrialAccountRaw {
+                    code,
+                    name,
+                    group_name,
+                    level,
+                    parent_code,
+                    opening_debit: od,
+                    opening_credit: oc,
+                    period_debit: pd,
+                    period_credit: pc,
+                });
+            }
+
+            let mut index_by_code = std::collections::HashMap::new();
+            for (index, account) in accounts.iter().enumerate() {
+                index_by_code.insert(account.code.clone(), index);
+            }
+            let mut children: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            let mut has_direct_activity = Vec::with_capacity(accounts.len());
+            for account in &accounts {
+                if !account.parent_code.is_empty() && index_by_code.contains_key(&account.parent_code)
+                {
+                    children
+                        .entry(account.parent_code.clone())
+                        .or_default()
+                        .push(account.code.clone());
+                }
+                has_direct_activity.push(
+                    account.opening_debit != 0
+                        || account.opening_credit != 0
+                        || account.period_debit != 0
+                        || account.period_credit != 0,
+                );
+            }
+
+            // Roll every child's amounts into its parent so a level-1 row shows
+            // the whole branch, just like the WebApp balance report.
+            let mut rolled = std::collections::HashMap::new();
+            for account in &accounts {
+                let amounts = roll_up_trial_amounts(
+                    &account.code,
+                    &accounts,
+                    &index_by_code,
+                    &children,
+                    &mut rolled,
+                )?;
+                rolled.insert(account.code.clone(), amounts);
+            }
+
+            // The WebApp report shows a whole branch as soon as one of its
+            // accounts has activity: mark every active account, its ancestors
+            // and all of its descendants. Branches without activity stay out.
+            let mut relevant = vec![false; accounts.len()];
+            let mut queue: Vec<usize> = has_direct_activity
+                .iter()
+                .enumerate()
+                .filter_map(|(index, active)| active.then_some(index))
+                .collect();
+            while let Some(index) = queue.pop() {
+                if relevant[index] {
                     continue;
-                };
-                if !from.is_empty() && date < from {
-                    entry.3 = checked_add(entry.3, debit, "بدهکار افتتاحیه تراز آزمایشی")?;
-                    entry.4 = checked_add(entry.4, credit, "بستانکار افتتاحیه تراز آزمایشی")?;
-                } else if (from.is_empty() || date >= from) && (to.is_empty() || date <= to) {
-                    entry.5 = checked_add(entry.5, debit, "بدهکار دوره تراز آزمایشی")?;
-                    entry.6 = checked_add(entry.6, credit, "بستانکار دوره تراز آزمایشی")?;
+                }
+                relevant[index] = true;
+                let parent = accounts[index].parent_code.clone();
+                if let Some(&parent_index) = index_by_code.get(&parent) {
+                    queue.push(parent_index);
+                }
+                if let Some(child_codes) = children.get(&accounts[index].code) {
+                    for child in child_codes {
+                        if let Some(&child_index) = index_by_code.get(child) {
+                            queue.push(child_index);
+                        }
+                    }
                 }
             }
 
             let mut rows = Vec::new();
-            for (code, (name, group_name, level, od, oc, pd, pc)) in balances {
-                if od == 0 && oc == 0 && pd == 0 && pc == 0 {
+            for (index, account) in accounts.iter().enumerate() {
+                if !relevant[index] {
                     continue;
                 }
+                if !has_code_range && !multi_level && account.level != 1 {
+                    continue;
+                }
+                if has_code_range {
+                    let segments = trial_code_segments(&account.code);
+                    if !code_from.is_empty()
+                        && compare_trial_segments(&segments, &trial_code_segments(&code_from))
+                            == std::cmp::Ordering::Less
+                    {
+                        continue;
+                    }
+                    if !code_to.is_empty()
+                        && compare_trial_segments(&segments, &trial_code_segments(&code_to))
+                            == std::cmp::Ordering::Greater
+                    {
+                        continue;
+                    }
+                }
+
+                let (od, oc, pd, pc) = rolled
+                    .get(&account.code)
+                    .copied()
+                    .unwrap_or((0, 0, 0, 0));
                 let opening_net = checked_sub(od, oc, "مانده افتتاحیه تراز آزمایشی")?;
                 let closing_net = checked_sub(
                     checked_add(opening_net, pd, "مانده پایان دوره تراز آزمایشی")?,
                     pc,
                     "مانده پایان دوره تراز آزمایشی",
                 )?;
+                let closing_debit = closing_net.max(0);
+                let closing_credit =
+                    checked_neg(closing_net, "مانده بستانکار پایان دوره تراز آزمایشی")?.max(0);
+                if !show_zero && closing_debit == 0 && closing_credit == 0 {
+                    continue;
+                }
                 rows.push(TrialBalanceRow {
-                    account_code: code,
-                    account_name: name,
-                    group_name,
-                    level,
+                    account_code: account.code.clone(),
+                    account_name: account.name.clone(),
+                    group_name: account.group_name.clone(),
+                    level: account.level,
                     opening_debit: opening_net.max(0),
                     opening_credit: checked_neg(
                         opening_net,
@@ -2136,37 +2882,59 @@ impl Database {
                     .max(0),
                     period_debit: pd,
                     period_credit: pc,
-                    closing_debit: closing_net.max(0),
-                    closing_credit: checked_neg(
-                        closing_net,
-                        "مانده بستانکار پایان دوره تراز آزمایشی",
-                    )?
-                    .max(0),
+                    closing_debit,
+                    closing_credit,
                 });
             }
 
+            // Totals come from the highest shown row of each branch; summing
+            // every row would count children twice inside their parent.
+            let shown: std::collections::HashSet<&str> =
+                rows.iter().map(|row| row.account_code.as_str()).collect();
+            let mut total_rows = Vec::new();
+            for row in &rows {
+                let mut parent = accounts[index_by_code[&row.account_code]]
+                    .parent_code
+                    .as_str();
+                let mut has_shown_ancestor = false;
+                let mut guard = std::collections::HashSet::new();
+                while !parent.is_empty() && guard.insert(parent.to_string()) {
+                    if shown.contains(parent) {
+                        has_shown_ancestor = true;
+                        break;
+                    }
+                    parent = index_by_code
+                        .get(parent)
+                        .map(|&index| accounts[index].parent_code.as_str())
+                        .unwrap_or("");
+                }
+                if !has_shown_ancestor {
+                    total_rows.push(row);
+                }
+            }
+
             let opening_debit = checked_sum(
-                rows.iter().map(|r| r.opening_debit),
+                total_rows.iter().map(|r| r.opening_debit),
                 "جمع بدهکار افتتاحیه تراز آزمایشی",
             )?;
             let opening_credit = checked_sum(
-                rows.iter().map(|r| r.opening_credit),
+                total_rows.iter().map(|r| r.opening_credit),
                 "جمع بستانکار افتتاحیه تراز آزمایشی",
             )?;
             let period_debit = checked_sum(
-                rows.iter().map(|r| r.period_debit),
+                total_rows.iter().map(|r| r.period_debit),
                 "جمع بدهکار دوره تراز آزمایشی",
             )?;
             let period_credit = checked_sum(
-                rows.iter().map(|r| r.period_credit),
+                total_rows.iter().map(|r| r.period_credit),
                 "جمع بستانکار دوره تراز آزمایشی",
             )?;
             let closing_debit = checked_sum(
-                rows.iter().map(|r| r.closing_debit),
+                total_rows.iter().map(|r| r.closing_debit),
                 "جمع بدهکار پایان دوره تراز آزمایشی",
             )?;
             let closing_credit = checked_sum(
-                rows.iter().map(|r| r.closing_credit),
+                total_rows.iter().map(|r| r.closing_credit),
                 "جمع بستانکار پایان دوره تراز آزمایشی",
             )?;
 
@@ -2213,108 +2981,7 @@ impl Database {
         })
     }
 
-    pub fn get_dashboard(&self) -> Result<Dashboard, String> {
-        let settings = self.get_settings()?;
-        self.with_conn(|conn| {
-            let account_count = count(conn, "SELECT COUNT(*) FROM accounts")?;
-            let group_count = count(conn, "SELECT COUNT(*) FROM account_groups")?;
-            let voucher_count = count(conn, "SELECT COUNT(*) FROM vouchers")?;
-            let line_count = count(conn, "SELECT COUNT(*) FROM voucher_lines")?;
-            let mut amount_stmt = conn
-                .prepare("SELECT debit, credit FROM voucher_lines")
-                .map_err(db::db_error)?;
-            let amount_rows = amount_stmt
-                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
-                .map_err(db::db_error)?;
-            let mut total_debit = 0i64;
-            let mut total_credit = 0i64;
-            for row in amount_rows {
-                let (debit, credit) = row.map_err(db::db_error)?;
-                total_debit = checked_add(total_debit, debit, "جمع بدهکار داشبورد")?;
-                total_credit = checked_add(total_credit, credit, "جمع بستانکار داشبورد")?;
-            }
 
-            let mut assets_total = 0i64;
-            let mut liabilities_total = 0i64;
-            let mut equity_total = 0i64;
-            let mut income_total = 0i64;
-            let mut expense_total = 0i64;
-
-            // Balance-sheet figures follow the same closing/opening rule as
-            // the balance sheet; income and expenses also leave out the
-            // voucher that closes the temporary accounts.
-            for activity in &account_activities(conn, "", "", false, &[])? {
-                let net = checked_sub(activity.debit, activity.credit, "مانده حساب داشبورد")?;
-                match classify_activity(activity, net) {
-                    AccountClass::Asset => {
-                        assets_total = checked_add(assets_total, net, "جمع دارایی داشبورد")?
-                    }
-                    AccountClass::Liability => {
-                        liabilities_total = checked_add(
-                            liabilities_total,
-                            checked_neg(net, "مانده بدهی داشبورد")?,
-                            "جمع بدهی داشبورد",
-                        )?
-                    }
-                    AccountClass::Equity => {
-                        equity_total = checked_add(
-                            equity_total,
-                            checked_neg(net, "مانده سرمایه داشبورد")?,
-                            "جمع سرمایه داشبورد",
-                        )?
-                    }
-                    AccountClass::Income | AccountClass::Expense => {}
-                }
-            }
-            for activity in
-                &account_activities(conn, "", "", false, &[CLOSING_TEMPORARY, CLOSING_FINAL])?
-            {
-                let net = checked_sub(
-                    activity.debit,
-                    activity.credit,
-                    "مانده درآمد و هزینه داشبورد",
-                )?;
-                match classify_activity(activity, net) {
-                    AccountClass::Income => {
-                        income_total = checked_add(
-                            income_total,
-                            checked_neg(net, "درآمد داشبورد")?,
-                            "جمع درآمد داشبورد",
-                        )?
-                    }
-                    AccountClass::Expense => {
-                        expense_total = checked_add(expense_total, net, "جمع هزینه داشبورد")?
-                    }
-                    _ => {}
-                }
-            }
-
-            let recent = list_vouchers(conn, "", "", &search_terms(""))?
-                .into_iter()
-                .take(8)
-                .collect();
-
-            Ok(Dashboard {
-                company_name: settings.company_name,
-                fiscal_year: settings.fiscal_year,
-                today: settings.today,
-                database_path: self.path_string(),
-                account_count,
-                group_count,
-                voucher_count,
-                line_count,
-                total_debit,
-                total_credit,
-                assets_total,
-                liabilities_total,
-                equity_total,
-                income_total,
-                expense_total,
-                net_profit: checked_sub(income_total, expense_total, "سود خالص داشبورد")?,
-                recent,
-            })
-        })
-    }
 }
 
 /* ── Internal queries ───────────────────────────────────────── */
@@ -2329,8 +2996,9 @@ fn list_vouchers(
     from: &str,
     to: &str,
     terms: &SearchTerms,
+    page: Option<(i64, i64)>,
 ) -> Result<Vec<VoucherSummary>, String> {
-    let sql = format!(
+    let mut sql = format!(
         "SELECT v.id, v.number, v.date, v.updated_at, v.type, v.description,
                 COALESCE(SUM(l.debit), 0), COALESCE(SUM(l.credit), 0), COUNT(l.id)
            FROM vouchers v
@@ -2342,26 +3010,95 @@ fn list_vouchers(
           ORDER BY v.date DESC, v.number DESC",
         search_predicate()
     );
+    if page.is_some() {
+        sql.push_str(" LIMIT ?5 OFFSET ?6");
+    }
     let mut stmt = conn.prepare(&sql).map_err(db::db_error)?;
-
-    let rows = stmt
-        .query_map(params![from, to, terms.folded, terms.raw], |row| {
-            Ok(VoucherSummary {
-                id: row.get(0)?,
-                number: row.get(1)?,
-                date: row.get(2)?,
-                updated_at: row.get(3)?,
-                voucher_type: row.get(4)?,
-                description: row.get(5)?,
-                total_debit: row.get(6)?,
-                total_credit: row.get(7)?,
-                line_count: row.get(8)?,
-            })
+    let map_row = |row: &rusqlite::Row<'_>| {
+        Ok(VoucherSummary {
+            id: row.get(0)?,
+            number: row.get(1)?,
+            date: row.get(2)?,
+            updated_at: row.get(3)?,
+            voucher_type: row.get(4)?,
+            description: row.get(5)?,
+            total_debit: row.get(6)?,
+            total_credit: row.get(7)?,
+            line_count: row.get(8)?,
         })
+    };
+
+    let rows = if let Some((limit, offset)) = page {
+        stmt.query_map(
+            params![from, to, terms.folded, terms.raw, limit, offset],
+            map_row,
+        )
         .map_err(db::db_error)?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(db::db_error)?;
+        .map_err(db::db_error)?
+    } else {
+        stmt.query_map(params![from, to, terms.folded, terms.raw], map_row)
+            .map_err(db::db_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db::db_error)?
+    };
     Ok(rows)
+}
+
+/// Accepts the optional paging arguments sent by the UI. No limit means the
+/// caller wants the whole result, which reports and export paths rely on.
+fn page_window(
+    offset: Option<i64>,
+    limit: Option<i64>,
+) -> Result<Option<(i64, i64)>, String> {
+    let Some(limit) = limit else {
+        if offset.unwrap_or(0) != 0 {
+            return Err("برای صفحه‌بندی، اندازهٔ صفحه را هم مشخص کنید.".to_string());
+        }
+        return Ok(None);
+    };
+    let offset = offset.unwrap_or(0);
+    if offset < 0 {
+        return Err("موقعیت شروع صفحه نمی‌تواند منفی باشد.".to_string());
+    }
+    if limit <= 0 || limit > MAX_PAGE_SIZE {
+        return Err(format!(
+            "تعداد ردیف‌های هر صفحه باید بین ۱ و {} باشد.",
+            db::to_fa_digits(MAX_PAGE_SIZE.to_string())
+        ));
+    }
+    Ok(Some((limit, offset)))
+}
+
+fn voucher_list_totals(
+    conn: &Connection,
+    from: &str,
+    to: &str,
+    terms: &SearchTerms,
+) -> Result<(i64, i64, i64), String> {
+    let sql = format!(
+        "SELECT COUNT(DISTINCT v.id),
+                COALESCE(SUM(l.debit), 0),
+                COALESCE(SUM(l.credit), 0)
+           FROM vouchers v
+           LEFT JOIN voucher_lines l ON l.voucher_id = v.id
+          WHERE (?1 = '' OR v.date >= ?1)
+            AND (?2 = '' OR v.date <= ?2)
+            AND {}",
+        search_predicate()
+    );
+    conn.query_row(
+        &sql,
+        params![from, to, terms.folded, terms.raw],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    )
+    .map_err(db::db_error)
 }
 
 fn fetch_voucher_by_number(conn: &Connection, number: i64) -> Result<Option<Voucher>, String> {
@@ -2379,28 +3116,76 @@ fn fetch_voucher_by_number(conn: &Connection, number: i64) -> Result<Option<Vouc
 fn assert_postable_leaf(conn: &Connection, account_code: &str) -> Result<String, String> {
     let account = conn
         .query_row(
-            "SELECT name, is_postable,
-                    EXISTS(SELECT 1 FROM accounts child WHERE child.parent_code = accounts.code)
+            "SELECT name, level,
+                    CASE
+                        WHEN level > 3 THEN 0
+                        WHEN level = 3 AND EXISTS(
+                            SELECT 1 FROM accounts child
+                             WHERE child.parent_code = accounts.code AND child.level > 3
+                        ) AND NOT EXISTS(
+                            SELECT 1 FROM accounts child
+                             WHERE child.parent_code = accounts.code AND child.level <= 3
+                        ) THEN COALESCE(postable_before_children, 1)
+                        ELSE is_postable
+                    END,
+                    EXISTS(
+                        SELECT 1 FROM accounts child
+                         WHERE child.parent_code = accounts.code AND child.level <= 3
+                    )
                FROM accounts WHERE code = ?1",
             params![account_code],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
-                    row.get::<_, bool>(2)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, bool>(3)?,
                 ))
             },
         )
         .optional()
         .map_err(db::db_error)?
         .ok_or_else(|| format!("حساب با کد {} یافت نشد.", db::to_fa_digits(account_code)))?;
-    if account.1 == 0 || account.2 {
+    if account.1 > db::MAX_ACCOUNT_LEVEL || account.2 == 0 || account.3 {
         return Err(format!(
-            "حساب «{}» قابل ثبت نیست؛ حساب کل یا حساب غیرقابل ثبت را انتخاب نکنید.",
+            "حساب «{}» قابل ثبت نیست؛ فقط حساب‌های معین و تفصیلی ۱ که زیرحساب فعال ندارند قابل ثبت هستند. تفصیلی ۲ فقط برای سوابق قدیمی نگهداری می‌شود.",
             account.0
         ));
     }
     Ok(account.0)
+}
+
+fn assert_active_account(conn: &Connection, account_code: &str) -> Result<(), String> {
+    let account = conn
+        .query_row(
+            "SELECT name, is_active FROM accounts WHERE code = ?1",
+            params![account_code],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(db::db_error)?
+        .ok_or_else(|| format!("حساب با کد {} یافت نشد.", db::to_fa_digits(account_code)))?;
+    if account.1 == 0 {
+        return Err(format!(
+            "حساب «{}» غیرفعال است و برای ردیف جدید سند قابل انتخاب نیست.",
+            account.0
+        ));
+    }
+    Ok(())
+}
+
+fn assert_existing_legacy_account(conn: &Connection, account_code: &str) -> Result<String, String> {    conn.query_row(
+        "SELECT name FROM accounts WHERE code = ?1 AND level > ?2
+          AND NOT EXISTS (SELECT 1 FROM accounts child WHERE child.parent_code = accounts.code)",
+        params![account_code, db::MAX_ACCOUNT_LEVEL],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(db::db_error)?
+    .ok_or_else(|| format!(
+        "حساب قدیمی {} دیگر قابل استفاده نیست؛ برای ثبت جدید، معین یا تفصیلی ۱ را انتخاب کنید.",
+        db::to_fa_digits(account_code)
+    ))
 }
 
 /// A voucher type is not a free label: the closing/opening types decide which
@@ -2898,7 +3683,7 @@ pub fn format_amount(value: i64) -> String {
     let digits = value.unsigned_abs().to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, ch) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
@@ -3189,14 +3974,6 @@ mod tests {
         assert_eq!(balance.profit, 1_000_000);
         assert_eq!(balance.total_liabilities_equity, 1_000_000);
         assert!(balance.balanced);
-
-        let dashboard = db.get_dashboard().unwrap();
-        assert_eq!(dashboard.voucher_count, 1);
-        assert_eq!(dashboard.line_count, 2);
-        assert_eq!(dashboard.total_debit, dashboard.total_credit);
-        assert_eq!(dashboard.assets_total, 1_000_000);
-        assert_eq!(dashboard.net_profit, 1_000_000);
-        assert_eq!(dashboard.recent.len(), 1);
     }
 
     #[test]
@@ -3261,10 +4038,115 @@ mod tests {
         assert_eq!(balance.assets_total, 880);
         assert_eq!(balance.profit, report.net_profit);
         assert!(balance.balanced);
+    }
 
-        let dashboard = db.get_dashboard().unwrap();
-        assert_eq!(dashboard.assets_total, 880);
-        assert_eq!(dashboard.net_profit, report.net_profit);
+    #[test]
+    fn legacy_detail2_is_not_selectable_but_its_detail1_parent_remains_postable() {
+        let db = db::memory_database();
+        db.create_account("991", "کل آزمایشی", 1, "1", "debtor", "", false)
+            .unwrap();
+        db.create_account("99101", "معین آزمایشی", 2, "1", "debtor", "991", true)
+            .unwrap();
+        let detail1 = db
+            .create_account("9910101", "تفصیلی ۱ آزمایشی", 3, "1", "debtor", "99101", true)
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO accounts (code, name, level, group_code, nature, parent_code, parent_name, is_postable) VALUES ('991010101', 'تفصیلی ۲ قدیمی', 4, '1', 'debtor', '9910101', 'تفصیلی ۱ آزمایشی', 1)",
+                [],
+            )
+            .map_err(db::db_error)?;
+            conn.execute(
+                "UPDATE accounts SET is_postable = 0, postable_before_children = 1 WHERE code = '9910101'",
+                [],
+            )
+            .map_err(db::db_error)?;
+            Ok(())
+        }).unwrap();
+
+        let accounts = db.list_accounts().unwrap().accounts;
+        assert!(accounts.iter().find(|a| a.code == detail1.code).unwrap().is_postable);
+        assert!(!accounts.iter().find(|a| a.code == "991010101").unwrap().is_postable);
+
+        let saved = db.save_voucher(voucher(
+            "1405/01/01",
+            vec![line("9910101", 100, 0), line("110101", 0, 100)],
+        )).unwrap();
+        assert_eq!(saved.lines[0].account_code, "9910101");
+        let rejected = db.save_voucher(voucher(
+            "1405/01/02",
+            vec![line("991010101", 100, 0), line("110101", 0, 100)],
+        ));
+        assert!(rejected.is_err());
+    }
+
+    #[test]
+    fn an_existing_voucher_can_be_saved_without_replacing_its_legacy_detail2_code() {
+        let db = db::memory_database();
+        db.create_account("992", "کل آزمایشی", 1, "1", "debtor", "", false)
+            .unwrap();
+        db.create_account("99201", "معین آزمایشی", 2, "1", "debtor", "992", true)
+            .unwrap();
+        db.create_account("9920101", "تفصیلی ۱ آزمایشی", 3, "1", "debtor", "99201", true)
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO accounts (code, name, level, group_code, nature, parent_code, parent_name, is_postable) VALUES ('992010101', 'تفصیلی ۲ قدیمی', 4, '1', 'debtor', '9920101', 'تفصیلی ۱ آزمایشی', 1)",
+                [],
+            ).map_err(db::db_error)?;
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type, description) VALUES (777, '1405/01/01', ?1, 'سند قدیمی')",
+                params![VOUCHER_TYPES[0]],
+            ).map_err(db::db_error)?;
+            let voucher_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, description, debit, credit) VALUES (?1, 1, '992010101', '', 100, 0)",
+                params![voucher_id],
+            ).map_err(db::db_error)?;
+            conn.execute(
+                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, description, debit, credit) VALUES (?1, 2, '110101', '', 0, 100)",
+                params![voucher_id],
+            ).map_err(db::db_error)?;
+            Ok(())
+        }).unwrap();
+        let old = db.get_voucher(777).unwrap().unwrap();
+        let input = VoucherInput {
+            id: Some(old.id),
+            number: Some(old.number),
+            date: old.date.clone(),
+            voucher_type: old.voucher_type.clone(),
+            description: old.description.clone(),
+            lines: old.lines.iter().map(|line| VoucherLineInput {
+                account_code: line.account_code.clone(),
+                description: line.description.clone(),
+                debit: line.debit,
+                credit: line.credit,
+            }).collect(),
+        };
+        let saved = db.save_voucher_if_unchanged(input, Some(&old.updated_at)).unwrap();
+        assert_eq!(saved.lines[0].account_code, "992010101");
+    }
+
+    #[test]
+    fn saves_voucher_to_a_new_detail1_account() {
+        let db = db::memory_database();
+        db.create_account("991", "کل آزمایشی", 1, "1", "debtor", "", false)
+            .unwrap();
+        db.create_account("99101", "معین آزمایشی", 2, "1", "debtor", "991", true)
+            .unwrap();
+        let detail1 = db
+            .create_account("9910101", "تفصیلی ۱ آزمایشی", 3, "1", "debtor", "99101", true)
+            .unwrap();
+        assert_eq!(detail1.level, 3);
+        assert!(detail1.is_postable);
+
+        let saved = db
+            .save_voucher(voucher(
+                "1405/01/01",
+                vec![line("9910101", 100, 0), line("110101", 0, 100)],
+            ))
+            .unwrap();
+        assert_eq!(saved.lines[0].account_code, "9910101");
     }
 
     #[test]
@@ -3336,6 +4218,58 @@ mod tests {
             .accounts
             .iter()
             .any(|account| account.code == "902101"));
+    }
+
+    #[test]
+    fn bulk_import_supports_detail1_as_a_postable_leaf() {
+        let db = db::memory_database();
+        let import = crate::excel::BulkVoucherImport {
+            file_name: "detail1.xlsx".to_string(),
+            accounts: vec![
+                crate::excel::ImportedAccount {
+                    code: "991".to_string(),
+                    name: "گروه آزمایشی کل".to_string(),
+                    parent_code: String::new(),
+                    group_code: "1".to_string(),
+                    level: 1,
+                    nature: "debtor".to_string(),
+                },
+                crate::excel::ImportedAccount {
+                    code: "99101".to_string(),
+                    name: "حساب معین آزمایشی".to_string(),
+                    parent_code: "991".to_string(),
+                    group_code: "1".to_string(),
+                    level: 2,
+                    nature: "debtor".to_string(),
+                },
+                crate::excel::ImportedAccount {
+                    code: "9910101".to_string(),
+                    name: "حساب تفصیلی ۱ آزمایشی".to_string(),
+                    parent_code: "99101".to_string(),
+                    group_code: "1".to_string(),
+                    level: 3,
+                    nature: "debtor".to_string(),
+                },
+            ],
+            vouchers: vec![VoucherInput {
+                id: None,
+                number: Some(1),
+                date: "1405/01/01".to_string(),
+                voucher_type: VOUCHER_TYPES[0].to_string(),
+                description: String::new(),
+                lines: vec![line("9910101", 250, 0), line("110101", 0, 250)],
+            }],
+        };
+
+        assert_eq!(db.import_vouchers(import, false).unwrap(), 1);
+        let accounts = db.list_accounts().unwrap().accounts;
+        let detail1 = accounts.iter().find(|account| account.code == "9910101").unwrap();
+        let subsidiary = accounts.iter().find(|account| account.code == "99101").unwrap();
+        assert_eq!(detail1.level, 3);
+        assert!(detail1.is_postable);
+        assert!(!subsidiary.is_postable);
+        let saved = db.get_voucher(1).unwrap().unwrap();
+        assert_eq!(saved.lines[0].account_code, "9910101");
     }
 
     #[test]
@@ -3453,6 +4387,143 @@ mod tests {
             .unwrap_err()
             .contains("تغییر کرده‌اند"));
         assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 2);
+    }
+
+    fn bulk_delete_input(scope: &str) -> BulkVoucherDeleteInput {
+        BulkVoucherDeleteInput {
+            scope: scope.to_string(),
+            from_date: String::new(),
+            to_date: String::new(),
+            from_number: None,
+            to_number: None,
+        }
+    }
+
+    #[test]
+    fn bulk_delete_previews_and_deletes_a_date_range() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/05", 1_000)).unwrap();
+        db.save_voucher(cash_sale("1405/02/05", 2_000)).unwrap();
+        db.save_voucher(cash_sale("1405/03/05", 3_000)).unwrap();
+
+        let input = BulkVoucherDeleteInput {
+            from_date: "۱۴۰۵/۰۲/۰۱".to_string(),
+            to_date: "1405/02/31".to_string(),
+            ..bulk_delete_input("dateRange")
+        };
+        let preview = db.preview_bulk_voucher_delete(&input).unwrap();
+        assert_eq!(preview.scope, "dateRange");
+        assert_eq!(preview.total_matched, 1);
+        assert_eq!(preview.deletable_count, 1);
+        assert_eq!(preview.locked_count, 0);
+        assert_eq!(preview.deletable_sample[0].voucher_number, 2);
+        assert_eq!(preview.date_range.as_ref().unwrap().from, "1405/02/01");
+
+        let result = db
+            .apply_bulk_voucher_delete(&input, &preview.plan_token, false)
+            .unwrap();
+        assert_eq!(result.deleted_count, 1);
+        assert_eq!(result.locked_count, 0);
+        assert!(result.message.contains("۱ سند"));
+        assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 2);
+        assert!(db.get_voucher(2).unwrap().is_none());
+        let remaining_lines: i64 = db
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM voucher_lines", [], |row| row.get(0))
+                    .map_err(db::db_error)
+            })
+            .unwrap();
+        assert_eq!(remaining_lines, 4);
+    }
+
+    #[test]
+    fn bulk_delete_handles_number_range_and_all_scopes() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/05", 1_000)).unwrap();
+        db.save_voucher(cash_sale("1405/01/06", 2_000)).unwrap();
+        db.save_voucher(cash_sale("1405/01/07", 3_000)).unwrap();
+
+        let number_input = BulkVoucherDeleteInput {
+            from_number: Some(2),
+            to_number: Some(3),
+            ..bulk_delete_input("numberRange")
+        };
+        let number_preview = db.preview_bulk_voucher_delete(&number_input).unwrap();
+        assert_eq!(number_preview.total_matched, 2);
+        assert_eq!(number_preview.number_range.as_ref().unwrap().from, 2);
+        db.apply_bulk_voucher_delete(&number_input, &number_preview.plan_token, false)
+            .unwrap();
+        assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+
+        let all_input = bulk_delete_input("all");
+        let all_preview = db.preview_bulk_voucher_delete(&all_input).unwrap();
+        assert_eq!(all_preview.total_matched, 1);
+        let result = db
+            .apply_bulk_voucher_delete(&all_input, &all_preview.plan_token, false)
+            .unwrap();
+        assert_eq!(result.deleted_count, 1);
+        assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 0);
+    }
+
+    #[test]
+    fn bulk_delete_rejects_a_stale_preview() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/05", 1_000)).unwrap();
+        let preview = db
+            .preview_bulk_voucher_delete(&bulk_delete_input("all"))
+            .unwrap();
+        db.save_voucher(cash_sale("1405/01/06", 2_000)).unwrap();
+
+        assert!(db
+            .apply_bulk_voucher_delete(&bulk_delete_input("all"), &preview.plan_token, false)
+            .unwrap_err()
+            .contains("تغییر کرده‌اند"));
+        assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 2);
+    }
+
+    #[test]
+    fn bulk_delete_validates_ranges_and_scope() {
+        let db = db::memory_database();
+
+        let reversed_dates = BulkVoucherDeleteInput {
+            from_date: "1405/02/01".to_string(),
+            to_date: "1405/01/01".to_string(),
+            ..bulk_delete_input("dateRange")
+        };
+        assert!(db
+            .preview_bulk_voucher_delete(&reversed_dates)
+            .unwrap_err()
+            .contains("بعد از تاریخ پایان"));
+
+        let reversed_numbers = BulkVoucherDeleteInput {
+            from_number: Some(10),
+            to_number: Some(2),
+            ..bulk_delete_input("numberRange")
+        };
+        assert!(db
+            .preview_bulk_voucher_delete(&reversed_numbers)
+            .unwrap_err()
+            .contains("بزرگ‌تر"));
+
+        assert!(db
+            .preview_bulk_voucher_delete(&bulk_delete_input("unknown"))
+            .unwrap_err()
+            .contains("معتبر نیست"));
+    }
+
+    #[test]
+    fn bulk_delete_backup_failure_keeps_vouchers() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/05", 1_000)).unwrap();
+        let input = bulk_delete_input("all");
+        let preview = db.preview_bulk_voucher_delete(&input).unwrap();
+        assert_eq!(preview.backup_directory, "");
+
+        let error = db
+            .apply_bulk_voucher_delete(&input, &preview.plan_token, true)
+            .unwrap_err();
+        assert!(error.contains("پشتیبان"));
+        assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
     }
 
     #[test]
@@ -3615,7 +4686,6 @@ mod tests {
         assert!(db.get_voucher(saved.number).unwrap().is_none());
         assert!(db.list_vouchers("", "", "").unwrap().vouchers.is_empty());
         assert!(db.get_journal("", "", "").unwrap().rows.is_empty());
-        assert_eq!(db.get_dashboard().unwrap().line_count, 0);
         assert!(db.delete_voucher(saved.id, Some(&saved.updated_at)).is_err());
     }
 
@@ -3690,6 +4760,84 @@ mod tests {
         let balance = db.get_balance_sheet("1405/02/31").unwrap();
         assert_eq!(balance.assets_total, 800_000);
         assert!(balance.balanced);
+    }
+
+    #[test]
+    fn trial_balance_rolls_up_level_one_and_filters_code_range() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/05", 500_000)).unwrap();
+        db.save_voucher(cash_sale("1405/01/06", 300_000)).unwrap();
+
+        // Default view: only level-1 rows, each showing its whole branch.
+        let level_one = db
+            .get_trial_balance_filtered("1405/01/01", "1405/01/31", "", "", false, false)
+            .unwrap();
+        assert!(level_one.rows.iter().all(|row| row.level == 1));
+        let cash_parent = level_one
+            .rows
+            .iter()
+            .find(|row| row.account_code == "1101")
+            .unwrap();
+        assert_eq!(cash_parent.period_debit, 800_000);
+        assert_eq!(cash_parent.closing_debit, 800_000);
+        let revenue_parent = level_one
+            .rows
+            .iter()
+            .find(|row| row.account_code == "4101")
+            .unwrap();
+        assert_eq!(revenue_parent.period_credit, 800_000);
+        assert_eq!(level_one.period_debit, level_one.period_credit);
+
+        // A code range searches every level, but a shown parent keeps its
+        // children out of the totals so nothing is counted twice.
+        let range = db
+            .get_trial_balance_filtered("1405/01/01", "1405/01/31", "1101", "1101", false, false)
+            .unwrap();
+        assert!(range
+            .rows
+            .iter()
+            .all(|row| row.account_code.starts_with("1101")));
+        assert_eq!(range.rows.len(), 2);
+        assert_eq!(range.period_debit, 800_000);
+        assert_eq!(range.period_credit, 0);
+    }
+
+    #[test]
+    fn voucher_save_rejects_inactive_accounts_but_keeps_saved_lines_editable() {
+        let db = db::memory_database();
+        let inactive = db
+            .create_account_active(
+                "110202001",
+                "بانک غیرفعال",
+                3,
+                "1",
+                "debtor",
+                "110202",
+                true,
+                false,
+            )
+            .unwrap();
+        let error = db
+            .save_voucher(voucher(
+                "1405/01/05",
+                vec![line(&inactive.code, 1_000, 0), line("410101", 0, 1_000)],
+            ))
+            .unwrap_err();
+        assert!(error.contains("غیرفعال"));
+
+        // A line saved before its account was deactivated stays editable.
+        let saved = db.save_voucher(cash_sale("1405/01/05", 500_000)).unwrap();
+        let cash = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110101")
+            .unwrap();
+        db.set_account_active(cash.id, false).unwrap();
+        let mut edited = cash_sale("1405/01/05", 500_000);
+        edited.id = Some(saved.id);
+        db.save_voucher(edited).unwrap();
     }
 
     #[test]
@@ -3815,10 +4963,6 @@ mod tests {
         assert_eq!(balance.profit, 0);
         assert!(balance.balanced);
 
-        let dashboard = db.get_dashboard().unwrap();
-        assert_eq!(dashboard.income_total, 1_000_000);
-        assert_eq!(dashboard.net_profit, 1_000_000);
-
         // The trial balance still shows every voucher, closing ones included.
         let trial = db.get_trial_balance("", "").unwrap();
         let revenue = trial
@@ -3882,12 +5026,6 @@ mod tests {
         assert_eq!(after_opening.equity_total, 1_000_000);
         assert_eq!(after_opening.profit, 0);
         assert!(after_opening.balanced);
-
-        let dashboard = db.get_dashboard().unwrap();
-        assert_eq!(dashboard.assets_total, 1_000_000);
-        assert_eq!(dashboard.equity_total, 1_000_000);
-        assert_eq!(dashboard.income_total, 1_000_000);
-        assert_eq!(dashboard.net_profit, 1_000_000);
     }
 
     #[test]
@@ -3963,6 +5101,42 @@ mod tests {
         assert!(db.get_ledger("110101", "1405/03/01", "1405/02/01").is_err());
         assert!(db.get_trial_balance("1405/03/01", "1405/02/01").is_err());
         assert!(db.get_income_statement("1405/03/01", "1405/02/01").is_err());
+    }
+
+    #[test]
+    fn paged_lists_keep_totals_for_the_whole_filter() {
+        let db = db::memory_database();
+        db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+        db.save_voucher(cash_sale("1405/01/11", 2_000)).unwrap();
+        db.save_voucher(cash_sale("1405/01/12", 3_000)).unwrap();
+
+        let page = db
+            .list_vouchers_page("", "", "", Some(1), Some(1))
+            .unwrap();
+        assert_eq!(page.vouchers.len(), 1);
+        assert_eq!(page.total_count, 3);
+        assert_eq!(page.matched_count, 3);
+        assert_eq!(page.total_debit, 6_000);
+        assert_eq!(page.total_credit, 6_000);
+
+        let journal = db
+            .get_journal_page("", "", "", Some(0), Some(2))
+            .unwrap();
+        assert_eq!(journal.rows.len(), 2);
+        assert_eq!(journal.row_count, 6);
+        assert_eq!(journal.voucher_count, 3);
+        assert_eq!(journal.total_debit, 6_000);
+        assert_eq!(journal.total_credit, 6_000);
+
+        assert!(db
+            .list_vouchers_page("", "", "", Some(-1), Some(10))
+            .is_err());
+        assert!(db
+            .list_vouchers_page("", "", "", Some(0), Some(0))
+            .is_err());
+        assert!(db
+            .list_vouchers_page("", "", "", Some(10), None)
+            .is_err());
     }
 
     #[test]

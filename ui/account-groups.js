@@ -13,7 +13,24 @@ const tauriWindow = (window.__TAURI__ && window.__TAURI__.window)
   : null;
 
 const TYPES = ['دارایی', 'بدهی', 'سرمایه', 'درآمد', 'هزینه', 'سایر'];
+const SECTIONS = [
+  'non_current_asset',
+  'current_asset',
+  'equity',
+  'non_current_liability',
+  'current_liability',
+  'revenue',
+  'cogs',
+  'selling_expense',
+  'admin_expense',
+  'other_operating',
+  'finance_cost',
+  'other_non_operating',
+  'income_tax',
+  'memorandum',
+];
 const FA_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+const charCount = (value) => [...String(value ?? '')].length;
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -22,7 +39,7 @@ const state = {
   groups: [],
   selectedId: null,
   mode: 'view', // view | new | edit
-  form: { code: '', name: '', type: TYPES[0] },
+  form: { code: '', name: '', type: TYPES[0], defaultSection: '' },
   initialCode: '',
   loading: true,
   saving: false,
@@ -75,6 +92,7 @@ function normalizeGroup(raw) {
     code: String((raw && raw.code) ?? ''),
     name: String((raw && raw.name) ?? ''),
     type: TYPES.includes(raw && raw.type) ? raw.type : String((raw && raw.type) ?? ''),
+    defaultSection: SECTIONS.includes(raw && raw.defaultSection) ? raw.defaultSection : '',
     accountCount: Math.max(0, Number(raw && raw.accountCount) || 0),
   };
 }
@@ -90,8 +108,13 @@ function selectedGroup() {
 
 function setFormFromGroup(group) {
   state.form = group
-    ? { code: toFaDigits(group.code), name: group.name, type: group.type || TYPES[0] }
-    : { code: '', name: '', type: TYPES[0] };
+    ? {
+      code: toFaDigits(group.code),
+      name: group.name,
+      type: group.type || TYPES[0],
+      defaultSection: group.defaultSection || '',
+    }
+    : { code: '', name: '', type: TYPES[0], defaultSection: '' };
 }
 
 function isTypingTarget(target) {
@@ -197,6 +220,7 @@ function renderForm() {
   const codeInput = $('#agCode');
   const nameInput = $('#agName');
   const typeSelect = $('#agType');
+  const sectionSelect = $('#agSection');
 
   if (codeInput) {
     codeInput.value = state.form.code;
@@ -210,6 +234,10 @@ function renderForm() {
   if (typeSelect) {
     typeSelect.value = state.form.type;
     typeSelect.disabled = !editing || state.saving || state.deleting;
+  }
+  if (sectionSelect) {
+    sectionSelect.value = state.form.defaultSection || '';
+    sectionSelect.disabled = !editing || state.saving || state.deleting;
   }
 
   let hint = 'برای ویرایش، دکمه اصلاح را بزنید.';
@@ -378,6 +406,7 @@ function startNew() {
     code: toFaDigits((maxCode + 1n).toString()),
     name: '',
     type: TYPES[0],
+    defaultSection: '',
   };
   state.initialCode = onlyDigits(state.form.code);
   clearError();
@@ -421,10 +450,13 @@ function isDirty() {
   if (state.mode === 'new') {
     return normalizeName(state.form.name) !== ''
       || onlyDigits(state.form.code) !== state.initialCode
-      || state.form.type !== TYPES[0];
+      || state.form.type !== TYPES[0]
+      || state.form.defaultSection !== '';
   }
   if (state.mode === 'edit' && group) {
-    return normalizeName(state.form.name) !== group.name || state.form.type !== group.type;
+    return normalizeName(state.form.name) !== group.name
+      || state.form.type !== group.type
+      || state.form.defaultSection !== group.defaultSection;
   }
   return false;
 }
@@ -438,12 +470,13 @@ async function save() {
   const code = onlyDigits(state.form.code);
   const name = normalizeName(state.form.name);
   const type = state.form.type;
+  const defaultSection = state.form.defaultSection || '';
 
   if (!code || !name) {
     showError('لطفاً کد و نام گروه را وارد کنید.', 'validation');
     return;
   }
-  if (code.length > 50) {
+  if (charCount(code) > 50) {
     showError('کد گروه نمی‌تواند بیشتر از ۵۰ کاراکتر باشد.', 'validation');
     return;
   }
@@ -451,12 +484,16 @@ async function save() {
     showError('کد گروه باید فقط شامل ارقام انگلیسی و بزرگ‌تر از صفر باشد.', 'validation');
     return;
   }
-  if (name.length > 255) {
+  if (charCount(name) > 255) {
     showError('نام گروه نمی‌تواند بیشتر از ۲۵۵ کاراکتر باشد.', 'validation');
     return;
   }
   if (!TYPES.includes(type)) {
     showError('نوع حساب انتخاب‌شده معتبر نیست.', 'validation');
+    return;
+  }
+  if (defaultSection && !SECTIONS.includes(defaultSection)) {
+    showError('بخش پیش‌فرض صورت مالی انتخاب‌شده معتبر نیست.', 'validation');
     return;
   }
   if (wasNew && state.groups.some((group) => group.code === code)) {
@@ -485,6 +522,7 @@ async function save() {
         code,
         name,
         groupType: type,
+        defaultSection,
       }));
       if (!Number.isFinite(saved.id) || saved.id <= 0) {
         throw new Error('پاسخ نامعتبر از پایگاه داده دریافت شد.');
@@ -496,6 +534,7 @@ async function save() {
         code: editingGroup.code,
         name,
         groupType: type,
+        defaultSection,
       }));
       if (!Number.isFinite(saved.id) || saved.id <= 0) {
         throw new Error('پاسخ نامعتبر از پایگاه داده دریافت شد.');
@@ -760,6 +799,10 @@ function bindEvents() {
 
   $('#agType').addEventListener('change', (event) => {
     state.form.type = event.target.value;
+  });
+
+  $('#agSection').addEventListener('change', (event) => {
+    state.form.defaultSection = event.target.value;
   });
 
   $('#agGridBody').addEventListener('click', (event) => {

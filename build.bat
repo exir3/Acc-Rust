@@ -28,6 +28,9 @@ REM  Keep the build cache inside the project folder.
 if not defined CARGO_TARGET_DIR (
     set "CARGO_TARGET_DIR=%ROOT%\cargo-target"
 )
+set "LOCAL_TARGET=%CARGO_TARGET_DIR%"
+for %%I in ("%LOCAL_TARGET%") do set "LOCAL_TARGET=%%~fI"
+set "CARGO_TARGET_DIR=%LOCAL_TARGET%"
 
 REM --- Argument ----------------------------------------------
 set "MODE=%~1"
@@ -76,7 +79,7 @@ REM  keep very old timestamps on edited files. A changed file can
 REM  then look older than the last build, so cargo silently reuses
 REM  a stale binary. Touching these two files forces the crate and
 REM  its embedded ui\ to be compiled from the current sources.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$root=$env:ROOT; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\src\lib.rs')).LastWriteTime=Get-Date; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\build.rs')).LastWriteTime=Get-Date"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=$env:ROOT; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\src\lib.rs')).LastWriteTime=Get-Date; (Get-Item -LiteralPath (Join-Path $root 'src-tauri\build.rs')).LastWriteTime=Get-Date"
 if errorlevel 1 (
     echo [ERROR] Could not refresh source timestamps.
     goto :fail
@@ -91,6 +94,11 @@ echo [1/1] Building portable exe, release profile ...
 call %TAURI% build --no-bundle
 if errorlevel 1 goto :fail
 set "EXE=%CARGO_TARGET_DIR%\release\Hesabdari.exe"
+if not exist "%EXE%" (
+    echo [ERROR] Build finished but the exe was not found:
+    echo         %EXE%
+    goto :fail
+)
 set "MADE_INSTALLER=0"
 goto :report
 
@@ -98,10 +106,15 @@ goto :report
 echo [1/2] Building release binary ...
 call %TAURI% build --no-bundle
 if errorlevel 1 goto :fail
+set "EXE=%CARGO_TARGET_DIR%\release\Hesabdari.exe"
+if not exist "%EXE%" (
+    echo [ERROR] Build finished but the exe was not found:
+    echo         %EXE%
+    goto :fail
+)
 echo [2/2] Building NSIS installer ...
 call %TAURI% build --bundles nsis
 if errorlevel 1 goto :fail
-set "EXE=%CARGO_TARGET_DIR%\release\Hesabdari.exe"
 set "MADE_INSTALLER=1"
 goto :report
 
@@ -109,11 +122,16 @@ goto :report
 echo [1/3] Building release binary ...
 call %TAURI% build --no-bundle
 if errorlevel 1 goto :fail
+set "EXE=%CARGO_TARGET_DIR%\release\Hesabdari.exe"
+if not exist "%EXE%" (
+    echo [ERROR] Build finished but the exe was not found:
+    echo         %EXE%
+    goto :fail
+)
 echo [2/3] Building NSIS installer ...
 call %TAURI% build --bundles nsis
 if errorlevel 1 goto :fail
 echo [3/3] Copying outputs ...
-set "EXE=%CARGO_TARGET_DIR%\release\Hesabdari.exe"
 set "MADE_INSTALLER=1"
 
 :report
@@ -131,10 +149,18 @@ set "DIST=%ROOT%\dist"
 if not exist "%DIST%" mkdir "%DIST%"
 if defined EXE if exist "%EXE%" (
     copy /y "%EXE%" "%DIST%\Hesabdari.exe" >nul
+    if errorlevel 1 (
+        echo [ERROR] Could not copy the portable exe to %DIST%.
+        goto :fail
+    )
     echo   Copied to    : %DIST%\Hesabdari.exe
 )
 if "%MADE_INSTALLER%"=="1" if exist "%CARGO_TARGET_DIR%\release\bundle\nsis\*.exe" (
     copy /y "%CARGO_TARGET_DIR%\release\bundle\nsis\*.exe" "%DIST%\" >nul
+    if errorlevel 1 (
+        echo [ERROR] Could not copy the installer to %DIST%.
+        goto :fail
+    )
     echo   Installer copied to : %DIST%\
 )
 

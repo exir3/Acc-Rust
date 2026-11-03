@@ -321,8 +321,6 @@ input, textarea, select { user-select: text; }
   border-color: #dc9f9f;
 }
 
-/* سایدبار می‌تواند از منوی «تنظیمات» پنهان/نمایان شود. */
-.sidebar.is-hidden { display: none; }
 
 @media (max-width: 1320px) {
   .menubar-title { display: none; }
@@ -1032,6 +1030,14 @@ input, textarea, select { user-select: text; }
 }
 .btn-primary:hover:not(:disabled) { background: linear-gradient(135deg, #3f8bfb 0%, #2a6ee0 55%, #1c56b5 100%); }
 .btn-primary .ico { color: #fff; }
+.btn-danger {
+  background: linear-gradient(135deg, #d9534f 0%, #b52b27 55%, #8f1f1c 100%);
+  border-color: #8f1f1c;
+  color: #fff;
+  box-shadow: 0 5px 14px -6px rgba(181, 43, 39, .65), inset 0 1px 0 rgba(255, 255, 255, .22);
+}
+.btn-danger:hover:not(:disabled) { background: linear-gradient(135deg, #e4635e 0%, #c33632 55%, #9d2420 100%); }
+.btn-danger .ico { color: #fff; }
 .btn-solid-green {
   background: linear-gradient(135deg, #1a9a63 0%, #0f7b4f 60%, #0b6040 100%);
   border-color: #0b6040;
@@ -1958,7 +1964,7 @@ input, textarea, select { user-select: text; }
   font-weight: 700;
   background: linear-gradient(to bottom, #ffffff 0%, #ededed 55%, #c8c8c8 100%);
 }
-.vf-grid td.vf-detail2 {
+.vf-grid td.vf-detail1 {
   text-align: center;
   color: #1e3a8a;
   font-size: 12px;
@@ -2378,6 +2384,9 @@ input, textarea, select { user-select: text; }
 }
 .ap-row.not-postable .ap-cell.level { color: #9a3412; }
 .ap-row.not-postable.selected .ap-cell.level { color: #ffe4c7; }
+.ap-row.inactive .ap-cell:not(.rownum) { color: #9aa3ad; }
+.ap-row.inactive .ap-cell.code { text-decoration: line-through; }
+.ap-row.inactive.selected .ap-cell:not(.rownum) { color: #e5e7eb; }
 .ap-row.empty { cursor: default; }
 .ap-row.empty .ap-cell { color: transparent; }
 .ap-row.ap-nostate {

@@ -40,6 +40,8 @@ pub struct AppState {
     bulk_voucher_import: Mutex<Option<excel::BulkVoucherImport>>,
     /// Reorganization preview awaiting explicit confirmation.
     reorganization_preview: Mutex<Option<(String, String)>>,
+    /// Bulk-delete preview token awaiting explicit confirmation.
+    bulk_delete_preview: Mutex<Option<String>>,
 }
 
 fn report_meta(state: &State<'_, AppState>) -> Result<report::ReportMeta, String> {
@@ -48,6 +50,7 @@ fn report_meta(state: &State<'_, AppState>) -> Result<report::ReportMeta, String
         company: settings.company_name,
         fiscal_year: settings.fiscal_year,
         today: settings.today,
+        show_print_date_time: true,
     })
 }
 
@@ -89,14 +92,18 @@ fn create_account_group(
     code: String,
     name: String,
     group_type: String,
+    default_section: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::AccountGroup, String> {
     require_window(&window, &["main", "account-groups"])?;
-    let group = state
-        .database
-        .create_account_group(&code, &name, &group_type)?;
+    let group = state.database.create_account_group(
+        &code,
+        &name,
+        &group_type,
+        default_section.as_deref().unwrap_or(""),
+    )?;
     notify_accounts_changed(&app);
     Ok(group)
 }
@@ -107,14 +114,19 @@ fn update_account_group(
     code: String,
     name: String,
     group_type: String,
+    default_section: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::AccountGroup, String> {
     require_window(&window, &["main", "account-groups"])?;
-    let group = state
-        .database
-        .update_account_group(id, &code, &name, &group_type)?;
+    let group = state.database.update_account_group(
+        id,
+        &code,
+        &name,
+        &group_type,
+        default_section.as_deref().unwrap_or(""),
+    )?;
     notify_accounts_changed(&app);
     Ok(group)
 }
@@ -140,6 +152,7 @@ fn list_accounts(state: State<'_, AppState>) -> Result<db::AccountList, String> 
 }
 
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 fn create_account(
     code: String,
     name: String,
@@ -148,12 +161,13 @@ fn create_account(
     nature: String,
     parent_code: String,
     is_postable: bool,
+    is_active: Option<bool>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    let account = state.database.create_account(
+    let account = state.database.create_account_active(
         &code,
         &name,
         level,
@@ -161,12 +175,14 @@ fn create_account(
         &nature,
         &parent_code,
         is_postable,
+        is_active.unwrap_or(true),
     )?;
     notify_accounts_changed(&app);
     Ok(account)
 }
 
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 fn update_account(
     id: i64,
     name: String,
@@ -174,12 +190,13 @@ fn update_account(
     nature: String,
     parent_code: String,
     is_postable: bool,
+    is_active: Option<bool>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    let account = state.database.update_account(
+    let mut account = state.database.update_account(
         id,
         &name,
         &group_code,
@@ -187,6 +204,25 @@ fn update_account(
         &parent_code,
         is_postable,
     )?;
+    if let Some(is_active) = is_active {
+        if account.is_active != is_active {
+            account = state.database.set_account_active(id, is_active)?;
+        }
+    }
+    notify_accounts_changed(&app);
+    Ok(account)
+}
+
+#[tauri::command(async)]
+fn set_account_active(
+    id: i64,
+    is_active: bool,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::Account, String> {
+    require_window(&window, &["main", "account-groups", "account-definition"])?;
+    let account = state.database.set_account_active(id, is_active)?;
     notify_accounts_changed(&app);
     Ok(account)
 }
@@ -202,6 +238,21 @@ fn delete_account(
     state.database.delete_account(id)?;
     notify_accounts_changed(&app);
     Ok(())
+}
+
+#[tauri::command(async)]
+fn delete_accounts_bulk(
+    ids: Vec<i64>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::BulkAccountDeleteResult, String> {
+    require_window(&window, &["main", "account-definition"])?;
+    let result = state.database.delete_accounts_bulk(ids)?;
+    if result.deleted_count > 0 {
+        notify_accounts_changed(&app);
+    }
+    Ok(result)
 }
 
 #[tauri::command(async)]
@@ -270,13 +321,26 @@ fn adjacent_voucher_number(
 }
 
 #[tauri::command(async)]
+fn get_voucher_count(state: State<'_, AppState>) -> Result<i64, String> {
+    state.database.voucher_count()
+}
+
+#[tauri::command(async)]
 fn list_vouchers(
     from: String,
     to: String,
     search: String,
+    offset: Option<i64>,
+    limit: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<vouchers::VoucherList, String> {
-    state.database.list_vouchers(&from, &to, &search)
+    state.database.list_vouchers_page(
+        &from,
+        &to,
+        &search,
+        offset,
+        limit.or(Some(vouchers::DEFAULT_VOUCHER_PAGE_SIZE)),
+    )
 }
 
 #[tauri::command(async)]
@@ -317,7 +381,7 @@ fn delete_voucher(
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    require_window(&window, &["main", "voucher"])?;
+    require_window(&window, &["main", "voucher", "voucher-list"])?;
     state
         .database
         .delete_voucher(id, expected_updated_at.as_deref())
@@ -332,8 +396,9 @@ fn export_voucher_excel(
     require_window(&window, &["main", "voucher"])?;
     state
         .database
-        .validate_voucher_accounts(&input.lines)?;
-    excel::export_voucher(&input)
+        .validate_voucher_accounts(input.id, &input.lines)?;
+    let accounts = state.database.list_accounts()?.accounts;
+    excel::export_voucher(&input, &accounts)
 }
 
 #[tauri::command(async)]
@@ -408,6 +473,42 @@ fn apply_voucher_reorganization(
     Ok(result)
 }
 
+#[tauri::command(async)]
+fn preview_bulk_voucher_delete(
+    input: vouchers::BulkVoucherDeleteInput,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<vouchers::BulkVoucherDeletePreview, String> {
+    require_window(&window, &["bulk-voucher-delete"])?;
+    *lock(&state.bulk_delete_preview) = None;
+    let preview = state.database.preview_bulk_voucher_delete(&input)?;
+    *lock(&state.bulk_delete_preview) = Some(preview.plan_token.clone());
+    Ok(preview)
+}
+
+#[tauri::command(async)]
+fn apply_bulk_voucher_delete(
+    input: vouchers::BulkVoucherDeleteInput,
+    plan_token: String,
+    with_backup: Option<bool>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<vouchers::BulkVoucherDeleteResult, String> {
+    require_window(&window, &["bulk-voucher-delete"])?;
+    if lock(&state.bulk_delete_preview).as_ref() != Some(&plan_token) {
+        return Err("پیش‌نمایش منقضی یا نامعتبر است؛ دوباره پیش‌نمایش بگیرید.".to_string());
+    }
+    let result = state.database.apply_bulk_voucher_delete(
+        &input,
+        &plan_token,
+        with_backup.unwrap_or(true),
+    )?;
+    *lock(&state.bulk_delete_preview) = None;
+    let _ = app.emit("vouchers-changed", ());
+    Ok(result)
+}
+
 /* ── Reports ────────────────────────────────────────────────── */
 
 #[tauri::command(async)]
@@ -415,9 +516,17 @@ fn get_journal(
     from: String,
     to: String,
     search: String,
+    offset: Option<i64>,
+    limit: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<vouchers::JournalReport, String> {
-    state.database.get_journal(&from, &to, &search)
+    state.database.get_journal_page(
+        &from,
+        &to,
+        &search,
+        offset,
+        limit.or(Some(vouchers::DEFAULT_JOURNAL_PAGE_SIZE)),
+    )
 }
 
 #[tauri::command(async)]
@@ -434,9 +543,20 @@ fn get_ledger(
 fn get_trial_balance(
     from: String,
     to: String,
+    account_from: Option<String>,
+    account_to: Option<String>,
+    show_zero: Option<bool>,
+    multi_level: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<vouchers::TrialBalanceReport, String> {
-    state.database.get_trial_balance(&from, &to)
+    state.database.get_trial_balance_filtered(
+        &from,
+        &to,
+        account_from.as_deref().unwrap_or(""),
+        account_to.as_deref().unwrap_or(""),
+        show_zero.unwrap_or(false),
+        multi_level.unwrap_or(true),
+    )
 }
 
 #[tauri::command(async)]
@@ -454,11 +574,6 @@ fn get_balance_sheet(
     state: State<'_, AppState>,
 ) -> Result<vouchers::BalanceSheetReport, String> {
     state.database.get_balance_sheet(&as_of)
-}
-
-#[tauri::command(async)]
-fn get_dashboard(state: State<'_, AppState>) -> Result<vouchers::Dashboard, String> {
-    state.database.get_dashboard()
 }
 
 /* ── Print preview ──────────────────────────────────────────── */
@@ -497,14 +612,40 @@ fn open_ledger_preview(
 fn open_trial_balance_preview(
     from: String,
     to: String,
+    account_from: Option<String>,
+    account_to: Option<String>,
+    show_zero: Option<bool>,
+    multi_level: Option<bool>,
+    balance_type: Option<String>,
+    show_account_code: Option<bool>,
+    show_account_name: Option<bool>,
+    show_print_date_time: Option<bool>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher", "trial-balance"])?;
-    let report = state.database.get_trial_balance(&from, &to)?;
-    let meta = report_meta(&state)?;
-    show_preview_window(&app, report::trial_balance_print_doc(&report, &meta))
+    let report = state.database.get_trial_balance_filtered(
+        &from,
+        &to,
+        account_from.as_deref().unwrap_or(""),
+        account_to.as_deref().unwrap_or(""),
+        show_zero.unwrap_or(false),
+        multi_level.unwrap_or(true),
+    )?;
+    let mut meta = report_meta(&state)?;
+    meta.show_print_date_time = show_print_date_time.unwrap_or(true);
+    show_preview_window(
+        &app,
+        report::trial_balance_print_doc(
+            &report,
+            &meta,
+            balance_type.as_deref().unwrap_or("شش ستونی"),
+            multi_level.unwrap_or(true),
+            show_account_code.unwrap_or(true),
+            show_account_name.unwrap_or(true),
+        ),
+    )
 }
 
 #[tauri::command(async)]
@@ -542,7 +683,7 @@ fn open_voucher_preview(
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    require_window(&window, &["main", "voucher"])?;
+    require_window(&window, &["main", "voucher", "voucher-list"])?;
     let voucher = state
         .database
         .get_voucher(number)?
@@ -574,7 +715,7 @@ fn save_report_html(
     let Some(picked) = rfd::FileDialog::new()
         .set_title("ذخیره گزارش قابل چاپ")
         .set_file_name(default_name)
-        .add_filter("HTML", &["html"])
+        .add_filter("HTML", &["html", "htm"])
         .save_file()
     else {
         return Ok(None);
@@ -623,6 +764,30 @@ fn restore_database(
     notify_accounts_changed(&app);
     let _ = app.emit("database-restored", ());
     Ok(Some(safety_path.to_string_lossy().to_string()))
+}
+
+/// Reopens the database after a failed restore left the application blocked.
+/// A failed reopen keeps the block in place so an uncertain file is never used.
+#[tauri::command(async)]
+fn retry_database(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main"])?;
+    state.database.clear_failed();
+    match db::initialize(&app) {
+        Ok((connection, path)) => {
+            state.database.attach(connection, path);
+            notify_accounts_changed(&app);
+            let _ = app.emit("database-restored", ());
+            Ok(())
+        }
+        Err(error) => {
+            state.database.mark_failed(error.clone());
+            Err(error)
+        }
+    }
 }
 
 /// Opens a report the user saved from the preview window. The webview may
@@ -710,7 +875,7 @@ fn open_voucher_window(
     caller: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    require_window(&caller, &["main"])?;
+    require_window(&caller, &["main", "voucher-list"])?;
     if let Some(window) = app.get_webview_window("voucher") {
         *lock(&state.pending_voucher) = Some(number);
         let _ = window.unminimize();
@@ -750,6 +915,54 @@ fn open_voucher_window(
         .center()
         .build()
         .map_err(|e| format!("باز کردن فرم سند ناموفق بود: {e}"))?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
+/// Opens (or focuses) the voucher list in its own native OS window.
+#[tauri::command(async)]
+fn open_voucher_list_window(app: AppHandle, caller: WebviewWindow) -> Result<(), String> {
+    require_window(&caller, &["main"])?;
+    if let Some(window) = app.get_webview_window("voucher-list") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let mut builder = WebviewWindowBuilder::new(
+        &app,
+        "voucher-list",
+        WebviewUrl::App("index.html".into()),
+    )
+    .title("لیست اسناد حسابداری")
+    .decorations(true)
+    .resizable(true)
+    .maximizable(false)
+    .minimizable(false)
+    .initialization_script("window.__IS_VOUCHER_LIST_POPUP__ = true;");
+
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
+        builder = builder.inner_size(
+            (logical.width * 0.88).clamp(980.0, 1440.0),
+            (logical.height * 0.82).clamp(580.0, 900.0),
+        );
+    } else {
+        builder = builder.inner_size(1200.0, 760.0);
+    }
+
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder
+            .parent(&main)
+            .map_err(|e| format!("تعیین پنجره اصلی به‌عنوان مالک ناموفق بود: {e}"))?;
+    }
+
+    let window = builder
+        .min_inner_size(900.0, 520.0)
+        .center()
+        .build()
+        .map_err(|e| format!("باز کردن پنجره لیست اسناد ناموفق بود: {e}"))?;
     let _ = window.set_focus();
     Ok(())
 }
@@ -906,6 +1119,55 @@ fn open_account_definition_window(app: AppHandle, caller: WebviewWindow) -> Resu
     Ok(())
 }
 
+/// Opens (or focuses) the bulk voucher deletion form in its own native OS
+/// window, with the same frame and classic accounting-form styling as the
+/// account-definition form.
+#[tauri::command(async)]
+fn open_bulk_voucher_delete_window(app: AppHandle, caller: WebviewWindow) -> Result<(), String> {
+    require_window(&caller, &["main"])?;
+    if let Some(window) = app.get_webview_window("bulk-voucher-delete") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let mut builder = WebviewWindowBuilder::new(
+        &app,
+        "bulk-voucher-delete",
+        WebviewUrl::App("bulk-voucher-delete.html".into()),
+    )
+    .title("حذف دسته‌جمعی اسناد")
+    .decorations(true)
+    .minimizable(false)
+    .maximizable(false)
+    .resizable(true);
+
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
+        builder = builder.inner_size(
+            (logical.width * 0.74).clamp(880.0, 1200.0),
+            (logical.height * 0.80).clamp(600.0, 880.0),
+        );
+    } else {
+        builder = builder.inner_size(1040.0, 740.0);
+    }
+
+    if let Some(main) = app.get_webview_window("main") {
+        builder = builder
+            .parent(&main)
+            .map_err(|e| format!("تعیین پنجره اصلی به‌عنوان مالک ناموفق بود: {e}"))?;
+    }
+
+    let window = builder
+        .min_inner_size(760.0, 540.0)
+        .center()
+        .build()
+        .map_err(|e| format!("باز کردن فرم حذف دسته‌جمعی ناموفق بود: {e}"))?;
+    let _ = window.set_focus();
+    Ok(())
+}
+
 fn open_external(path: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -952,7 +1214,14 @@ pub fn run() {
             // Child forms must not outlive the main window.
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    for label in ["voucher", "account-groups", "account-definition", "trial-balance"] {
+                    for label in [
+                        "voucher",
+                        "voucher-list",
+                        "account-groups",
+                        "account-definition",
+                        "bulk-voucher-delete",
+                        "trial-balance",
+                    ] {
                         if let Some(child) = window.app_handle().get_webview_window(label) {
                             let _ = child.close();
                         }
@@ -968,7 +1237,9 @@ pub fn run() {
             list_accounts,
             create_account,
             update_account,
+            set_account_active,
             delete_account,
+            delete_accounts_bulk,
             export_account_excel,
             import_account_excel,
             get_settings,
@@ -977,6 +1248,7 @@ pub fn run() {
             next_voucher_number,
             adjacent_voucher_number,
             list_vouchers,
+            get_voucher_count,
             get_voucher,
             transfer_voucher_lines,
             save_voucher,
@@ -987,12 +1259,13 @@ pub fn run() {
             commit_bulk_voucher_excel,
             preview_voucher_reorganization,
             apply_voucher_reorganization,
+            preview_bulk_voucher_delete,
+            apply_bulk_voucher_delete,
             get_journal,
             get_ledger,
             get_trial_balance,
             get_income_statement,
             get_balance_sheet,
-            get_dashboard,
             open_journal_preview,
             open_ledger_preview,
             open_trial_balance_preview,
@@ -1003,12 +1276,15 @@ pub fn run() {
             save_report_html,
             backup_database,
             restore_database,
+            retry_database,
             open_path,
             open_voucher_window,
             take_voucher_request,
+            open_voucher_list_window,
             open_trial_balance_window,
             open_account_groups_window,
             open_account_definition_window,
+            open_bulk_voucher_delete_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -17,7 +17,11 @@ const currentWindow = (window.__TAURI__ && window.__TAURI__.window
 // controller and hides the main-window chrome (see accounting.css).
 const IS_TRIAL_POPUP = window.__IS_TRIAL_BALANCE_POPUP__ === true
   || currentWindow?.label === 'trial-balance';
+// The voucher list lives in its own popup window, like the voucher form.
+const IS_VOUCHER_LIST_POPUP = window.__IS_VOUCHER_LIST_POPUP__ === true
+  || currentWindow?.label === 'voucher-list';
 if (IS_TRIAL_POPUP && document.body) document.body.classList.add('is-trial-popup');
+if (IS_VOUCHER_LIST_POPUP && document.body) document.body.classList.add('is-voucher-list-popup');
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -25,6 +29,9 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const FA_DIGITS = '۰۱۲۳۴۵۶۷۸۹';
 const AR_DIGITS = '٠١٢٣٤٥٦٧٨٩';
 const APP_VERSION = '۵.۰';
+// Fallbacks; `loadSettings` replaces them with the backend limits.
+let VOUCHER_PAGE_SIZE = 200;
+let JOURNAL_PAGE_SIZE = 500;
 
 const state = {
   page: 'workspace',
@@ -35,44 +42,13 @@ const state = {
   groupsLoaded: false,
   databasePath: '',
   filters: {},
+  listOffsets: { vouchers: 0, journal: 0 },
   accountFilters: { search: '', group: '', level: '' },
   accountDrillPath: [],
   voucherCount: 0,
   refreshOnFocus: false,
   ready: false,
 };
-
-const NAV = [
-  {
-    section: 'عملیات',
-    items: [
-      { id: 'vouchers', label: 'اسناد حسابداری', icon: 'i-doc' },
-      { id: 'journal', label: 'دفتر روزنامه', icon: 'i-journal' },
-    ],
-  },
-  {
-    section: 'گزارش‌ها',
-    items: [
-      { id: 'ledger', label: 'دفتر کل', icon: 'i-ledger' },
-      { id: 'trial', label: 'تراز آزمایشی', icon: 'i-scale' },
-      { id: 'income', label: 'صورت سود و زیان', icon: 'i-trend' },
-      { id: 'balance', label: 'ترازنامه', icon: 'i-balance' },
-    ],
-  },
-  {
-    section: 'تعریف‌ها',
-    items: [
-      { id: 'accounts', label: 'حساب‌ها', icon: 'i-tree' },
-      { id: 'groups', label: 'گروه‌های حساب', icon: 'i-folder' },
-    ],
-  },
-  {
-    section: 'سیستم',
-    items: [
-      { id: 'settings', label: 'تنظیمات', icon: 'i-settings' },
-    ],
-  },
-];
 
 /*
  * ساختار منوبار اصلی — برگرفته از رابط سوم برنامه‌ی WebApp.
@@ -84,15 +60,15 @@ const MENU_BAR = [
   {
     label: 'اطلاعات پایه',
     items: [
-      { label: 'فضای کار', icon: '🖼️', command: 'workspace-home' },
+      { label: 'فضای کار', icon: '🖼️', page: 'workspace' },
       { label: 'تعریف گروه حسابها', icon: '📂', command: 'groups-window' },
-      { label: 'تعریف حسابهای کل، معین و تفصیلی', icon: '📁', command: 'account-definition' },
+      { label: 'تعریف حسابهای کل، معین و تفصیلی ۱', icon: '📁', command: 'account-definition' },
       { label: 'مرور حسابها', icon: '🔍', page: 'accounts' },
-      { label: 'لیست اسناد حسابداری', icon: '📜', page: 'vouchers' },
+      { label: 'لیست اسناد حسابداری', icon: '📜', command: 'voucher-list' },
       { label: 'مرتب‌سازی و ادغام اسناد', icon: '🧮', command: 'reorganize-vouchers' },
       { label: 'ورود دسته‌جمعی اسناد از اکسل', icon: '📥', command: 'bulk-voucher-import' },
       { label: 'خروجی دسته‌جمعی اسناد به اکسل', icon: '📤' },
-      { label: 'حذف دسته‌جمعی اسناد', icon: '🗑️' },
+      { label: 'حذف دسته‌جمعی اسناد', icon: '🗑️', command: 'bulk-voucher-delete' },
       { label: 'تغییر وضعیت اسناد (موقت/دائمی)', icon: '🔁' },
     ],
   },
@@ -153,8 +129,6 @@ const MENU_BAR = [
     items: [
       { label: 'تنظیمات برنامه', icon: '⚙️', page: 'settings' },
       { label: 'تنظیمات گزارش‌ها', icon: '🖨️' },
-      { label: 'نمایش/مخفی‌سازی سایدبار', icon: '👁️', command: 'toggle-sidebar' },
-      { label: 'تغییر تم رنگ سایدبار', icon: '🎨' },
       { label: 'تغییر تصویر پس‌زمینه', icon: '🖼️', command: 'choose-wallpaper' },
       { label: 'تنظیمات فونت', icon: '🔤' },
       { label: 'تنظیمات زوم (بزرگ‌نمایی)', icon: '🔍' },
@@ -235,7 +209,7 @@ function icon(name) {
 }
 
 function levelLabel(level) {
-  return ({ 1: 'کل', 2: 'معین', 3: 'تفصیلی ۱', 4: 'تفصیلی ۲' })[Number(level)] || '—';
+  return ({ 1: 'کل', 2: 'معین', 3: 'تفصیلی ۱', 4: 'تفصیلی ۲ (قدیمی)' })[Number(level)] || '—';
 }
 
 function accountPathTo(accounts, account) {
@@ -337,11 +311,14 @@ let dialogCloseHandler = null;
 let dialogReturnFocus = null;
 let dialogAppWasInert = false;
 let dialogKeyHandler = null;
+let dialogCanClose = null;
 
 function closeDialog() {
   const modal = $('#modal');
   if (!modal || modal.hidden) return;
+  if (dialogCanClose && !dialogCanClose()) return;
   modal.hidden = true;
+  dialogCanClose = null;
   if (dialogKeyHandler) {
     modal.removeEventListener('keydown', dialogKeyHandler);
     dialogKeyHandler = null;
@@ -370,6 +347,7 @@ function openDialog(options) {
 
   const wasOpen = !modal.hidden;
   const returnFocus = wasOpen ? dialogReturnFocus : document.activeElement;
+  dialogCanClose = null;
   closeDialog();
   dialogReturnFocus = returnFocus;
   dialog.classList.toggle('dialog-wide', Boolean(options.wide));
@@ -408,6 +386,7 @@ function openDialog(options) {
 
   result.setActions(options.actions || []);
   dialogCloseHandler = options.onClose || null;
+  dialogCanClose = typeof options.canClose === 'function' ? options.canClose : null;
   modal.hidden = false;
   const app = $('.accounting-app');
   dialogAppWasInert = Boolean(app?.inert);
@@ -492,7 +471,18 @@ function defaultFilters() {
     vouchers: { from, to: today, search: '' },
     journal: { from, to: today, search: '' },
     ledger: { accountCode: '', from, to: today },
-    trial: { from, to: today },
+    trial: {
+      from,
+      to: today,
+      accountFrom: '',
+      accountTo: '',
+      showZero: true,
+      multiLevel: false,
+      balanceType: 'شش ستونی',
+      showAccountCode: true,
+      showAccountName: true,
+      showPrintDateTime: true,
+    },
     income: { from, to: today },
     balance: { asOf: today },
   };
@@ -528,8 +518,35 @@ async function ensureGroups(force = false) {
 async function loadSettings() {
   const settings = await invoke('get_settings');
   state.settings = settings;
+  applyLimits(settings?.limits);
   updateBranding(settings);
   return settings;
+}
+
+function applyLimits(limits) {
+  if (!limits) return;
+  const voucherPage = Number(limits.voucherPageSize);
+  if (Number.isSafeInteger(voucherPage) && voucherPage > 0) VOUCHER_PAGE_SIZE = voucherPage;
+  const journalPage = Number(limits.journalPageSize);
+  if (Number.isSafeInteger(journalPage) && journalPage > 0) JOURNAL_PAGE_SIZE = journalPage;
+}
+
+// Loads a page and, when the current offset no longer exists (for example
+// after deleting the last voucher of the last page), retries the last page
+// instead of showing an empty list.
+async function loadPagedList(kind, step, fetchPage, totalOf, rowsOf) {
+  let report = await fetchPage(state.listOffsets[kind] || 0);
+  const total = Number(totalOf(report) || 0);
+  const shown = rowsOf(report).length;
+  if (!total) {
+    state.listOffsets[kind] = 0;
+    return report;
+  }
+  if ((state.listOffsets[kind] || 0) > 0 && shown === 0) {
+    state.listOffsets[kind] = Math.max(0, Math.floor((total - 1) / step) * step);
+    report = await fetchPage(state.listOffsets[kind]);
+  }
+  return report;
 }
 
 function updateBranding(settings) {
@@ -537,30 +554,12 @@ function updateBranding(settings) {
   const company = settings.companyName || 'واحد اقتصادی';
   const fiscal = settings.fiscalYear || '—';
   const today = faDate(settings.today || '');
-  const sideCompany = $('#sideCompany');
-  const sideFiscal = $('#sideFiscalYear');
-  const sideToday = $('#sideToday');
   const statusCompany = $('#statusCompany');
   const statusFiscal = $('#statusFiscal');
   const statusDate = $('#statusDate');
-  if (sideCompany) {
-    sideCompany.textContent = company;
-    sideCompany.title = company;
-  }
-  if (sideFiscal) sideFiscal.textContent = `سال مالی ${toFa(fiscal)}`;
-  if (sideToday) sideToday.textContent = today;
   if (statusCompany) statusCompany.textContent = `شرکت: ${company}`;
   if (statusFiscal) statusFiscal.textContent = `سال مالی: ${toFa(fiscal)}`;
   if (statusDate) statusDate.textContent = `تاریخ: ${today}`;
-}
-
-function updateDatabasePath(path) {
-  state.databasePath = path || state.databasePath;
-  const el = $('#dbPath');
-  if (el) {
-    el.textContent = state.databasePath || '—';
-    el.title = state.databasePath || '';
-  }
 }
 
 /* ── Page actions ───────────────────────────────────────────── */
@@ -589,7 +588,7 @@ const PAGES = {};
 
 function pageMeta(page) {
   const titles = {
-    vouchers: ['اسناد حسابداری', 'عملیات'],
+    vouchers: ['لیست اسناد حسابداری', 'عملیات'],
     journal: ['دفتر روزنامه', 'عملیات'],
     ledger: ['دفتر کل', 'گزارش‌ها'],
     trial: ['تراز آزمایشی', 'گزارش‌ها'],
@@ -653,10 +652,20 @@ PAGES.vouchers = {
   ],
   load: async () => {
     const f = state.filters.vouchers;
-    const report = await invoke('list_vouchers', { from: f.from, to: f.to, search: f.search });
+    const report = await loadPagedList(
+      'vouchers',
+      VOUCHER_PAGE_SIZE,
+      (offset) => invoke('list_vouchers', {
+        from: f.from,
+        to: f.to,
+        search: f.search,
+        offset,
+        limit: VOUCHER_PAGE_SIZE,
+      }),
+      (page) => page.matchedCount ?? page.totalCount ?? page.vouchers.length,
+      (page) => page.vouchers,
+    );
     state.voucherCount = report.totalCount ?? report.vouchers.length;
-    updateDatabasePath(report.databasePath);
-    updateVoucherBadge();
     return report;
   },
   render: renderVouchers,
@@ -685,26 +694,38 @@ function vouchersFilterBar() {
 }
 
 function renderVouchers(report) {
-  const balanced = amountBigInt(report.totalDebit) === amountBigInt(report.totalCredit);
+  const shown = report.vouchers.length;
+  const matched = Number(report.matchedCount ?? shown);
   return `
   ${vouchersFilterBar()}
-  <div class="report-summary">
-    <div class="kpi"><span>تعداد اسناد</span><strong>${toFa(report.vouchers.length)}</strong></div>
-    <div class="kpi"><span>جمع بدهکار</span><strong>${money(report.totalDebit)}</strong></div>
-    <div class="kpi"><span>جمع بستانکار</span><strong>${money(report.totalCredit)}</strong></div>
-    <div class="kpi" data-tone="${balanced ? 'ok' : 'danger'}"><span>تراز</span><strong>${balanced ? 'متوازن' : 'مغایرت'}</strong></div>
-  </div>
   <div class="card">
-    ${report.vouchers.length ? renderVoucherTable(report.vouchers) : `<div class="empty-state">
+    ${shown ? renderVoucherTable(report) : `<div class="empty-state">
       ${icon('i-doc')}
       <b>سندی در این بازه یافت نشد</b>
       <span>بازه تاریخ را تغییر دهید یا سند جدیدی ثبت کنید.</span>
       <button type="button" class="btn btn-primary" data-new-voucher>${icon('i-plus')}<span>ثبت سند جدید</span></button>
     </div>`}
+  </div>
+  ${loadMoreBar('vouchers', shown, matched, state.listOffsets.vouchers)}`;
+}
+
+function loadMoreBar(kind, shown, total, offset) {
+  if (!total) return '';
+  const step = kind === 'journal' ? JOURNAL_PAGE_SIZE : VOUCHER_PAGE_SIZE;
+  const hasPrev = offset > 0;
+  const hasNext = offset + shown < total;
+  if (!hasPrev && !hasNext) return '';
+  return `<div class="load-more">
+    <span>نمایش ${toFa(offset + (shown ? 1 : 0))} تا ${toFa(offset + shown)} از ${toFa(total)}</span>
+    <div class="load-more-actions">
+      <button type="button" class="btn" data-page-prev="${kind}" ${hasPrev ? '' : 'disabled'}><span>صفحه قبل</span></button>
+      <button type="button" class="btn" data-page-next="${kind}" ${hasNext ? '' : 'disabled'}><span>صفحه بعد</span></button>
+    </div>
   </div>`;
 }
 
-function renderVoucherTable(vouchers) {
+function renderVoucherTable(report) {
+  const vouchers = report.vouchers;
   const rows = vouchers.map((v) => `
     <tr>
       <td class="center"><button type="button" class="link-btn" data-open-voucher="${v.number}" title="باز کردن سند">${toFa(v.number)}</button></td>
@@ -720,6 +741,14 @@ function renderVoucherTable(vouchers) {
         <button type="button" class="btn btn-sm" data-delete-voucher="${v.id}" data-voucher-updated="${esc(v.updatedAt || '')}" data-voucher-label="${esc(v.description || `سند ${v.number}`)}" title="حذف سند">${icon('i-trash')}</button>
       </td>
     </tr>`).join('');
+
+  // Totals come from the backend so they still describe the whole filter
+  // when only the first page is displayed.
+  const totalDebit = amountBigInt(report.totalDebit);
+  const totalCredit = amountBigInt(report.totalCredit);
+  const balanced = totalDebit === totalCredit;
+  const footTone = balanced ? 'ok' : 'danger';
+
   return `<div class="table-wrap">
     <table class="data-table">
       <thead><tr>
@@ -728,13 +757,40 @@ function renderVoucherTable(vouchers) {
         <th style="width:112px">بستانکار</th><th style="width:128px">عملیات</th>
       </tr></thead>
       <tbody>${rows}</tbody>
+      <tfoot><tr>
+        <td colspan="4" class="center bold" style="font-size:.85em;opacity:.75">${toFa(report.matchedCount ?? vouchers.length)} سند</td>
+        <td></td>
+        <td class="num bold" data-tone="${footTone}">${money(totalDebit)}</td>
+        <td class="num bold" data-tone="${footTone}">${money(totalCredit)}</td>
+        <td class="center" style="font-size:.8em;opacity:.75">${balanced ? '✔ متوازن' : '✗ مغایرت'}</td>
+      </tr></tfoot>
     </table>
   </div>`;
 }
 
 function bindVouchers(root) {
   // «سند جدید» buttons are wired once by bindPageCommon.
+  bindListPager(root);
   bindVoucherRowActions(root);
+}
+
+function bindListPager(root) {
+  root.querySelectorAll('[data-page-prev]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const kind = button.dataset.pagePrev;
+      const step = kind === 'journal' ? JOURNAL_PAGE_SIZE : VOUCHER_PAGE_SIZE;
+      state.listOffsets[kind] = Math.max(0, (state.listOffsets[kind] || 0) - step);
+      navigate(state.page, { force: true });
+    });
+  });
+  root.querySelectorAll('[data-page-next]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const kind = button.dataset.pageNext;
+      const step = kind === 'journal' ? JOURNAL_PAGE_SIZE : VOUCHER_PAGE_SIZE;
+      state.listOffsets[kind] = (state.listOffsets[kind] || 0) + step;
+      navigate(state.page, { force: true });
+    });
+  });
 }
 
 function bindVoucherRowActions(root) {
@@ -767,66 +823,6 @@ function bindVoucherRowActions(root) {
   });
 }
 
-/* ── Workspace dashboard ────────────────────────────────────── */
-
-function renderWorkspace(dashboard) {
-  const recent = Array.isArray(dashboard.recent) ? dashboard.recent : [];
-  const balanced = amountBigInt(dashboard.totalDebit) === amountBigInt(dashboard.totalCredit);
-  const profit = amountBigInt(dashboard.netProfit);
-  return `
-  <div class="workspace-dashboard">
-    <div class="card workspace-hero">
-      <div>
-        <div class="workspace-eyebrow">فضای کار</div>
-        <h2>${esc(dashboard.companyName || 'نرم‌افزار حسابداری')}</h2>
-        <p>سال مالی ${esc(dashboard.fiscalYear || '—')} · امروز ${faDate(dashboard.today)}</p>
-      </div>
-      <div class="form-actions">
-        <button type="button" class="btn btn-primary" data-new-voucher>${icon('i-plus')}<span>سند جدید</span></button>
-        <button type="button" class="btn" data-go="accounts">${icon('i-tree')}<span>حساب‌ها</span></button>
-      </div>
-    </div>
-
-    <div class="report-summary">
-      <div class="kpi"><span>حساب‌ها</span><strong>${toFa(dashboard.accountCount)}</strong></div>
-      <div class="kpi"><span>گروه‌های حساب</span><strong>${toFa(dashboard.groupCount)}</strong></div>
-      <div class="kpi"><span>اسناد</span><strong>${toFa(dashboard.voucherCount)}</strong></div>
-      <div class="kpi"><span>ردیف‌های سند</span><strong>${toFa(dashboard.lineCount)}</strong></div>
-      <div class="kpi" data-tone="${balanced ? 'ok' : 'danger'}"><span>تراز دفتر</span><strong>${balanced ? 'متوازن' : 'مغایرت'}</strong></div>
-      <div class="kpi" data-tone="${profit >= 0n ? 'ok' : 'danger'}"><span>سود (زیان) خالص</span><strong>${money(dashboard.netProfit)}</strong></div>
-    </div>
-
-    <div class="card">
-      <div class="section-head">
-        <h2>${icon('i-scale')} خلاصه وضعیت</h2>
-        <button type="button" class="link-btn" data-go="balance">ترازنامه</button>
-      </div>
-      <dl class="info-list">
-        <div><dt>جمع بدهکار دفتر</dt><dd>${money(dashboard.totalDebit)}</dd></div>
-        <div><dt>جمع بستانکار دفتر</dt><dd>${money(dashboard.totalCredit)}</dd></div>
-        <div><dt>جمع دارایی‌ها</dt><dd>${money(dashboard.assetsTotal)}</dd></div>
-        <div><dt>جمع بدهی‌ها</dt><dd>${money(dashboard.liabilitiesTotal)}</dd></div>
-        <div><dt>حقوق مالکانه</dt><dd>${money(dashboard.equityTotal)}</dd></div>
-        <div><dt>درآمدها</dt><dd>${money(dashboard.incomeTotal)}</dd></div>
-        <div><dt>هزینه‌ها</dt><dd>${money(dashboard.expenseTotal)}</dd></div>
-      </dl>
-    </div>
-
-    <div class="card">
-      <div class="section-head">
-        <h2>${icon('i-doc')} آخرین اسناد</h2>
-        <button type="button" class="link-btn" data-go="vouchers">همه اسناد</button>
-      </div>
-      ${recent.length ? renderVoucherTable(recent) : `<div class="empty-state">
-        ${icon('i-doc')}
-        <b>هنوز سندی ثبت نشده است</b>
-        <span>برای شروع، نخستین سند حسابداری را ثبت کنید.</span>
-        <button type="button" class="btn btn-primary" data-new-voucher>${icon('i-plus')}<span>ثبت سند جدید</span></button>
-      </div>`}
-    </div>
-  </div>`;
-}
-
 /* ── Journal ────────────────────────────────────────────────── */
 
 PAGES.journal = {
@@ -836,7 +832,19 @@ PAGES.journal = {
   ],
   load: async () => {
     const f = state.filters.journal;
-    return invoke('get_journal', { from: f.from, to: f.to, search: f.search });
+    return loadPagedList(
+      'journal',
+      JOURNAL_PAGE_SIZE,
+      (offset) => invoke('get_journal', {
+        from: f.from,
+        to: f.to,
+        search: f.search,
+        offset,
+        limit: JOURNAL_PAGE_SIZE,
+      }),
+      (page) => page.rowCount ?? page.rows.length,
+      (page) => page.rows,
+    );
   },
   render: renderJournal,
   bind: bindJournal,
@@ -885,7 +893,7 @@ function renderJournal(report) {
   ${journalFilterBar()}
   <div class="report-summary">
     <div class="kpi"><span>تعداد اسناد</span><strong>${toFa(report.voucherCount)}</strong></div>
-    <div class="kpi"><span>تعداد ردیف</span><strong>${toFa(report.rows.length)}</strong></div>
+    <div class="kpi"><span>تعداد ردیف</span><strong>${toFa(report.rowCount ?? report.rows.length)}</strong></div>
     <div class="kpi"><span>جمع بدهکار</span><strong>${money(report.totalDebit)}</strong></div>
     <div class="kpi"><span>جمع بستانکار</span><strong>${money(report.totalCredit)}</strong></div>
     ${hasSearch
@@ -913,10 +921,12 @@ function renderJournal(report) {
         <b>گردشی در این بازه وجود ندارد</b>
         <span>بازه تاریخ را تغییر دهید یا سند جدیدی ثبت کنید.</span>
       </div>`}
-  </div>`;
+  </div>
+  ${loadMoreBar('journal', report.rows.length, Number(report.rowCount ?? report.rows.length), state.listOffsets.journal)}`;
 }
 
 function bindJournal(root) {
+  bindListPager(root);
   bindVoucherRowActions(root);
 }
 
@@ -1067,12 +1077,11 @@ function bindLedger(root) {
 PAGES.trial = {
   actions: () => [
     { label: 'بازه گزارش', icon: 'i-search', onClick: openTrialFilterDialog },
-    { label: 'چاپ گزارش', icon: 'i-print', onClick: () => printWithFeedback('open_trial_balance_preview', { ...state.filters.trial }) },
+    { label: 'چاپ گزارش', icon: 'i-print', onClick: () => printWithFeedback('open_trial_balance_preview', trialPrintRequest()) },
     { label: 'به‌روزرسانی', icon: 'i-refresh', onClick: () => navigate('trial', { force: true }) },
   ],
   load: async () => {
-    const f = state.filters.trial;
-    return invoke('get_trial_balance', { from: f.from, to: f.to });
+    return invoke('get_trial_balance', trialRequest());
   },
   render: renderTrialBalance,
   bind: (root) => {
@@ -1081,19 +1090,51 @@ PAGES.trial = {
   },
 };
 
+const TRIAL_BALANCE_TYPES = ['چهار ستونی', 'شش ستونی', 'هشت ستونی'];
+
+function trialRequest() {
+  const f = state.filters.trial;
+  return {
+    from: f.from || '',
+    to: f.to || '',
+    accountFrom: f.accountFrom || '',
+    accountTo: f.accountTo || '',
+    showZero: Boolean(f.showZero),
+    multiLevel: Boolean(f.multiLevel),
+  };
+}
+
+function trialPrintRequest() {
+  return {
+    ...trialRequest(),
+    balanceType: TRIAL_BALANCE_TYPES.includes(state.filters.trial.balanceType)
+      ? state.filters.trial.balanceType
+      : 'شش ستونی',
+    showAccountCode: Boolean(state.filters.trial.showAccountCode),
+    showAccountName: Boolean(state.filters.trial.showAccountName),
+    showPrintDateTime: Boolean(state.filters.trial.showPrintDateTime),
+  };
+}
+
 function trialFilterTrigger() {
   const f = state.filters.trial;
+  const range = f.accountFrom || f.accountTo
+    ? `${f.accountFrom ? toFa(f.accountFrom) : '…'} تا ${f.accountTo ? toFa(f.accountTo) : '…'}`
+    : 'همه کدها';
   return `
   <div class="filter-bar trial-filter-trigger">
     <span>بازه گزارش: <b>${faDate(f.from)} تا ${faDate(f.to)}</b></span>
-    <button class="btn btn-primary" type="button" data-trial-filter>${icon('i-search')}<span>تغییر بازه</span></button>
+    <span>کد حساب: <b>${range}</b></span>
+    <span>ستون‌ها: <b>${esc(f.balanceType || 'شش ستونی')}</b>${f.multiLevel ? ' · چندسطحی' : ''}</span>
+    <button class="btn btn-primary" type="button" data-trial-filter>${icon('i-search')}<span>تغییر فیلترها</span></button>
   </div>`;
 }
 
 function openTrialFilterDialog() {
   const f = state.filters.trial;
+  const balanceType = TRIAL_BALANCE_TYPES.includes(f.balanceType) ? f.balanceType : 'شش ستونی';
   const dialog = openDialog({
-    title: 'بازه صورت تراز آزمایشی',
+    title: 'فیلترهای صورت تراز آزمایشی',
     body: `
       <form class="filter-bar trial-dialog-form" data-trial-filter-form>
         <div class="field">
@@ -1104,6 +1145,40 @@ function openTrialFilterDialog() {
           <label for="tbDialogTo">تا تاریخ</label>
           <input id="tbDialogTo" class="input" name="to" data-date type="text" inputmode="numeric" value="${esc(f.to)}" placeholder="۱۴۰۵/۱۲/۲۹" />
         </div>
+        <div class="field">
+          <label for="tbDialogAccountFrom">از کد حساب</label>
+          <input id="tbDialogAccountFrom" class="input" name="accountFrom" type="text" dir="ltr" inputmode="numeric" value="${esc(f.accountFrom || '')}" placeholder="مثلاً ۱۱۰۱" />
+        </div>
+        <div class="field">
+          <label for="tbDialogAccountTo">تا کد حساب</label>
+          <input id="tbDialogAccountTo" class="input" name="accountTo" type="text" dir="ltr" inputmode="numeric" value="${esc(f.accountTo || '')}" placeholder="مثلاً ۱۱۹۹" />
+        </div>
+        <div class="field">
+          <label for="tbDialogBalanceType">نوع تراز</label>
+          <select id="tbDialogBalanceType" class="input" name="balanceType">
+            ${TRIAL_BALANCE_TYPES.map((type) => `<option value="${type}"${type === balanceType ? ' selected' : ''}>${type}</option>`).join('')}
+          </select>
+        </div>
+        <label class="field trial-check">
+          <input type="checkbox" name="showZero"${f.showZero ? ' checked' : ''} />
+          <span>نمایش اقلام با مانده صفر</span>
+        </label>
+        <label class="field trial-check">
+          <input type="checkbox" name="multiLevel"${f.multiLevel ? ' checked' : ''} />
+          <span>نمایش چندسطحی (کل، معین و تفصیلی)</span>
+        </label>
+        <label class="field trial-check">
+          <input type="checkbox" name="showAccountCode"${f.showAccountCode ? ' checked' : ''} />
+          <span>نمایش ستون کد حساب</span>
+        </label>
+        <label class="field trial-check">
+          <input type="checkbox" name="showAccountName"${f.showAccountName ? ' checked' : ''} />
+          <span>نمایش ستون نام حساب</span>
+        </label>
+        <label class="field trial-check">
+          <input type="checkbox" name="showPrintDateTime"${f.showPrintDateTime ? ' checked' : ''} />
+          <span>نمایش تاریخ چاپ در گزارش</span>
+        </label>
       </form>`,
     actions: [
       {
@@ -1116,6 +1191,16 @@ function openTrialFilterDialog() {
           const data = new FormData(form);
           state.filters.trial.from = String(data.get('from') || '');
           state.filters.trial.to = String(data.get('to') || '');
+          state.filters.trial.accountFrom = toEn(String(data.get('accountFrom') || '')).replace(/[^\d]/g, '');
+          state.filters.trial.accountTo = toEn(String(data.get('accountTo') || '')).replace(/[^\d]/g, '');
+          state.filters.trial.balanceType = TRIAL_BALANCE_TYPES.includes(String(data.get('balanceType')))
+            ? String(data.get('balanceType'))
+            : 'شش ستونی';
+          state.filters.trial.showZero = form.querySelector('[name="showZero"]').checked;
+          state.filters.trial.multiLevel = form.querySelector('[name="multiLevel"]').checked;
+          state.filters.trial.showAccountCode = form.querySelector('[name="showAccountCode"]').checked;
+          state.filters.trial.showAccountName = form.querySelector('[name="showAccountName"]').checked;
+          state.filters.trial.showPrintDateTime = form.querySelector('[name="showPrintDateTime"]').checked;
           result.close();
           navigate('trial', { force: true });
         },
@@ -1127,6 +1212,14 @@ function openTrialFilterDialog() {
           const defaults = defaultFilters().trial;
           result.body.querySelector('[name="from"]').value = defaults.from;
           result.body.querySelector('[name="to"]').value = defaults.to;
+          result.body.querySelector('[name="accountFrom"]').value = '';
+          result.body.querySelector('[name="accountTo"]').value = '';
+          result.body.querySelector('[name="balanceType"]').value = defaults.balanceType;
+          result.body.querySelector('[name="showZero"]').checked = defaults.showZero;
+          result.body.querySelector('[name="multiLevel"]').checked = defaults.multiLevel;
+          result.body.querySelector('[name="showAccountCode"]').checked = defaults.showAccountCode;
+          result.body.querySelector('[name="showAccountName"]').checked = defaults.showAccountName;
+          result.body.querySelector('[name="showPrintDateTime"]').checked = defaults.showPrintDateTime;
         },
       },
     ],
@@ -1144,21 +1237,88 @@ function openTrialFilterDialog() {
       if (input.value !== cleaned) input.value = cleaned;
     });
   });
+  form?.querySelectorAll('[name="accountFrom"], [name="accountTo"]').forEach((input) => {
+    input.addEventListener('input', () => {
+      const cleaned = toEn(input.value).replace(/[^\d]/g, '');
+      if (input.value !== cleaned) input.value = cleaned;
+    });
+  });
 }
 
 function renderTrialBalance(report) {
-  const rows = report.rows.map((row) => `
+  const balanceType = TRIAL_BALANCE_TYPES.includes(state.filters.trial.balanceType)
+    ? state.filters.trial.balanceType
+    : 'شش ستونی';
+  const isFourColumn = balanceType === 'چهار ستونی';
+  const showOpening = balanceType === 'شش ستونی' || balanceType === 'هشت ستونی';
+  const showAccumulated = balanceType === 'هشت ستونی';
+  const multiLevel = Boolean(state.filters.trial.multiLevel);
+  const showAccountCode = state.filters.trial.showAccountCode !== false;
+  const showAccountName = state.filters.trial.showAccountName !== false;
+  const identityColumns = 1 + (showAccountCode ? 1 : 0) + (showAccountName ? 1 : 0);
+
+  const rows = report.rows.map((row) => {
+    const indent = multiLevel && showAccountName ? Math.max(0, Number(row.level) - 1) * 16 : 0;
+    const turnoverDebit = isFourColumn
+      ? amountBigInt(row.openingDebit) + amountBigInt(row.periodDebit)
+      : row.periodDebit;
+    const turnoverCredit = isFourColumn
+      ? amountBigInt(row.openingCredit) + amountBigInt(row.periodCredit)
+      : row.periodCredit;
+    const opening = showOpening
+      ? `<td class="money debit">${money(row.openingDebit)}</td>
+         <td class="money credit">${money(row.openingCredit)}</td>`
+      : '';
+    const accumulated = showAccumulated
+      ? `<td class="money debit">${money(amountBigInt(row.openingDebit) + amountBigInt(row.periodDebit))}</td>
+         <td class="money credit">${money(amountBigInt(row.openingCredit) + amountBigInt(row.periodCredit))}</td>`
+      : '';
+    const codeCell = showAccountCode
+      ? `<td class="center mono">${toFa(row.accountCode)}</td>`
+      : '';
+    const nameCell = showAccountName
+      ? `<td style="${indent ? `padding-right:${indent}px` : ''}">${esc(row.accountName)}</td>`
+      : '';
+    return `
     <tr>
-      <td class="center mono">${toFa(row.accountCode)}</td>
-      <td>${esc(row.accountName)}</td>
+      ${codeCell}${nameCell}
       <td class="desc-cell">${esc(row.groupName)}</td>
-      <td class="money debit">${money(row.openingDebit)}</td>
-      <td class="money credit">${money(row.openingCredit)}</td>
-      <td class="money debit">${money(row.periodDebit)}</td>
-      <td class="money credit">${money(row.periodCredit)}</td>
+      ${opening}
+      <td class="money debit">${money(turnoverDebit)}</td>
+      <td class="money credit">${money(turnoverCredit)}</td>
+      ${accumulated}
       <td class="money debit bold">${money(row.closingDebit)}</td>
       <td class="money credit bold">${money(row.closingCredit)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
+
+  const codeHeader = showAccountCode
+    ? `<th rowspan="2" style="width:100px">کد حساب</th>`
+    : '';
+  const nameHeader = showAccountName ? `<th rowspan="2">عنوان حساب</th>` : '';
+  const openingHeader = showOpening
+    ? `<th colspan="2">مانده افتتاحیه</th>`
+    : '';
+  const openingCells = showOpening
+    ? `<th style="width:110px">بدهکار</th><th style="width:110px">بستانکار</th>`
+    : '';
+  const accumulatedHeader = showAccumulated ? `<th colspan="2">جمع دوره</th>` : '';
+  const accumulatedCells = showAccumulated
+    ? `<th style="width:110px">بدهکار</th><th style="width:110px">بستانکار</th>`
+    : '';
+  const openingTotal = showOpening
+    ? `<td class="num bold">${money(report.openingDebit)}</td><td class="num bold">${money(report.openingCredit)}</td>`
+    : '';
+  const accumulatedTotal = showAccumulated
+    ? `<td class="num bold">${money(amountBigInt(report.openingDebit) + amountBigInt(report.periodDebit))}</td>
+       <td class="num bold">${money(amountBigInt(report.openingCredit) + amountBigInt(report.periodCredit))}</td>`
+    : '';
+  const totalTurnoverDebit = isFourColumn
+    ? amountBigInt(report.openingDebit) + amountBigInt(report.periodDebit)
+    : report.periodDebit;
+  const totalTurnoverCredit = isFourColumn
+    ? amountBigInt(report.openingCredit) + amountBigInt(report.periodCredit)
+    : report.periodCredit;
 
   const balanced = amountBigInt(report.closingDebit) === amountBigInt(report.closingCredit)
     && amountBigInt(report.periodDebit) === amountBigInt(report.periodCredit);
@@ -1166,7 +1326,7 @@ function renderTrialBalance(report) {
   return `
   ${trialFilterTrigger()}
   <div class="report-summary">
-    <div class="kpi"><span>تعداد حساب دارای گردش</span><strong>${toFa(report.rows.length)}</strong></div>
+    <div class="kpi"><span>تعداد ردیف گزارش</span><strong>${toFa(report.rows.length)}</strong></div>
     <div class="kpi"><span>گردش بدهکار دوره</span><strong>${money(report.periodDebit)}</strong></div>
     <div class="kpi"><span>گردش بستانکار دوره</span><strong>${money(report.periodCredit)}</strong></div>
     <div class="kpi" data-tone="${balanced ? 'ok' : 'danger'}"><span>وضعیت تراز</span><strong>${balanced ? 'متوازن' : 'مغایرت'}</strong></div>
@@ -1177,26 +1337,29 @@ function renderTrialBalance(report) {
         <table class="data-table">
           <thead>
             <tr>
-              <th rowspan="2" style="width:100px">کد حساب</th>
-              <th rowspan="2">عنوان حساب</th>
+              ${codeHeader}
+              ${nameHeader}
               <th rowspan="2" style="width:180px">گروه</th>
-              <th colspan="2">مانده افتتاحیه</th>
-              <th colspan="2">گردش دوره</th>
+              ${openingHeader}
+              <th colspan="2">${isFourColumn ? 'جمع دوره' : 'گردش دوره'}</th>
+              ${accumulatedHeader}
               <th colspan="2">مانده اختتامیه</th>
             </tr>
             <tr>
-              <th style="width:110px">بدهکار</th><th style="width:110px">بستانکار</th>
-              <th style="width:110px">بدهکار</th><th style="width:110px">بستانکار</th>
+              ${openingCells}
+              <th style="width:110px">${isFourColumn ? 'جمع بدهکار' : 'بدهکار'}</th>
+              <th style="width:110px">${isFourColumn ? 'جمع بستانکار' : 'بستانکار'}</th>
+              ${accumulatedCells}
               <th style="width:110px">بدهکار</th><th style="width:110px">بستانکار</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
           <tfoot><tr>
-            <td colspan="3" class="center bold">جمع کل</td>
-            <td class="num bold">${money(report.openingDebit)}</td>
-            <td class="num bold">${money(report.openingCredit)}</td>
-            <td class="num bold">${money(report.periodDebit)}</td>
-            <td class="num bold">${money(report.periodCredit)}</td>
+            <td colspan="${identityColumns}" class="center bold">جمع کل</td>
+            ${openingTotal}
+            <td class="num bold">${money(totalTurnoverDebit)}</td>
+            <td class="num bold">${money(totalTurnoverCredit)}</td>
+            ${accumulatedTotal}
             <td class="num bold">${money(report.closingDebit)}</td>
             <td class="num bold">${money(report.closingCredit)}</td>
           </tr></tfoot>
@@ -1204,7 +1367,7 @@ function renderTrialBalance(report) {
       </div>` : `<div class="empty-state">
         ${icon('i-scale')}
         <b>حسابی با گردش یا مانده یافت نشد</b>
-        <span>در این بازه هیچ سندی ثبت نشده یا حساب‌ها مانده‌ای ندارند.</span>
+        <span>در این بازه هیچ سندی ثبت نشده، حساب‌ها مانده‌ای ندارند یا فیلتر کد حساب را محدود کرده است.</span>
       </div>`}
   </div>`;
 }
@@ -1408,7 +1571,6 @@ PAGES.accounts = {
   ],
   load: async (force) => {
     const [accounts, groups] = await Promise.all([ensureAccounts(force), ensureGroups(force)]);
-    updateDatabasePath(state.databasePath);
     return { accounts, groups };
   },
   render: renderAccounts,
@@ -1492,7 +1654,7 @@ function renderAccounts(data) {
       <label for="acLevel">سطح</label>
       <select id="acLevel" class="input" name="level">
         <option value="">همه سطوح</option>
-        ${[1, 2, 3, 4].map((level) => `<option value="${level}"${String(filters.level) === String(level) ? ' selected' : ''}>${levelLabel(level)}</option>`).join('')}
+        ${[1, 2, 3].map((level) => `<option value="${level}"${String(filters.level) === String(level) ? ' selected' : ''}>${levelLabel(level)}</option>`).join('')}
       </select>
     </div>
     <button class="btn btn-primary" type="submit">${icon('i-search')}<span>فیلتر</span></button>
@@ -1877,13 +2039,6 @@ function renderSettings(settings) {
         نام شرکت در سرصفحه همه گزارش‌ها و در نوار وضعیت نمایش داده می‌شود.
         سال مالی به گزارش‌های چاپی اضافه می‌شود.
       </div>
-      <div class="section-head">
-        <h2>${icon('i-panel')} نوار کناری</h2>
-      </div>
-      <p class="form-note">نمایش نوار کناری را برای فضای کاری بیشتر روشن یا خاموش کنید.</p>
-      <div class="form-actions">
-        <button type="button" class="btn" data-sidebar-toggle aria-pressed="false"></button>
-      </div>
     </div>
 
     <div class="card">
@@ -1941,9 +2096,7 @@ function bindSettings(root) {
       const safetyPath = await invoke('restore_database');
       if (!safetyPath) return;
       await Promise.all([ensureAccounts(true), ensureGroups(true)]);
-      const dashboard = await invoke('get_dashboard');
-      state.voucherCount = dashboard.voucherCount || 0;
-      updateVoucherBadge();
+      state.voucherCount = await invoke('get_voucher_count');
       await navigate('settings', { force: true });
       toast(`بازیابی انجام شد؛ نسخهٔ قبلی در ${safetyPath} نگهداری شد.`, 'ok');
     } catch (error) {
@@ -1952,9 +2105,6 @@ function bindSettings(root) {
       button.disabled = false;
     }
   });
-  const sidebar = $('.sidebar');
-  updateSidebarToggleButton(!!sidebar?.classList.contains('is-hidden'));
-  root.querySelector('[data-sidebar-toggle]')?.addEventListener('click', toggleSidebarVisibility);
 }
 
 function openSettingsDialog() {
@@ -2027,6 +2177,9 @@ function bindPageCommon(root) {
   root.querySelectorAll('[data-new-voucher]').forEach((button) => {
     button.addEventListener('click', () => openVoucherWindow());
   });
+  root.querySelectorAll('[data-open-voucher-list]').forEach((button) => {
+    button.addEventListener('click', () => openVoucherListWindow());
+  });
   root.querySelectorAll('[data-open-voucher]').forEach((button) => {
     button.addEventListener('click', () => openVoucherWindow(Number(button.dataset.openVoucher)));
   });
@@ -2059,6 +2212,7 @@ function bindPageCommon(root) {
       }
       const target = state.filters[key];
       if (!target) return;
+      if (state.listOffsets[key] !== undefined) state.listOffsets[key] = 0;
       for (const [name, value] of data.entries()) {
         target[name] = String(value);
       }
@@ -2075,6 +2229,7 @@ function bindPageCommon(root) {
         }
         const defaults = defaultFilters()[key];
         if (defaults) Object.assign(state.filters[key], defaults);
+        if (state.listOffsets[key] !== undefined) state.listOffsets[key] = 0;
         navigate(state.page, { force: true });
       });
     }
@@ -2404,6 +2559,19 @@ function openBulkVoucherImport() {
   dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, icon: 'i-doc', onClick: selectFile }]);
 }
 
+async function openBulkVoucherDeleteWindow() {
+  if (!invoke) {
+    toast('حذف دسته‌جمعی اسناد فقط در نسخه دسکتاپ ممکن است.', 'error');
+    return;
+  }
+  try {
+    await invoke('open_bulk_voucher_delete_window');
+    state.refreshOnFocus = true;
+  } catch (error) {
+    toast(errorText(error), 'error');
+  }
+}
+
 function runMenuItem(item) {
   if (item.page) {
     navigate(item.page);
@@ -2419,17 +2587,17 @@ function runMenuItem(item) {
     case 'new-voucher':
       openVoucherWindow();
       return;
+    case 'voucher-list':
+      openVoucherListWindow();
+      return;
     case 'bulk-voucher-import':
       openBulkVoucherImport();
       return;
     case 'reorganize-vouchers':
       openReorganizeVouchers();
       return;
-    case 'toggle-sidebar':
-      toggleSidebarVisibility();
-      return;
-    case 'workspace-home':
-      void navigate('workspace');
+    case 'bulk-voucher-delete':
+      openBulkVoucherDeleteWindow();
       return;
     case 'choose-wallpaper':
       $('#wallpaperPicker')?.click();
@@ -2581,21 +2749,6 @@ function bindMenubar() {
   });
 }
 
-function toggleSidebarVisibility() {
-  const sidebar = $('.sidebar');
-  if (!sidebar) return;
-  const hidden = sidebar.classList.toggle('is-hidden');
-  updateSidebarToggleButton(hidden);
-  setStatus(hidden ? 'سایدبار پنهان شد.' : 'سایدبار نمایش داده شد.', 'ok');
-}
-
-function updateSidebarToggleButton(hidden) {
-  const button = $('[data-sidebar-toggle]');
-  if (!button) return;
-  button.setAttribute('aria-pressed', hidden ? 'true' : 'false');
-  button.innerHTML = `${icon('i-panel')}<span>${hidden ? 'نمایش نوار کناری' : 'مخفی کردن نوار کناری'}</span>`;
-}
-
 function showHelpDialog() {
   openDialog({
     title: 'راهنمای نرم‌افزار',
@@ -2661,40 +2814,6 @@ async function exitApplication() {
 
 let navSeq = 0;
 
-function buildNavigation() {
-  const nav = $('#sideNav');
-  if (!nav) return;
-  nav.innerHTML = NAV.map((section) => `
-    <div class="nav-section">
-      <div class="nav-section-label">${esc(section.section)}</div>
-      ${section.items.map((item) => `
-        <button type="button" class="nav-item" data-page="${item.id}" title="${esc(item.label)}">
-          ${icon(item.icon)}
-          <span>${esc(item.label)}</span>
-          ${item.id === 'vouchers' ? '<span class="nav-badge" id="navVoucherBadge" hidden></span>' : ''}
-        </button>`).join('')}
-    </div>`).join('');
-  nav.querySelectorAll('[data-page]').forEach((button) => {
-    button.addEventListener('click', () => navigate(button.dataset.page));
-  });
-}
-
-function updateNavActive() {
-  $$('#sideNav [data-page]').forEach((button) => {
-    const active = button.dataset.page === state.page;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-current', active ? 'page' : 'false');
-  });
-}
-
-function updateVoucherBadge() {
-  const badgeEl = $('#navVoucherBadge');
-  if (!badgeEl) return;
-  const count = Number(state.voucherCount) || 0;
-  badgeEl.textContent = toFa(count);
-  badgeEl.hidden = count <= 0;
-}
-
 async function navigate(page, { force = false } = {}) {
   // Outside the dedicated trial-balance window, this report opens as a popup
   // instead of replacing the page inside the main window.
@@ -2703,50 +2822,29 @@ async function navigate(page, { force = false } = {}) {
     return;
   }
   if (page === 'workspace') {
-    const seq = ++navSeq;
+    navSeq += 1;
     state.page = page;
-    updateNavActive();
     $('.accounting-app')?.classList.add('is-workspace-home');
     renderActions([]);
-    const root = $('#page');
-    if (!root) return;
+    const workspaceRoot = $('#page');
+    if (workspaceRoot) workspaceRoot.replaceChildren();
     document.title = 'نرم‌افزار حسابداری';
-    if (!invoke) {
-      root.replaceChildren();
-      setStatus('فضای کار آماده است.', 'ok');
-      return;
-    }
-    root.innerHTML = `<div class="empty-state">
-      <div class="spinner" aria-hidden="true" style="width:26px;height:26px"></div>
-      <b>در حال بارگذاری داشبورد…</b>
-    </div>`;
-    try {
-      const dashboard = await invoke('get_dashboard');
-      if (seq !== navSeq || state.page !== page) return;
-      state.voucherCount = dashboard.voucherCount || 0;
-      updateVoucherBadge();
-      root.innerHTML = renderWorkspace(dashboard);
-      bindPageCommon(root);
-      bindVoucherRowActions(root);
-      setStatus('فضای کار آماده است.', 'ok');
-    } catch (error) {
-      if (seq !== navSeq || state.page !== page) return;
-      root.innerHTML = `<div class="empty-state">
-        ${icon('i-info')}
-        <b>داشبورد بارگذاری نشد</b>
-        <span>${esc(errorText(error))}</span>
-        <button type="button" class="btn" data-go="workspace">${icon('i-refresh')}<span>تلاش دوباره</span></button>
-      </div>`;
-      bindPageCommon(root);
-      setStatus('داشبورد بارگذاری نشد.', 'error');
-    }
+    setStatus('فضای کار آماده است.', 'ok');
+    return;
+  }
+  // The voucher list is a popup window too; only its own window renders it.
+  if (page === 'vouchers' && !IS_VOUCHER_LIST_POPUP) {
+    openVoucherListWindow();
     return;
   }
   const def = PAGES[page];
   if (!def) return;
-  state.page = page;
   $('.accounting-app')?.classList.remove('is-workspace-home');
-  updateNavActive();
+  if (state.page !== page) {
+    state.listOffsets.vouchers = 0;
+    state.listOffsets.journal = 0;
+  }
+  state.page = page;
 
   const [title, section] = pageMeta(page);
   const titleEl = $('#pageTitle');
@@ -2799,6 +2897,16 @@ async function openVoucherWindow(number = null) {
   }
 }
 
+async function openVoucherListWindow() {
+  if (!invoke) return;
+  try {
+    await invoke('open_voucher_list_window');
+    state.refreshOnFocus = true;
+  } catch (error) {
+    toast(errorText(error), 'error');
+  }
+}
+
 async function openTrialBalanceWindow() {
   if (!invoke) return;
   try {
@@ -2820,14 +2928,16 @@ async function openGroupsWindow() {
 }
 
 function bindChrome() {
-  const homeButton = $('[data-workspace-home]');
-  homeButton?.addEventListener('click', () => void navigate('workspace'));
-  homeButton?.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      void navigate('workspace');
-    }
-  });
+  if (!IS_VOUCHER_LIST_POPUP) {
+    const homeButton = $('[data-workspace-home]');
+    homeButton?.addEventListener('click', () => void navigate('workspace'));
+    homeButton?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        void navigate('workspace');
+      }
+    });
+  }
   $('#wallpaperPicker')?.addEventListener('change', (event) => {
     chooseWallpaper(event.target.files?.[0]);
     event.target.value = '';
@@ -2847,11 +2957,23 @@ function bindChrome() {
       window.dispatchEvent(new Event('accounts-changed'));
     }).catch(() => {});
   }
+
+  // The bulk-delete form runs in its own window; when it finishes, any open
+  // voucher list or voucher-derived report should reload its data.
+  const voucherPages = new Set(['vouchers', 'journal', 'ledger', 'trial', 'income', 'balance']);
+  window.addEventListener('vouchers-changed', () => {
+    state.listOffsets.vouchers = 0;
+    state.listOffsets.journal = 0;
+    if (voucherPages.has(state.page)) void navigate(state.page, { force: true });
+  });
+  if (typeof eventApi?.listen === 'function') {
+    void eventApi.listen('vouchers-changed', () => {
+      window.dispatchEvent(new Event('vouchers-changed'));
+    }).catch(() => {});
+  }
   $('#btnExitApp')?.addEventListener('click', () => {
     void exitApplication();
   });
-  $('#btnSideGroups')?.addEventListener('click', () => openGroupsWindow());
-
   $$('[data-quick]').forEach((button) => {
     button.addEventListener('click', () => {
       const quick = button.dataset.quick;
@@ -2900,8 +3022,7 @@ function bindChrome() {
 /* ── Init ───────────────────────────────────────────────────── */
 
 async function init() {
-  if (!IS_TRIAL_POPUP) {
-    buildNavigation();
+  if (!IS_TRIAL_POPUP && !IS_VOUCHER_LIST_POPUP) {
     buildMenubar();
     bindMenubar();
   }
@@ -2918,7 +3039,7 @@ async function init() {
     state.filters = defaultFilters();
     state.ready = true;
     applyWallpaper(localStorage.getItem('hesabdari-workspace-wallpaper'));
-    await navigate(IS_TRIAL_POPUP ? 'trial' : 'workspace');
+    await navigate(IS_TRIAL_POPUP ? 'trial' : IS_VOUCHER_LIST_POPUP ? 'vouchers' : 'workspace');
     setStatus('آماده', 'ok');
   } catch (error) {
     renderFatal(errorText(error));

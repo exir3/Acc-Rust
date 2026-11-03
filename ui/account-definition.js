@@ -21,7 +21,7 @@
   }
 
   function renderAccountDefinitionForm() {
-    const state = { accounts:[], groups:[], selected:'', path:[], mode:'view', busy:false, search:'', group:'', level:'' };
+    const state = { accounts:[], groups:[], selected:'', path:[], mode:'view', busy:false, search:'', group:'', level:'', active:'' };
     const overlay = document.createElement('main');
     overlay.className = 'adp2-window';
     overlay.innerHTML =
@@ -30,10 +30,11 @@
         '<div class="adp2-filters">' +
           '<label>جست‌وجو<input type="search" data-search placeholder="کد، نام یا حساب بالاتر"></label>' +
           '<label>گروه حساب<select data-group><option value="">همه گروه‌ها</option></select></label>' +
-          '<label>سطح<select data-level><option value="">همه سطوح</option><option value="1">کل</option><option value="2">معین</option><option value="3">تفصیلی ۱</option><option value="4">تفصیلی ۲ (قدیمی)</option></select></label>' +
+          '<label>سطح<select data-level><option value="">همه سطوح</option><option value="1">کل</option><option value="2">معین</option><option value="3">تفصیلی ۱</option></select></label>' +
+          '<label>وضعیت<select data-active-filter><option value="">همه</option><option value="1">فعال</option><option value="0">غیرفعال</option></select></label>' +
           '<button type="button" class="adp2-button" data-reset>پاک‌کردن فیلتر</button><button type="button" class="adp2-button" data-refresh>↻ بارگذاری مجدد</button>' +
         '</div>' +
-        '<div class="adp2-grid-wrap"><table class="adp2-grid"><thead><tr><th>ردیف</th><th>کد حساب</th><th>نام حساب</th><th>سطح</th><th>گروه حساب</th><th>ماهیت</th><th>حساب بالاتر</th><th>ثبت سند</th></tr></thead><tbody data-rows><tr><td colspan="8">در حال بارگذاری…</td></tr></tbody></table></div>' +
+        '<div class="adp2-grid-wrap"><table class="adp2-grid"><thead><tr><th>ردیف</th><th>کد حساب</th><th>نام حساب</th><th>سطح</th><th>گروه حساب</th><th>ماهیت</th><th>حساب بالاتر</th><th>ثبت سند</th><th>وضعیت</th></tr></thead><tbody data-rows><tr><td colspan="9">در حال بارگذاری…</td></tr></tbody></table></div>' +
         '<section class="adp2-editor" data-editor hidden><div class="adp2-editor-head"><b data-editor-title>مشخصات حساب</b><span data-editor-hint></span></div>' +
           '<form data-form class="adp2-form" autocomplete="off">' +
             '<label>کد حساب<input data-code dir="ltr" inputmode="numeric" maxlength="20" required aria-describedby="adpFormError"></label>' +
@@ -43,6 +44,7 @@
             '<label>حساب بالاتر<select data-parent></select></label>' +
             '<label>ماهیت<select data-nature><option value="debtor">بدهکار</option><option value="creditor">بستانکار</option><option value="dual">دوگانه</option></select></label>' +
             '<label class="adp2-check"><input type="checkbox" data-postable> قابل ثبت در سند</label>' +
+            '<label class="adp2-check"><input type="checkbox" data-active-check> حساب فعال</label>' +
             '<div class="adp2-form-error" id="adpFormError" data-error role="alert" aria-live="assertive" hidden></div><div class="adp2-form-actions">' +
               '<button type="submit" class="adp2-button primary" data-save>ذخیره (F2)</button><button type="button" class="adp2-button" data-cancel>انصراف</button>' +
             '</div></form></section>' +
@@ -58,9 +60,10 @@
     const code = $('[data-code]'), name = $('[data-name]'), level = $('[data-edit-level]');
     const group = $('[data-edit-group]'), parent = $('[data-parent]'), nature = $('[data-nature]');
     const postable = $('[data-postable]'), errorBox = $('[data-error]'), status = $('[data-status]');
+    const activeCheck = $('[data-active-check]');
     let initialEditorValues = null;
     const editorValues = () => JSON.stringify([
-      code.value, name.value, level.value, group.value, parent.value, nature.value, postable.checked,
+      code.value, name.value, level.value, group.value, parent.value, nature.value, postable.checked, activeCheck.checked,
     ]);
     const rememberEditorValues = () => { initialEditorValues = editorValues(); };
     const say = (message,tone) => { status.textContent = message || ''; status.dataset.tone = tone || ''; };
@@ -93,6 +96,12 @@
       }
       return '';
     };
+    const setSuggestedCode = (n,p) => {
+      const suggested=newCode(n,p);
+      code.value=fa(suggested);
+      if(!suggested)say('کد آزادی در این سطح موجود نیست؛ کد را دستی وارد کنید.','error');
+      return suggested;
+    };
     const fillGroups = selected => {
       const options=state.groups.map(g=>'<option value="'+esc(g.code)+'">'+fa(g.code)+' — '+esc(g.name)+' ('+esc(g.type)+')</option>').join('');
       $('[data-group]').innerHTML='<option value="">همه گروه‌ها</option>'+options;
@@ -100,12 +109,13 @@
       $('[data-group]').value=state.group;
     };
     const filtered = () => {
-      const q=searchText(state.search), hasFilter=!!(q||state.group||state.level);
+      const q=searchText(state.search), hasFilter=!!(q||state.group||state.level||state.active);
       const current=state.path[state.path.length-1]||'';
       return state.accounts.filter(a=>{
         if(!hasFilter && (current?a.parentCode!==current:Number(a.level)!==1)) return false;
         if(state.group && a.groupCode!==state.group) return false;
         if(state.level && Number(a.level)!==Number(state.level)) return false;
+        if(state.active !== '' && Boolean(a.isActive)!==(state.active==='1')) return false;
         const hay=searchText([a.code,a.name,a.parentName,a.groupName].join(' '));
         return !q||hay.includes(q);
       }).sort((a,b)=>a.code.localeCompare(b.code,'en',{numeric:true}));
@@ -126,11 +136,12 @@
       if(!list.some(a=>a.code===state.selected))state.selected=list[0]?.code||'';
       $('[data-count]').textContent=fa(list.length)+' حساب';
       rows.innerHTML=list.length?list.map((a,i)=>
-        '<tr tabindex="'+(a.code===state.selected?'0':'-1')+'" aria-selected="'+(a.code===state.selected?'true':'false')+'" data-row="'+esc(a.code)+'" class="'+(a.code===state.selected?'selected':'')+'">'+
+        '<tr tabindex="'+(a.code===state.selected?'0':'-1')+'" aria-selected="'+(a.code===state.selected?'true':'false')+'" data-row="'+esc(a.code)+'" class="'+(a.code===state.selected?'selected ':'')+(a.isActive?'':'inactive')+'">'+
         '<td>'+fa(i+1)+'</td><td class="mono" dir="ltr">'+fa(a.code)+'</td><td class="name">'+esc(a.name)+'</td>'+
         '<td>'+levelText(a.level)+'</td><td>'+esc(a.groupName)+'</td><td>'+natureText(a.nature)+'</td>'+
-        '<td>'+esc(a.parentName||'—')+'</td><td>'+(a.isPostable?'قابل ثبت':'غیرقابل ثبت')+'</td></tr>').join(''):
-        '<tr><td colspan="8" class="adp2-empty">حسابی در این سطح پیدا نشد.</td></tr>';
+        '<td>'+esc(a.parentName||'—')+'</td><td>'+(a.isPostable?'قابل ثبت':'غیرقابل ثبت')+'</td>'+
+        '<td>'+(a.isActive?'فعال':'غیرفعال')+'</td></tr>').join(''):
+        '<tr><td colspan="9" class="adp2-empty">حسابی در این سطح پیدا نشد.</td></tr>';
       rows.querySelectorAll('[data-row]').forEach(row=>{
         row.addEventListener('click',()=>{
           if(state.busy)return;
@@ -156,7 +167,7 @@
         });
       });
       const busy=state.busy;
-      for(const control of overlay.querySelectorAll('[data-search],[data-group],[data-level],[data-reset]'))control.disabled=busy;
+      for(const control of overlay.querySelectorAll('[data-search],[data-group],[data-level],[data-active-filter],[data-reset]'))control.disabled=busy;
       $('[data-edit]').disabled=!getSelected()||state.mode!=='view'||busy;
       $('[data-delete]').disabled=!getSelected()||state.mode!=='view'||busy;
       $('[data-new]').disabled=state.mode!=='view'||busy;
@@ -181,24 +192,25 @@
     };
     const parentsFor = (preferred, allowGroupChange = false) => {
       const n=Number(level.value);
-      if(n===1){parent.innerHTML='<option value="">حساب سطح کل (بدون والد)</option>';parent.disabled=true;group.disabled=false;postable.checked=false;postable.disabled=true;if(state.mode==='new')code.value=fa(newCode(1,''));return;}
+      if(n===1){parent.innerHTML='<option value="">حساب سطح کل (بدون والد)</option>';parent.disabled=true;group.disabled=false;postable.checked=false;postable.disabled=true;if(state.mode==='new')setSuggestedCode(1,'');return;}
       parent.disabled=false;group.disabled=!allowGroupChange;postable.disabled=false;
-      const candidates=state.accounts.filter(a=>Number(a.level)===n-1&&a.groupCode===group.value);
-      parent.innerHTML='<option value="">— انتخاب حساب بالاتر —</option>'+candidates.map(a=>'<option value="'+esc(a.code)+'">'+fa(a.code)+' — '+esc(a.name)+'</option>').join('');
-      parent.value=preferred||candidates[0]?.code||'';
-      if(state.mode==='new')code.value=fa(newCode(n,parent.value));
+      const candidates=state.accounts.filter(a=>Number(a.level)===n-1&&a.groupCode===group.value&&(a.isActive!==false||(state.mode==='edit'&&a.code===preferred)));
+      parent.innerHTML='<option value="">— انتخاب حساب بالاتر —</option>'+candidates.map(a=>'<option value="'+esc(a.code)+'">'+fa(a.code)+' — '+esc(a.name)+(a.isActive===false?' (غیرفعال)':'')+'</option>').join('');
+      const preferredAvailable=candidates.some(a=>a.code===preferred);
+      parent.value=preferredAvailable?preferred:(preferred&&state.mode==='new'?'':(candidates[0]?.code||''));
+      if(state.mode==='new')setSuggestedCode(n,parent.value);
     };
     const startNew = () => {
       if(state.busy||state.mode!=='view')return;
       if(!state.groups.length){say('ابتدا یک گروه حساب تعریف کنید.','error');return;}
       const pc=state.path[state.path.length-1]||'', p=getRow(pc), n=p?Number(p.level)+1:1;
-      if(n>3){say('در ساختار جدید فقط سه سطح کل، معین و تفصیلی ۱ پشتیبانی می‌شود. برای حساب‌های سطح چهارم قدیمی امکان ایجاد زیرحساب جدید وجود ندارد.','error');return;}
+      if(n>3){say('پس از گروه حساب، سه سطح قابل تعریف است: کل، معین و تفصیلی ۱. حساب‌های تفصیلی ۲ قدیمی فقط برای مشاهده و سازگاری با اسناد قبلی نگهداری می‌شوند.','error');return;}
       state.mode='new';editor.hidden=false;form.reset();
       $('[data-editor-title]').textContent='تعریف حساب جدید';
       $('[data-editor-hint]').textContent='کد پیشنهادی مطابق کدهای موجود تولید می‌شود.';
       level.innerHTML='<option value="1">کل</option><option value="2">معین</option><option value="3">تفصیلی ۱</option>';
       level.value=String(n);fillGroups(p?p.groupCode:state.groups[0].code);group.disabled=!!p;
-      name.value='';code.readOnly=false;postable.checked=n>1;errorBox.hidden=true;code.removeAttribute('aria-invalid');
+      name.value='';code.readOnly=false;postable.checked=n>1;activeCheck.checked=true;errorBox.hidden=true;code.removeAttribute('aria-invalid');
       parentsFor(pc);if(pc)parent.value=pc;
       rememberEditorValues();
       $('[data-save]').textContent='ثبت حساب (F2)';render();name.focus();
@@ -212,7 +224,7 @@
       level.innerHTML='<option value="'+account.level+'">'+levelText(account.level)+'</option>';level.value=String(account.level);
       group.value=account.groupCode;
       parentsFor(account.parentCode,true);
-      nature.value=account.nature;postable.checked=!!account.isPostable;
+      nature.value=account.nature;postable.checked=!!account.isPostable;activeCheck.checked=account.isActive!==false;
       postable.disabled=Number(account.level)===1||children(account.code).length>0;
       rememberEditorValues();
       $('[data-save]').textContent='ذخیره تغییرات (F2)';errorBox.hidden=true;code.removeAttribute('aria-invalid');render();name.focus();
@@ -230,8 +242,8 @@
       code.removeAttribute('aria-invalid');
       const button=$('[data-save]');button.disabled=true;state.busy=true;
       try{
-        if(state.mode==='edit')await invoke('update_account',{id:getSelected().id,name:n,groupCode:g,nature:nature.value,parentCode:p,isPostable:postable.checked});
-        else await invoke('create_account',{code:c,name:n,level:l,groupCode:g,nature:nature.value,parentCode:p,isPostable:postable.checked});
+        if(state.mode==='edit')await invoke('update_account',{id:getSelected().id,name:n,groupCode:g,nature:nature.value,parentCode:p,isPostable:postable.checked,isActive:activeCheck.checked});
+        else await invoke('create_account',{code:c,name:n,level:l,groupCode:g,nature:nature.value,parentCode:p,isPostable:postable.checked,isActive:activeCheck.checked});
         window.dispatchEvent(new Event('accounts-changed'));
         state.selected=c;state.mode='view';editor.hidden=true;await refresh(false,true);state.selected=c;render();say('اطلاعات حساب ذخیره شد.','ok');
       }catch(err){errorBox.textContent=err.message||String(err);errorBox.hidden=false;}
@@ -251,11 +263,15 @@
       state.busy=true;render();let done=0;const blocked=[];
       try{
         const ordered=[...state.accounts].sort((a,b)=>Number(b.level)-Number(a.level));
-        for(const a of ordered){try{await invoke('delete_account',{id:a.id});done++;}catch(e){blocked.push(fa(a.code)+' — '+a.name+': '+(e.message||String(e)));}}
+        const result=await invoke('delete_accounts_bulk',{ids:ordered.map(a=>a.id)});
+        done=Number(result?.deletedCount)||0;
+        for(const item of result?.blocked||[]){
+          blocked.push(fa(item.code)+' — '+item.name+': '+(item.error||''));
+        }
         if(done)window.dispatchEvent(new Event('accounts-changed'));
         state.selected='';await refresh(false,true);say(fa(done)+' حساب حذف شد؛ '+fa(blocked.length)+' حساب باقی ماند.',blocked.length?'error':'ok');
         if(blocked.length)window.alert('حساب‌های حذف‌نشده:\n'+blocked.slice(0,25).join('\n')+(blocked.length>25?'\n…':''));
-      }finally{state.busy=false;render();}
+      }catch(e){say(e.message||String(e),'error');}finally{state.busy=false;render();}
     };
     const currentWindow = window.__TAURI__?.window?.getCurrentWindow?.();
     const hasUnsavedChanges = () => state.mode !== 'view' && initialEditorValues !== editorValues();
@@ -291,13 +307,14 @@
     $('[data-delete]').addEventListener('click',removeSelected);
     $('[data-delete-all]').addEventListener('click',removeAll);
     $('[data-refresh]').addEventListener('click',()=>refresh(false));
-    $('[data-reset]').addEventListener('click',()=>{state.search='';state.group='';state.level='';state.path=[];$('[data-search]').value='';$('[data-group]').value='';$('[data-level]').value='';render();});
+    $('[data-reset]').addEventListener('click',()=>{state.search='';state.group='';state.level='';state.active='';state.path=[];$('[data-search]').value='';$('[data-group]').value='';$('[data-level]').value='';$('[data-active-filter]').value='';render();});
     $('[data-search]').addEventListener('input',e=>{state.search=e.target.value;render();});
     $('[data-group]').addEventListener('change',e=>{state.group=e.target.value;render();});
     $('[data-level]').addEventListener('change',e=>{state.level=e.target.value;render();});
+    $('[data-active-filter]').addEventListener('change',e=>{state.active=e.target.value;render();});
     level.addEventListener('change',()=>parentsFor(''));
     group.addEventListener('change',()=>parentsFor('',state.mode==='edit'));
-    parent.addEventListener('change',()=>{if(state.mode==='new')code.value=fa(newCode(Number(level.value),parent.value));});
+    parent.addEventListener('change',()=>{if(state.mode==='new')setSuggestedCode(Number(level.value),parent.value);});
     code.addEventListener('input',()=>{if(state.mode==='new')code.value=fa(nums(code.value));});
     form.addEventListener('submit',save);$('[data-cancel]').addEventListener('click',cancel);
     $('[data-export]').addEventListener('click',async()=>{
