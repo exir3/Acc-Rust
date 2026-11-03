@@ -26,36 +26,6 @@
   };
   const pad2 = (value) => String(value).padStart(2, '0');
 
-  // The 33-year leap rule used by the Rust calendar keeps the quick ranges and
-  // date validation in step with the backend (Esfand has 30 days only in a
-  // leap year).
-  const isJalaliLeapYear = (year) => {
-    const countLeapDays = (value) => Math.trunc(value / 33) * 8
-      + Math.trunc((((value % 33) + 3) / 4));
-    const shifted = Number(year) + 1595;
-    return countLeapDays(shifted + 1) - countLeapDays(shifted) === 1;
-  };
-
-  const jalaliMonthLength = (year, month) => {
-    if (month >= 1 && month <= 6) return 31;
-    if (month >= 7 && month <= 11) return 30;
-    return isJalaliLeapYear(year) ? 30 : 29;
-  };
-
-  const isValidJalaliDate = (value) => {
-    const text = toEn(value).trim().replace(/-/g, '/');
-    const parts = text.split('/');
-    if (parts.length !== 3) return false;
-    if (!/^\d{4}$/.test(parts[0]) || !/^\d{1,2}$/.test(parts[1]) || !/^\d{1,2}$/.test(parts[2])) {
-      return false;
-    }
-    const year = Number(parts[0]);
-    const month = Number(parts[1]);
-    const day = Number(parts[2]);
-    if (year < 1 || year > 3177 || month < 1 || month > 12) return false;
-    return day >= 1 && day <= jalaliMonthLength(year, month);
-  };
-
   const shiftMonth = (year, month, delta) => {
     const index = year * 12 + (month - 1) + delta;
     return { year: Math.floor(index / 12), month: (index % 12) + 1 };
@@ -290,9 +260,8 @@
       const pattern = /^\d{4}\/\d{1,2}\/\d{1,2}$/;
       const from = toEn(state.form.fromDate).trim();
       const to = toEn(state.form.toDate).trim();
-      if (!pattern.test(from) || !pattern.test(to)
-        || !isValidJalaliDate(from) || !isValidJalaliDate(to)) {
-        return 'تاریخ وارد شده معتبر نیست؛ نمونه: ۱۴۰۵/۰۱/۰۱.';
+      if (!pattern.test(from) || !pattern.test(to)) {
+        return 'قالب تاریخ معتبر نیست؛ نمونه: ۱۴۰۵/۰۱/۰۱.';
       }
       const normalized = (value) => {
         const [year, month, day] = value.split('/');
@@ -308,8 +277,8 @@
       }
       const from = Number(state.form.fromNumber);
       const to = Number(state.form.toNumber);
-      if (!Number.isInteger(from) || !Number.isInteger(to) || from <= 0 || to <= 0) {
-        return 'شماره سند باید عددی بزرگ‌تر از صفر باشد.';
+      if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from <= 0 || to <= 0) {
+        return 'شماره سند باید عدد صحیح و در محدوده مجاز باشد.';
       }
       if (from > to) {
         return 'شماره سند «از» نمی‌تواند بزرگ‌تر از «تا» باشد.';
@@ -597,7 +566,7 @@
     toolbar.querySelector('button')?.focus();
   };
 
-  const buildPresets = () => {
+  const buildPresets = async () => {
     if (!state.year) {
       state.presets = [];
       return;
@@ -605,7 +574,17 @@
     const year = Number(state.year);
     const month = Number(toEn(state.today).split('/')[1] || '1');
     const threeMonthsAgo = shiftMonth(year, month, -2);
-    const lastDayOfYear = jalaliMonthLength(year, 12);
+
+    // Use the same Jalali calendar implementation as the Rust backend instead
+    // of duplicating a 33-year leap-year approximation in JavaScript.
+    let lastDayOfYear = 29;
+    try {
+      await invoke('validate_voucher_date', { date: `${state.year}/12/30` });
+      lastDayOfYear = 30;
+    } catch {
+      // Esfand 30 is invalid in a non-leap year; Esfand 29 is always valid.
+    }
+
     state.presets = [
       {
         id: 'last3',
@@ -651,7 +630,7 @@
     state.year = /^\d{4}$/.test(year) ? year : '';
     state.form.fromDate = state.year ? `${state.year}/01/01` : '';
     state.form.toDate = state.today;
-    buildPresets();
+    await buildPresets();
     renderChoose();
     say('محدوده حذف را انتخاب کنید.');
   };

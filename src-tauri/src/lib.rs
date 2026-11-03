@@ -349,7 +349,7 @@ fn save_settings(
 
 #[tauri::command(async)]
 fn validate_voucher_date(date: String, window: WebviewWindow) -> Result<String, String> {
-    require_window(&window, &["main", "voucher"])?;
+    require_window(&window, &["main", "voucher", "bulk-voucher-delete"])?;
     vouchers::validate_voucher_date(&date)
 }
 

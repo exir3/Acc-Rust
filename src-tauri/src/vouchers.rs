@@ -1432,7 +1432,7 @@ impl Database {
 
         // The backup must succeed before anything is deleted.
         if let Some(path) = &backup_path {
-            self.backup_to(path)?;
+            self.backup_to_for_bulk_delete(path)?;
         }
         let backup_file = backup_path.map(|path| path.to_string_lossy().to_string());
 

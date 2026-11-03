@@ -20,6 +20,10 @@ use crate::vouchers::{
 
 pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
 const CURRENT_SCHEMA_VERSION: i64 = 4;
+// A pre-delete snapshot must preserve legacy vouchers exactly as they existed,
+// even when an old document already violates the current balancing rules.
+const BULK_DELETE_SNAPSHOT_KEY: &str = "backup_snapshot_kind";
+const BULK_DELETE_SNAPSHOT_VALUE: &str = "bulk-delete-preimage-v1";
 const LEGACY_DB_FILE_NAME: &str = "audit-analyzer.sqlite3";
 const LEGACY_IDENTIFIER: &str = "ir.audit.account-analyzer";
 
@@ -656,6 +660,23 @@ impl Database {
     }
 
     pub fn backup_to(&self, destination: &Path) -> Result<(), String> {
+        self.backup_to_internal(destination, false)
+    }
+
+    /// Creates a reversible pre-delete snapshot. Unlike a user-selected backup,
+    /// this must preserve legacy voucher defects so deleting another range is
+    /// not blocked by an unrelated historical document. SQLite integrity,
+    /// schema, account hierarchy, line-level constraints and foreign keys are
+    /// still validated. A marker lets restore apply this same narrow exception.
+    pub(crate) fn backup_to_for_bulk_delete(&self, destination: &Path) -> Result<(), String> {
+        self.backup_to_internal(destination, true)
+    }
+
+    fn backup_to_internal(
+        &self,
+        destination: &Path,
+        preserve_legacy_voucher_structure: bool,
+    ) -> Result<(), String> {
         let current_path = PathBuf::from(self.path_string());
         if same_path(&current_path, destination) {
             return Err("مسیر پشتیبان نمی‌تواند همان مسیر پایگاه دادهٔ فعال باشد.".to_string());
@@ -672,9 +693,22 @@ impl Database {
                         .run_to_completion(128, Duration::from_millis(10), None)
                         .map_err(db_error)?;
                 }
-                // Do not publish a snapshot that is structurally valid SQLite
-                // but already contains invalid accounting data or references.
-                validate_backup_connection(&target)
+
+                if preserve_legacy_voucher_structure {
+                    validate_backup_connection_with_options(&target, true)?;
+                    target
+                        .execute(
+                            "INSERT INTO app_meta(key, value) VALUES (?1, ?2)
+                             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            params![BULK_DELETE_SNAPSHOT_KEY, BULK_DELETE_SNAPSHOT_VALUE],
+                        )
+                        .map_err(db_error)?;
+                    Ok(())
+                } else {
+                    // Do not publish a regular backup containing invalid
+                    // accounting data or references.
+                    validate_backup_connection(&target)
+                }
             })();
             drop(target);
             if let Err(error) = validation {
@@ -693,7 +727,12 @@ impl Database {
 
         let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| format!("باز کردن فایل پشتیبان ناموفق بود: {error}"))?;
-        validate_backup_connection(&source)?;
+        let is_bulk_delete_snapshot = is_bulk_delete_snapshot_file(&source)?;
+        if is_bulk_delete_snapshot {
+            validate_backup_connection_with_options(&source, true)?;
+        } else {
+            validate_backup_connection(&source)?;
+        }
         let safety_path = unique_sibling_path(&current_path, "before-restore");
 
         self.with_conn(|target| {
@@ -712,8 +751,21 @@ impl Database {
                     .run_to_completion(128, Duration::from_millis(10), None)
                     .map_err(db_error)
             }
-            .and_then(|()| validate_backup_connection(target))
-            .and_then(|()| reset_schema_triggers(target));
+            .and_then(|()| {
+                validate_backup_connection_with_options(target, is_bulk_delete_snapshot)
+            })
+            .and_then(|()| reset_schema_triggers(target))
+            .and_then(|()| {
+                if is_bulk_delete_snapshot {
+                    target
+                        .execute(
+                            "DELETE FROM app_meta WHERE key = ?1",
+                            params![BULK_DELETE_SNAPSHOT_KEY],
+                        )
+                        .map_err(db_error)?;
+                }
+                Ok(())
+            });
             if let Err(error) = restore_result {
                 let rollback_result = (|| -> Result<(), String> {
                     let safety = Connection::open(&safety_path).map_err(db_error)?;
@@ -1535,6 +1587,28 @@ fn reset_schema_triggers(conn: &Connection) -> Result<(), String> {
 }
 
 fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
+    validate_backup_connection_with_options(conn, false)
+}
+
+fn is_bulk_delete_snapshot_file(conn: &Connection) -> Result<bool, String> {
+    if !table_exists(conn, "app_meta")? {
+        return Ok(false);
+    }
+    let value = conn
+        .query_row(
+            "SELECT value FROM app_meta WHERE key = ?1",
+            params![BULK_DELETE_SNAPSHOT_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(db_error)?;
+    Ok(value.as_deref() == Some(BULK_DELETE_SNAPSHOT_VALUE))
+}
+
+fn validate_backup_connection_with_options(
+    conn: &Connection,
+    preserve_legacy_voucher_structure: bool,
+) -> Result<(), String> {
     let integrity: String = conn
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .map_err(db_error)?;
@@ -1856,25 +1930,31 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
             "حساب ردیف {line} در فایل پشتیبان وجود ندارد یا قابل ثبت نیست."
         ));
     }
-    if let Some(number) = backup_first_text(
-        conn,
-        &format!(
-            "SELECT CAST(v.number AS TEXT)
-               FROM vouchers v
-               LEFT JOIN voucher_lines l ON l.voucher_id = v.id
-              GROUP BY v.id
-             HAVING COUNT(l.id) < 2
-                 OR COUNT(l.id) > {}
-                 OR COUNT(DISTINCT l.row_no) <> COUNT(l.id)
-                 OR COALESCE(SUM(l.debit), 0) = 0
-                 OR COALESCE(SUM(l.debit), 0) <> COALESCE(SUM(l.credit), 0)
-              LIMIT 1",
-            crate::vouchers::MAX_LINES
-        ),
-    )? {
-        return Err(format!(
-            "ساختار ردیف‌ها یا تراز سند شماره {number} در فایل پشتیبان معتبر نیست."
-        ));
+    // A marked pre-delete snapshot is a reversible archive of the exact live
+    // database state. It may contain an old voucher with an invalid aggregate
+    // row count/balance; all SQLite, schema, foreign-key and line-level checks
+    // above still run. Regular backups remain fully strict.
+    if !preserve_legacy_voucher_structure {
+        if let Some(number) = backup_first_text(
+            conn,
+            &format!(
+                "SELECT CAST(v.number AS TEXT)
+                   FROM vouchers v
+                   LEFT JOIN voucher_lines l ON l.voucher_id = v.id
+                  GROUP BY v.id
+                 HAVING COUNT(l.id) < 2
+                     OR COUNT(l.id) > {}
+                     OR COUNT(DISTINCT l.row_no) <> COUNT(l.id)
+                     OR COALESCE(SUM(l.debit), 0) = 0
+                     OR COALESCE(SUM(l.debit), 0) <> COALESCE(SUM(l.credit), 0)
+                  LIMIT 1",
+                crate::vouchers::MAX_LINES
+            ),
+        )? {
+            return Err(format!(
+                "ساختار ردیف‌ها یا تراز سند شماره {number} در فایل پشتیبان معتبر نیست."
+            ));
+        }
     }
 
     Ok(())
@@ -2664,6 +2744,102 @@ mod tests {
             .groups
             .iter()
             .any(|item| item.code == "90"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bulk_delete_backup_preserves_and_restores_legacy_unbalanced_vouchers() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-bulk-delete-legacy-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let active_path = dir.join(DB_FILE_NAME);
+        let db = file_database(&active_path);
+
+        // Simulate an older/externally-created document that is readable but
+        // has only one posting line. It must not block deletion of voucher 2.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', ?1)",
+                params![crate::vouchers::VOUCHER_TYPES[0]],
+            )
+            .map_err(db_error)?;
+            let voucher_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+                 VALUES (?1, 1, '110101', 100, 0)",
+                params![voucher_id],
+            )
+            .map_err(db_error)?;
+            Ok(())
+        })
+        .unwrap();
+        db.save_voucher(crate::vouchers::VoucherInput {
+            id: None,
+            number: Some(2),
+            date: "1405/01/02".to_string(),
+            voucher_type: crate::vouchers::VOUCHER_TYPES[0].to_string(),
+            description: "سند سالم".to_string(),
+            lines: vec![
+                crate::vouchers::VoucherLineInput {
+                    id: None,
+                    account_code: "110101".to_string(),
+                    description: String::new(),
+                    debit: 200,
+                    credit: 0,
+                },
+                crate::vouchers::VoucherLineInput {
+                    id: None,
+                    account_code: "410101".to_string(),
+                    description: String::new(),
+                    debit: 0,
+                    credit: 200,
+                },
+            ],
+        })
+        .unwrap();
+
+        let input = crate::vouchers::BulkVoucherDeleteInput {
+            scope: "numberRange".to_string(),
+            from_date: String::new(),
+            to_date: String::new(),
+            from_number: Some(2),
+            to_number: Some(2),
+        };
+        let preview = db.preview_bulk_voucher_delete(&input).unwrap();
+        let result = db
+            .apply_bulk_voucher_delete(&input, &preview.plan_token, true)
+            .unwrap();
+        assert_eq!(result.deleted_count, 1);
+        let backup_path = PathBuf::from(result.pre_delete_backup_file.unwrap());
+        assert!(backup_path.exists());
+        assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+
+        // The pre-delete copy is restorable, and the internal marker is
+        // removed from the live database once restoration succeeds.
+        db.restore_from(&backup_path).unwrap();
+        assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 2);
+        let marker_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM app_meta WHERE key = ?1",
+                    params![BULK_DELETE_SNAPSHOT_KEY],
+                    |row| row.get(0),
+                )
+                .map_err(db_error)
+            })
+            .unwrap();
+        assert_eq!(marker_count, 0);
+
+        // Ordinary user-selected backups remain strict and still report the
+        // pre-existing voucher defect rather than silently accepting it.
+        let regular_backup = dir.join("regular-backup.sqlite3");
+        assert!(db.backup_to(&regular_backup).is_err());
+        assert!(!regular_backup.exists());
+
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
