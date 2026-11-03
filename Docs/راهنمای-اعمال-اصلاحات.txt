@@ -1,0 +1,26 @@
+بسته اصلاحی Acc-Rust — Pull Request شماره 2
+
+محتویات:
+1) Acc-Rust-PR-2.patch
+   شامل تغییرات src-tauri/src/vouchers.rs و فایل گزارش Docs/Architecture-Review-2026-11.md است.
+2) Architecture-Review-2026-11.md
+   نسخه مستقل گزارش معماری برای مطالعه.
+
+روش اعمال patch:
+- ابتدا از پایگاه داده hesabdari.sqlite3 نسخه پشتیبان تهیه کنید.
+- از پروژه خود یک کپی یا شاخه Git جدا بسازید.
+- patch را در پوشه ریشه مخزن قرار دهید.
+- در ترمینال و از ریشه مخزن اجرا کنید:
+
+  git apply --check Acc-Rust-PR-2.patch
+  git apply Acc-Rust-PR-2.patch
+
+- سپس اجرا کنید:
+
+  npm run check:js
+  cargo test --manifest-path src-tauri/Cargo.toml
+  build.bat
+
+این patch بر پایه شاخه main و commit مبنای PR ساخته شده است. اگر فایل vouchers.rs در پروژه محلی تغییرات دیگری دارد، ابتدا تغییرات را ادغام کنید و patch را کورکورانه اعمال نکنید.
+
+توجه: اجرای cargo test و ساخت ویندوز در این محیط انجام نشده است.

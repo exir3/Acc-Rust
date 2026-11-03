@@ -1,0 +1,408 @@
+diff --git a/Docs/Architecture-Review-2026-11.md b/Docs/Architecture-Review-2026-11.md
+new file mode 100644
+index 0000000..7b1038f
+--- /dev/null
++++ b/Docs/Architecture-Review-2026-11.md
+@@ -0,0 +1,112 @@
++# بازبینی معماری و سخت‌سازی هسته حسابداری — ۳ نوامبر ۲۰۲۶
++
++## دامنه و مبنای بررسی
++
++این بررسی روی شاخه `main` مخزن `exir3/Acc-Rust` و ساختار موجود در زمان شروع کار انجام شده است. هدف، ارزیابی مسیرهای اصلی کدینگ حساب‌ها، صدور و ویرایش سند، ورود/خروجی اکسل، پایگاه داده و گزارش‌های مالی بوده است.
++
++**محدودیت آزمون:** در این محیط امکان اجرای برنامه Tauri روی Windows، اجرای `cargo test` یا ساخت فایل اجرایی وجود نداشت. بنابراین تغییر کد و آزمون‌های رگرسیون به مخزن اضافه شده‌اند، اما اجرای آن‌ها روی این شاخه تأیید نشده است. پیش از استفاده عملی از نسخه اصلاحی، فرمان‌های بخش «کنترل پس از دریافت» باید در محیط دارای Rust 1.88+ و Node اجرا شوند.
++
++## ۱. نقشه معماری فعلی
++
++| لایه | محل | مسئولیت مشاهده‌شده |
++| --- | --- | --- |
++| رابط کاربر | `ui/*.html`, `ui/*.css`, `ui/*.js` | رابط فارسی RTL با JavaScript ساده و ارتباط با Tauri |
++| مرز فرمان‌ها | `src-tauri/src/lib.rs` | ثبت Tauri commands، کنترل پنجره فراخواننده، ارسال رویدادهای تغییر |
++| پایگاه داده | `src-tauri/src/db.rs` | SQLite، مهاجرت نسخه‌دار، کدینگ حساب، تنظیمات و پشتیبان |
++| هسته اسناد | `src-tauri/src/vouchers.rs` | قواعد سند، تراکنش، کنترل تراز، انتقال ردیف و پرس‌وجوهای گزارش |
++| تبادل اکسل | `src-tauri/src/excel.rs` | تحلیل، اعتبارسنجی، ورود و خروجی اکسل |
++| گزارش و چاپ | `src-tauri/src/report.rs` | تولید HTML چاپی و کنترل محاسبات جمع‌ها |
++
++جریان اصلی داده به‌درستی از فرمان‌های Tauri به منطق Rust و سپس SQLite عبور می‌کند؛ رابط کاربر مستقیماً به پایگاه داده متصل نیست. ساختار سطح حساب نیز در لایه پایگاه داده و منطق برنامه سقف سطح ۳ را اعمال می‌کند و سطح ۴ صرفاً برای حفظ سوابق قدیمی باقی مانده است.
++
++## ۲. نقاط قوتی که باید حفظ شوند
++
++- ذخیره سند و ورود دسته‌ای در تراکنش انجام می‌شود؛ شکست یک مرحله نباید نیمه سند را در پایگاه داده باقی بگذارد.
++- جمع مبالغ در مسیرهای اصلی با عملیات checked انجام می‌شود و مبلغ هر ردیف محدود است.
++- شماره سند یکتا و مثبت است و triggerهای SQLite بعضی قواعد پایه را مستقل از رابط کاربر حفاظت می‌کنند.
++- اعتبارسنجی نوع سند با طبقه حساب‌ها در مسیر ذخیره و انتقال ردیف وجود دارد.
++- ویرایش و حذف سند از توکن `updated_at` برای جلوگیری از overwrite نسخه قدیمی استفاده می‌کنند؛ مقدار به‌روزشده نیز در همان میلی‌ثانیه تکرار نمی‌شود.
++- پایگاه داده از WAL، کلید خارجی، مهاجرت افزایشی و مسیر بازگردانی امن پشتیبان استفاده می‌کند.
++- محدودیت‌های نسخه قدیمی کدینگ به‌جای حذف فیزیکی سوابق، با استثناهای محدود برای ردیف‌های موجود مدیریت شده‌اند.
++
++## ۳. اصلاح اعمال‌شده در این شاخه
++
++### ۳.۱. یکسان‌سازی اعتبارسنجی حساب ردیف سند
++
++پیش از این، ذخیره سند و اعتبارسنجی خروجی اکسل منطق جداگانه داشتند. مسیر ذخیره، استثنای حساب غیرفعال یا تفصیلی قدیمی را به شناسه ردیف ذخیره‌شده متصل می‌کرد، ولی مسیر خروجی اکسل این استثنا را با کد حساب اعمال می‌کرد. این دوگانگی می‌توانست باعث شود خروجی اکسل برای ردیفی معتبر شناخته شود که در واقع یک ردیف جدید با حساب غیرفعال/قدیمی است.
++
++**تغییر:** تابع مشترک `validate_voucher_line_accounts` در `vouchers.rs` ایجاد شد و هر دو مسیر ذخیره و خروجی اکسل از آن استفاده می‌کنند.
++
++### ۳.۲. جلوگیری از استفاده مجدد از شناسه ردیف
++
++در درخواست ویرایش، یک `line.id` می‌توانست در چند ردیف ورودی تکرار شود. چون استثنای حساب غیرفعال/قدیمی برای همان شناسه ذخیره‌شده معتبر بود، تکرار شناسه می‌توانست همان استثنا را برای بیش از یک ردیف به کار ببرد.
++
++**تغییر:** شناسه‌های ردیف در هر درخواست یکتا هستند. تکرار شناسه، شناسه متعلق به سند دیگر یا شناسه‌ای که در سند فعلی وجود ندارد، پیش از نوشتن رد می‌شود. اگر کد حساب ردیف نسبت به ردیف ذخیره‌شده عوض شده باشد، استثنای تاریخی دیگر معتبر نیست و حساب جدید باید از کنترل‌های عادی عبور کند.
++
++### ۳.۳. رد شناسه نامعتبر سند
++
++در مسیر داخلی ذخیره، مقدار منفی برای شناسه سند عملاً مانند سند جدید تفسیر می‌شد. اکنون اگر `input.id` ارائه شده باشد، باید مثبت باشد؛ در غیر این صورت عملیات با پیام مشخص رد می‌شود.
++
++### ۳.۴. آزمون‌های رگرسیون
++
++آزمون `saved_line_ids_cannot_be_reused_and_export_checks_new_account_postings` اضافه شده است. موارد مورد انتظار آن:
++- رد شناسه تکراری در یک payload ویرایش؛
++- رد همان payload در اعتبارسنجی خروجی اکسل؛
++- رد ردیف جدید روی حساب غیرفعال، حتی اگر همان حساب در سند قبلی هم وجود داشته باشد؛
++- رد شناسه نامعتبر سند و اطمینان از اینکه سند جدیدی ایجاد نمی‌شود.
++
++## ۴. ارزیابی معماری و کارهای پیشنهادی بعدی
++
++این موارد در این بسته به‌صورت تغییرات بزرگ اعمال نشده‌اند؛ انجام آن‌ها بدون آزمون جامع و داده نمونه می‌تواند ریسک بالایی برای اطلاعات مالی ایجاد کند.
++
++### اولویت بالا
++
++1. **مدل نسخه‌گذاری سند:** `updated_at` فعلی با افزایش اجباری زمان، خطر تکرار توکن را پوشش می‌دهد. با این حال در ریفکتور بعدی بهتر است `row_version INTEGER` افزایشی و شرطی در UPDATE/DELETE اضافه شود. این مدل معنای نسخه را از ساعت سیستم جدا می‌کند.
++2. **کنترل یکپارچه دوره مالی:** در نسخه فعلی قفل دوره مالی، وضعیت سند قطعی/موقت و سیاست بازگشایی حسابداری کامل وجود ندارد. اگر این قابلیت‌ها مورد نیازند، باید پیش از پیاده‌سازی، چرخه افتتاحیه/اختتامیه و اصلاح اسناد با قواعد مشخص تعریف شود.
++3. **ردپای ممیزی:** تغییر حساب، ذخیره/حذف سند، ورود اکسل، جابه‌جایی ردیف و بازیابی پشتیبان باید در جدول رویداد append-only با شناسه عملیات، نوع عملیات، زمان، مقادیر قبل/بعد و عامل تغییر ثبت شوند.
++4. **آزمون‌های مرجع گزارش:** گزارش تراز آزمایشی، دفتر کل، سود و زیان و ترازنامه باید با مجموعه داده کوچک و پاسخ مرجع تأییدشده آزمون شوند. آزمون صرفاً نحوی یا واحد برای این موضوع کافی نیست.
++
++### اولویت متوسط: ماژولار کردن به‌جای بازنویسی یک‌باره
++
++فایل‌های `vouchers.rs` و `db.rs` بزرگ‌اند و هم‌زمان چند مسئولیت دارند. پیشنهاد ساختار تدریجی:
++
++- `vouchers/model.rs`: DTOها و مدل ورودی/خروجی؛
++- `vouchers/validation.rs`: اعتبارسنجی تاریخ، مبالغ، نوع سند و حساب ردیف؛
++- `vouchers/repository.rs`: عملیات SQLite مربوط به سند؛
++- `vouchers/transfer.rs`: کپی، انتقال و ادغام؛
++- `vouchers/reorganization.rs`: پیش‌نمایش و اجرای مرتب‌سازی/تجمیع؛
++- `reports/journal.rs`, `reports/ledger.rs`, `reports/trial_balance.rs`, `reports/statements.rs`: پرس‌وجو و محاسبات هر گزارش؛
++- `db/schema.rs`, `db/migrations.rs`, `db/backup.rs`, `db/accounts.rs`: تفکیک مهاجرت، پشتیبان و کدینگ حساب.
++
++این جابه‌جایی باید چند مرحله‌ای و با حفظ API فرمان‌های Tauri و اجرای آزمون‌ها بعد از هر مرحله انجام شود. همچنین `ui/app.js` و `ui/voucher.js` به ماژول‌های ES مستقل برای state، API، validation، rendering و event handling تقسیم شوند؛ تا آن زمان از جابه‌جایی بزرگ DOM و نام شناسه‌ها خودداری شود.
++
++### اولویت متوسط: مرز فرمان‌ها و پنجره‌ها
++
++کنترل پنجره فراخواننده در بسیاری از فرمان‌ها وجود دارد. این سیاست باید در آزمون‌ها نیز پوشش داده شود: فرمان هر پنجره فقط از همان پنجره یا پنجره‌های مجاز قابل اجرا باشد. فهرست مجاز پنجره‌ها بهتر است کنار تعریف فرمان‌ها مستند و در بازبینی تغییرات کنترل شود.
++
++### اولویت متوسط: ورودی/خروجی اکسل
++
++ورود گروهی در حال حاضر کنترل‌های ساختاری، ابعاد worksheet، شماره/تاریخ، تراز و اعتبار حساب را انجام می‌دهد. توصیه می‌شود مجموعه فایل‌های آزمون ثابت و ناشناس برای موارد زیر در مخزن نگهداری شود: صفر ابتدایی کد، سلول ادغام‌شده، ردیف خالی بین سطوح، عنوان بدون کد، کد بدون عنوان، پیشوند سفارشی، شماره تکراری و فایل بزرگ/خراب. خروجی و ورود مجدد همان داده نیز باید تست رفت‌وبرگشت داشته باشد.
++
++## ۵. فایل تغییر‌یافته
++
++- `src-tauri/src/vouchers.rs` — اعتبارسنجی مشترک حساب ردیف، جلوگیری از شناسه تکراری و نامعتبر، و آزمون رگرسیون.
++
++این گزارش معماری برای ثبت تصمیم‌ها و نقشه فاز بعدی به مخزن افزوده شده است.
++
++## ۶. کنترل پس از دریافت
++
++در ریشه مخزن اجرا کنید:
++
++```bash
++npm run check:js
++cargo test --manifest-path src-tauri/Cargo.toml
++```
++
++سپس ساخت نسخه دسکتاپ را روی Windows اجرا کنید:
++
++```bat
++build.bat
++```
++
++**قبل از جایگزینی نسخه مورد استفاده:** از فایل `hesabdari.sqlite3` نسخه پشتیبان بگیرید. پس از ساخت، سناریوی ویرایش سند دارای حساب غیرفعال قدیمی، افزودن ردیف جدید با همان حساب، خروجی اکسل سند و بازکردن/ذخیره سند قدیمی را روی یک کپی از پایگاه داده آزمایش کنید.
+diff --git a/src-tauri/src/vouchers.rs b/src-tauri/src/vouchers.rs
+index 3ef8519..c8ba040 100644
+--- a/src-tauri/src/vouchers.rs
++++ b/src-tauri/src/vouchers.rs
+@@ -1811,6 +1811,9 @@ impl Database {
+             ));
+         }
+ 
++        if input.id.is_some_and(|id| id <= 0) {
++            return Err("شناسه سند نامعتبر است.".to_string());
++        }
+         let id = input.id.unwrap_or(0);
+         let requested_number = input.number.unwrap_or(0);
+         if requested_number < 0 {
+@@ -1820,50 +1823,10 @@ impl Database {
+         self.with_conn(move |conn| {
+             let tx = conn.transaction().map_err(db::db_error)?;
+ 
+-            // A legacy level-4 account, or an account deactivated after the
+-            // voucher was saved, stays editable only on the exact saved row it
+-            // belongs to. A newly added row or a row whose account changed must
+-            // pass every normal check.
+-            let saved_lines: BTreeMap<i64, String> = if id > 0 {
+-                let mut statement = tx
+-                    .prepare("SELECT id, account_code FROM voucher_lines WHERE voucher_id = ?1")
+-                    .map_err(db::db_error)?;
+-                let rows = statement
+-                    .query_map(params![id], |row| {
+-                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+-                    })
+-                    .map_err(db::db_error)?
+-                    .collect::<rusqlite::Result<BTreeMap<_, _>>>()
+-                    .map_err(db::db_error)?;
+-                rows
+-            } else {
+-                BTreeMap::new()
+-            };
+-            for (index, line) in lines.iter().enumerate() {
+-                let saved_line = match line.id {
+-                    Some(line_id) => {
+-                        let saved_code = saved_lines.get(&line_id).ok_or_else(|| {
+-                            format!(
+-                                "ردیف {} به این سند تعلق ندارد؛ سند را دوباره بارگذاری کنید.",
+-                                db::to_fa_digits(index + 1)
+-                            )
+-                        })?;
+-                        // Editing the account turns it into a new posting for
+-                        // that account; the old row's exception no longer applies.
+-                        (saved_code == &line.account_code).then_some(saved_code)
+-                    }
+-                    None => None,
+-                };
+-                if let Err(error) = assert_postable_leaf(&tx, &line.account_code) {
+-                    if saved_line.is_none() {
+-                        return Err(error);
+-                    }
+-                    assert_existing_legacy_account(&tx, &line.account_code)?;
+-                }
+-                if saved_line.is_none() {
+-                    assert_active_account(&tx, &line.account_code)?;
+-                }
+-            }
++            // Saving and exporting use the same account-eligibility rules.
++            // A saved inactive/legacy account is allowed only on its original
++            // line id; a new or changed row must pass the current rules.
++            validate_voucher_line_accounts(&tx, (id > 0).then_some(id), &lines)?;
+             assert_voucher_type_matches_lines(&tx, &voucher_type, &lines)?;
+ 
+             let existing = if id > 0 {
+@@ -2540,45 +2503,15 @@ impl Database {
+         })
+     }
+ 
+-    /// Checks that every line points at a real, postable leaf account. The
+-    /// Excel export validates amounts itself, so this keeps an invalid draft
+-    /// from becoming a file that cannot be imported again.
++    /// Applies the same row-identity and account-eligibility checks as saving.
++    /// This prevents an Excel export from containing postings that could not
++    /// be saved, including new rows for inactive or legacy accounts.
+     pub fn validate_voucher_accounts(
+         &self,
+         voucher_id: Option<i64>,
+         lines: &[VoucherLineInput],
+     ) -> Result<(), String> {
+-        self.with_conn(|conn| {
+-            let legacy_codes: HashSet<String> = if let Some(id) = voucher_id.filter(|id| *id > 0) {
+-                let mut statement = conn.prepare(
+-                    "SELECT DISTINCT a.code
+-                       FROM voucher_lines line
+-                       JOIN accounts a ON a.code = line.account_code
+-                      WHERE line.voucher_id = ?1 AND a.level > ?2"
+-                ).map_err(db::db_error)?;
+-                let codes = statement
+-                    .query_map(params![id, db::MAX_ACCOUNT_LEVEL], |row| row.get(0))
+-                    .map_err(db::db_error)?
+-                    .collect::<rusqlite::Result<HashSet<_>>>()
+-                    .map_err(db::db_error)?;
+-                codes
+-            } else {
+-                HashSet::new()
+-            };
+-            for line in lines {
+-                let account_code = db::normalize_code(&line.account_code);
+-                if account_code.is_empty() {
+-                    return Err("برای هر ردیف، کد حساب الزامی است.".to_string());
+-                }
+-                if let Err(error) = assert_postable_leaf(conn, &account_code) {
+-                    if !legacy_codes.contains(&account_code) {
+-                        return Err(error);
+-                    }
+-                    assert_existing_legacy_account(conn, &account_code)?;
+-                }
+-            }
+-            Ok(())
+-        })
++        self.with_conn(|conn| validate_voucher_line_accounts(conn, voucher_id, lines))
+     }
+ 
+     /* ── Reports ─────────────────────────────────────────────── */
+@@ -3357,7 +3290,8 @@ fn assert_active_account(conn: &Connection, account_code: &str) -> Result<(), St
+     Ok(())
+ }
+ 
+-fn assert_existing_legacy_account(conn: &Connection, account_code: &str) -> Result<String, String> {    conn.query_row(
++fn assert_existing_legacy_account(conn: &Connection, account_code: &str) -> Result<String, String> {
++    conn.query_row(
+         "SELECT name FROM accounts WHERE code = ?1 AND level > ?2
+           AND NOT EXISTS (SELECT 1 FROM accounts child WHERE child.parent_code = accounts.code)",
+         params![account_code, db::MAX_ACCOUNT_LEVEL],
+@@ -3371,6 +3305,74 @@ fn assert_existing_legacy_account(conn: &Connection, account_code: &str) -> Resu
+     ))
+ }
+ 
++/// The single source of truth for checking accounts referenced by voucher rows.
++/// Historical exceptions are bound to a stable row id, never merely to an
++/// account code; this keeps save and Excel export behavior identical.
++fn validate_voucher_line_accounts(
++    conn: &Connection,
++    voucher_id: Option<i64>,
++    lines: &[VoucherLineInput],
++) -> Result<(), String> {
++    let saved_lines: BTreeMap<i64, String> = if let Some(id) = voucher_id.filter(|id| *id > 0) {
++        let mut statement = conn
++            .prepare("SELECT id, account_code FROM voucher_lines WHERE voucher_id = ?1")
++            .map_err(db::db_error)?;
++        let rows = statement
++            .query_map(params![id], |row| {
++                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
++            })
++            .map_err(db::db_error)?
++            .collect::<rusqlite::Result<BTreeMap<_, _>>>()
++            .map_err(db::db_error)?;
++        rows
++    } else {
++        BTreeMap::new()
++    };
++
++    let mut used_line_ids = HashSet::with_capacity(lines.len());
++    for (index, line) in lines.iter().enumerate() {
++        let account_code = db::normalize_code(&line.account_code);
++        if account_code.is_empty() {
++            return Err(format!(
++                "کد حساب ردیف {} الزامی است.",
++                db::to_fa_digits(index + 1)
++            ));
++        }
++
++        let saved_line = match line.id {
++            Some(line_id) => {
++                if !used_line_ids.insert(line_id) {
++                    return Err(format!(
++                        "شناسه ردیف ذخیره‌شده در ردیف {} تکرار شده است؛ سند را دوباره بارگذاری کنید.",
++                        db::to_fa_digits(index + 1)
++                    ));
++                }
++                let saved_code = saved_lines.get(&line_id).ok_or_else(|| {
++                    format!(
++                        "ردیف {} به این سند تعلق ندارد؛ سند را دوباره بارگذاری کنید.",
++                        db::to_fa_digits(index + 1)
++                    )
++                })?;
++                // Changing the account makes this a new posting. The historical
++                // exception remains valid only when both id and account match.
++                (saved_code == &account_code).then_some(saved_code)
++            }
++            None => None,
++        };
++
++        if let Err(error) = assert_postable_leaf(conn, &account_code) {
++            if saved_line.is_none() {
++                return Err(error);
++            }
++            assert_existing_legacy_account(conn, &account_code)?;
++        }
++        if saved_line.is_none() {
++            assert_active_account(conn, &account_code)?;
++        }
++    }
++    Ok(())
++}
++
+ /// A voucher type is not a free label: the closing/opening types decide which
+ /// reports count the voucher. Reject lines whose accounts contradict the type.
+ fn assert_voucher_type_matches_lines(
+@@ -5205,6 +5207,85 @@ mod tests {
+        let error = db.save_voucher(added).unwrap_err();
+         assert!(error.contains("غیرفعال"), "{error}");
+     }
+ 
++    #[test]
++    fn saved_line_ids_cannot_be_reused_and_export_checks_new_account_postings() {
++        let db = db::memory_database();
++        let saved = db.save_voucher(cash_sale("1405/01/05", 500_000)).unwrap();
++        let cash = db
++            .list_accounts()
++            .unwrap()
++            .accounts
++            .into_iter()
++            .find(|account| account.code == "110101")
++            .unwrap();
++        db.set_account_active(cash.id, false).unwrap();
++
++        // Reusing one saved row id twice used to copy its historical inactive
++        // account exception to an additional posting.
++        let mut duplicated = cash_sale("1405/01/05", 600_000);
++        duplicated.id = Some(saved.id);
++        for row in &mut duplicated.lines {
++            row.id = saved
++                .lines
++                .iter()
++                .find(|saved_row| saved_row.account_code == row.account_code)
++                .map(|saved_row| saved_row.id);
++        }
++        let mut extra_cash = duplicated
++            .lines
++            .iter()
++            .find(|row| row.account_code == cash.code)
++            .unwrap()
++            .clone();
++        extra_cash.debit = 100_000;
++        duplicated
++            .lines
++            .iter_mut()
++            .find(|row| row.account_code == "410101")
++            .unwrap()
++            .credit = 600_000;
++        duplicated.lines.push(extra_cash);
++
++        let error = db.save_voucher(duplicated.clone()).unwrap_err();
++        assert!(error.contains("تکرار"), "{error}");
++        let export_error = db
++            .validate_voucher_accounts(Some(saved.id), &duplicated.lines)
++            .unwrap_err();
++        assert!(export_error.contains("تکرار"), "{export_error}");
++
++        // Even when original rows retain their ids, an extra row cannot post
++        // to the inactive account merely because that code exists in the voucher.
++        let mut new_posting = cash_sale("1405/01/05", 500_000);
++        new_posting.id = Some(saved.id);
++        for row in &mut new_posting.lines {
++            row.id = saved
++                .lines
++                .iter()
++                .find(|saved_row| saved_row.account_code == row.account_code)
++                .map(|saved_row| saved_row.id);
++        }
++        let mut new_cash = line(&cash.code, 100_000, 0);
++        new_cash.id = None;
++        new_posting
++            .lines
++            .iter_mut()
++            .find(|row| row.account_code == "410101")
++            .unwrap()
++            .credit = 600_000;
++        new_posting.lines.push(new_cash);
++        let error = db
++            .validate_voucher_accounts(Some(saved.id), &new_posting.lines)
++            .unwrap_err();
++        assert!(error.contains("غیرفعال"), "{error}");
++
++        // A non-positive voucher id must not silently create a new document.
++        let mut invalid_id = cash_sale("1405/01/05", 1_000);
++        invalid_id.id = Some(-1);
++        let error = db.save_voucher(invalid_id).unwrap_err();
++        assert!(error.contains("شناسه سند نامعتبر"), "{error}");
++        assert_eq!(db.voucher_count().unwrap(), 1);
++    }
++
+     #[test]
+     fn filters_vouchers_by_date_and_text() {
