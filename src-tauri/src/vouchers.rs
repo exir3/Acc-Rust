@@ -1811,6 +1811,9 @@ impl Database {
             ));
         }
 
+        if input.id.is_some_and(|id| id <= 0) {
+            return Err("شناسه سند نامعتبر است.".to_string());
+        }
         let id = input.id.unwrap_or(0);
         let requested_number = input.number.unwrap_or(0);
         if requested_number < 0 {
@@ -1820,50 +1823,10 @@ impl Database {
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db::db_error)?;
 
-            // A legacy level-4 account, or an account deactivated after the
-            // voucher was saved, stays editable only on the exact saved row it
-            // belongs to. A newly added row or a row whose account changed must
-            // pass every normal check.
-            let saved_lines: BTreeMap<i64, String> = if id > 0 {
-                let mut statement = tx
-                    .prepare("SELECT id, account_code FROM voucher_lines WHERE voucher_id = ?1")
-                    .map_err(db::db_error)?;
-                let rows = statement
-                    .query_map(params![id], |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                    })
-                    .map_err(db::db_error)?
-                    .collect::<rusqlite::Result<BTreeMap<_, _>>>()
-                    .map_err(db::db_error)?;
-                rows
-            } else {
-                BTreeMap::new()
-            };
-            for (index, line) in lines.iter().enumerate() {
-                let saved_line = match line.id {
-                    Some(line_id) => {
-                        let saved_code = saved_lines.get(&line_id).ok_or_else(|| {
-                            format!(
-                                "ردیف {} به این سند تعلق ندارد؛ سند را دوباره بارگذاری کنید.",
-                                db::to_fa_digits(index + 1)
-                            )
-                        })?;
-                        // Editing the account turns it into a new posting for
-                        // that account; the old row's exception no longer applies.
-                        (saved_code == &line.account_code).then_some(saved_code)
-                    }
-                    None => None,
-                };
-                if let Err(error) = assert_postable_leaf(&tx, &line.account_code) {
-                    if saved_line.is_none() {
-                        return Err(error);
-                    }
-                    assert_existing_legacy_account(&tx, &line.account_code)?;
-                }
-                if saved_line.is_none() {
-                    assert_active_account(&tx, &line.account_code)?;
-                }
-            }
+            // Saving and exporting use the same account-eligibility rules.
+            // A saved inactive/legacy account is allowed only on its original
+            // line id; a new or changed row must pass the current rules.
+            validate_voucher_line_accounts(&tx, (id > 0).then_some(id), &lines)?;
             assert_voucher_type_matches_lines(&tx, &voucher_type, &lines)?;
 
             let existing = if id > 0 {
@@ -2540,45 +2503,15 @@ impl Database {
         })
     }
 
-    /// Checks that every line points at a real, postable leaf account. The
-    /// Excel export validates amounts itself, so this keeps an invalid draft
-    /// from becoming a file that cannot be imported again.
+    /// Applies the same row-identity and account-eligibility checks as saving.
+    /// This prevents an Excel export from containing postings that could not
+    /// be saved, including new rows for inactive or legacy accounts.
     pub fn validate_voucher_accounts(
         &self,
         voucher_id: Option<i64>,
         lines: &[VoucherLineInput],
     ) -> Result<(), String> {
-        self.with_conn(|conn| {
-            let legacy_codes: HashSet<String> = if let Some(id) = voucher_id.filter(|id| *id > 0) {
-                let mut statement = conn.prepare(
-                    "SELECT DISTINCT a.code
-                       FROM voucher_lines line
-                       JOIN accounts a ON a.code = line.account_code
-                      WHERE line.voucher_id = ?1 AND a.level > ?2"
-                ).map_err(db::db_error)?;
-                let codes = statement
-                    .query_map(params![id, db::MAX_ACCOUNT_LEVEL], |row| row.get(0))
-                    .map_err(db::db_error)?
-                    .collect::<rusqlite::Result<HashSet<_>>>()
-                    .map_err(db::db_error)?;
-                codes
-            } else {
-                HashSet::new()
-            };
-            for line in lines {
-                let account_code = db::normalize_code(&line.account_code);
-                if account_code.is_empty() {
-                    return Err("برای هر ردیف، کد حساب الزامی است.".to_string());
-                }
-                if let Err(error) = assert_postable_leaf(conn, &account_code) {
-                    if !legacy_codes.contains(&account_code) {
-                        return Err(error);
-                    }
-                    assert_existing_legacy_account(conn, &account_code)?;
-                }
-            }
-            Ok(())
-        })
+        self.with_conn(|conn| validate_voucher_line_accounts(conn, voucher_id, lines))
     }
 
     /* ── Reports ─────────────────────────────────────────────── */
@@ -3357,7 +3290,8 @@ fn assert_active_account(conn: &Connection, account_code: &str) -> Result<(), St
     Ok(())
 }
 
-fn assert_existing_legacy_account(conn: &Connection, account_code: &str) -> Result<String, String> {    conn.query_row(
+fn assert_existing_legacy_account(conn: &Connection, account_code: &str) -> Result<String, String> {
+    conn.query_row(
         "SELECT name FROM accounts WHERE code = ?1 AND level > ?2
           AND NOT EXISTS (SELECT 1 FROM accounts child WHERE child.parent_code = accounts.code)",
         params![account_code, db::MAX_ACCOUNT_LEVEL],
@@ -3369,6 +3303,73 @@ fn assert_existing_legacy_account(conn: &Connection, account_code: &str) -> Resu
         "حساب قدیمی {} دیگر قابل استفاده نیست؛ برای ثبت جدید، معین یا تفصیلی ۱ را انتخاب کنید.",
         db::to_fa_digits(account_code)
     ))
+}
+
+/// The single source of truth for checking accounts referenced by voucher rows.
+/// Historical exceptions are bound to a stable row id, never merely to an
+/// account code; this keeps save and Excel export behavior identical.
+fn validate_voucher_line_accounts(
+    conn: &Connection,
+    voucher_id: Option<i64>,
+    lines: &[VoucherLineInput],
+) -> Result<(), String> {
+    let saved_lines: BTreeMap<i64, String> = if let Some(id) = voucher_id.filter(|id| *id > 0) {
+        let mut statement = conn
+            .prepare("SELECT id, account_code FROM voucher_lines WHERE voucher_id = ?1")
+            .map_err(db::db_error)?;
+        statement
+            .query_map(params![id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(db::db_error)?
+            .collect::<rusqlite::Result<BTreeMap<_, _>>>()
+            .map_err(db::db_error)?
+    } else {
+        BTreeMap::new()
+    };
+
+    let mut used_line_ids = HashSet::with_capacity(lines.len());
+    for (index, line) in lines.iter().enumerate() {
+        let account_code = db::normalize_code(&line.account_code);
+        if account_code.is_empty() {
+            return Err(format!(
+                "کد حساب ردیف {} الزامی است.",
+                db::to_fa_digits(index + 1)
+            ));
+        }
+
+        let saved_line = match line.id {
+            Some(line_id) => {
+                if !used_line_ids.insert(line_id) {
+                    return Err(format!(
+                        "شناسه ردیف ذخیره‌شده در ردیف {} تکرار شده است؛ سند را دوباره بارگذاری کنید.",
+                        db::to_fa_digits(index + 1)
+                    ));
+                }
+                let saved_code = saved_lines.get(&line_id).ok_or_else(|| {
+                    format!(
+                        "ردیف {} به این سند تعلق ندارد؛ سند را دوباره بارگذاری کنید.",
+                        db::to_fa_digits(index + 1)
+                    )
+                })?;
+                // Changing the account makes this a new posting. The historical
+                // exception remains valid only when both id and account match.
+                (saved_code == &account_code).then_some(saved_code)
+            }
+            None => None,
+        };
+
+        if let Err(error) = assert_postable_leaf(conn, &account_code) {
+            if saved_line.is_none() {
+                return Err(error);
+            }
+            assert_existing_legacy_account(conn, &account_code)?;
+        }
+        if saved_line.is_none() {
+            assert_active_account(conn, &account_code)?;
+        }
+    }
+    Ok(())
 }
 
 /// A voucher type is not a free label: the closing/opening types decide which
@@ -5203,6 +5204,85 @@ mod tests {
         added.lines.push(line("410101", 0, 1_000));
         let error = db.save_voucher(added).unwrap_err();
         assert!(error.contains("غیرفعال"), "{error}");
+    }
+
+    #[test]
+    fn saved_line_ids_cannot_be_reused_and_export_checks_new_account_postings() {
+        let db = db::memory_database();
+        let saved = db.save_voucher(cash_sale("1405/01/05", 500_000)).unwrap();
+        let cash = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110101")
+            .unwrap();
+        db.set_account_active(cash.id, false).unwrap();
+
+        // Reusing one saved row id twice used to copy its historical inactive
+        // account exception to an additional posting.
+        let mut duplicated = cash_sale("1405/01/05", 600_000);
+        duplicated.id = Some(saved.id);
+        for row in &mut duplicated.lines {
+            row.id = saved
+                .lines
+                .iter()
+                .find(|saved_row| saved_row.account_code == row.account_code)
+                .map(|saved_row| saved_row.id);
+        }
+        let mut extra_cash = duplicated
+            .lines
+            .iter()
+            .find(|row| row.account_code == cash.code)
+            .unwrap()
+            .clone();
+        extra_cash.debit = 100_000;
+        duplicated
+            .lines
+            .iter_mut()
+            .find(|row| row.account_code == "410101")
+            .unwrap()
+            .credit = 600_000;
+        duplicated.lines.push(extra_cash);
+
+        let error = db.save_voucher(duplicated.clone()).unwrap_err();
+        assert!(error.contains("تکرار"), "{error}");
+        let export_error = db
+            .validate_voucher_accounts(Some(saved.id), &duplicated.lines)
+            .unwrap_err();
+        assert!(export_error.contains("تکرار"), "{export_error}");
+
+        // Even when original rows retain their ids, an extra row cannot post
+        // to the inactive account merely because that code exists in the voucher.
+        let mut new_posting = cash_sale("1405/01/05", 500_000);
+        new_posting.id = Some(saved.id);
+        for row in &mut new_posting.lines {
+            row.id = saved
+                .lines
+                .iter()
+                .find(|saved_row| saved_row.account_code == row.account_code)
+                .map(|saved_row| saved_row.id);
+        }
+        let mut new_cash = line(&cash.code, 100_000, 0);
+        new_cash.id = None;
+        new_posting
+            .lines
+            .iter_mut()
+            .find(|row| row.account_code == "410101")
+            .unwrap()
+            .credit = 600_000;
+        new_posting.lines.push(new_cash);
+        let error = db
+            .validate_voucher_accounts(Some(saved.id), &new_posting.lines)
+            .unwrap_err();
+        assert!(error.contains("غیرفعال"), "{error}");
+
+        // A non-positive voucher id must not silently create a new document.
+        let mut invalid_id = cash_sale("1405/01/05", 1_000);
+        invalid_id.id = Some(-1);
+        let error = db.save_voucher(invalid_id).unwrap_err();
+        assert!(error.contains("شناسه سند نامعتبر"), "{error}");
+        assert_eq!(db.voucher_count().unwrap(), 1);
     }
 
     #[test]
