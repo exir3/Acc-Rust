@@ -3317,13 +3317,14 @@ fn validate_voucher_line_accounts(
         let mut statement = conn
             .prepare("SELECT id, account_code FROM voucher_lines WHERE voucher_id = ?1")
             .map_err(db::db_error)?;
-        statement
+        let rows = statement
             .query_map(params![id], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(db::db_error)?
             .collect::<rusqlite::Result<BTreeMap<_, _>>>()
-            .map_err(db::db_error)?
+            .map_err(db::db_error)?;
+        rows
     } else {
         BTreeMap::new()
     };
