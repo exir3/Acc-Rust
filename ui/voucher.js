@@ -71,6 +71,7 @@ const state = {
   overflowVoucherLines: 0,
   nextNumber: 1,
   dirty: false,
+  restoredConflict: false,
   busy: false,
   allowClose: false,
   ready: false,
@@ -623,6 +624,7 @@ function fillGrid(lines) {
 
 function startNew(number) {
   state.voucher = null;
+  state.restoredConflict = false;
   state.overflowVoucherLines = 0;
   state.dirty = false;
   state.activeRow = null;
@@ -638,6 +640,7 @@ function startNew(number) {
 
 function loadVoucher(voucher) {
   state.voucher = voucher;
+  state.restoredConflict = false;
   state.dirty = false;
   state.activeRow = null;
   $('#vfDocNo').value = String(voucher.number);
@@ -722,6 +725,10 @@ function validateDraft(draft) {
 }
 
 async function saveVoucher(options = {}) {
+  if (state.restoredConflict) {
+    toast('پایگاه داده بازیابی شده است؛ برای حفظ تغییرات فرم، آن را ذخیره نکنید. پنجره را ببندید و سند را دوباره باز کنید.', 'error');
+    return null;
+  }
   if (state.busy) return null;
   if (!invoke) {
     toast('ذخیره‌سازی فقط در نسخه دسکتاپ ممکن است.', 'error');
@@ -774,7 +781,10 @@ async function saveVoucher(options = {}) {
   let saveSnapshot = '';
   try {
     saveSnapshot = JSON.stringify(collectDraft());
-    const saved = await invoke('save_voucher', { input: draft });
+    const saved = await invoke('save_voucher', {
+      input: draft,
+      expectedUpdatedAt: state.voucher?.updatedAt || null,
+    });
     state.busy = false;
     const currentDraft = collectDraft();
     if (JSON.stringify(currentDraft) !== saveSnapshot) {
@@ -812,6 +822,16 @@ function resetNumberInput() {
   if (input) input.value = String(value);
 }
 
+function draftChangedSince(snapshot) {
+  return JSON.stringify(collectDraft()) !== snapshot;
+}
+
+function warnDraftChangedDuringLoad() {
+  state.dirty = true;
+  setStatus('warn', 'تغییرات ذخیره‌نشده');
+  toast('فرم هنگام بارگذاری سند تغییر کرد؛ اطلاعات حفظ شد و جابه‌جایی انجام نشد.', 'warning');
+}
+
 async function openNumber(number, options = {}) {
   if (state.busy || !invoke) return;
   const target = Number(number);
@@ -827,15 +847,24 @@ async function openNumber(number, options = {}) {
     return;
   }
 
+  const snapshot = JSON.stringify(collectDraft());
   state.busy = true;
   try {
     const voucher = await invoke('get_voucher', { number: target });
     state.busy = false;
+    if (draftChangedSince(snapshot)) {
+      warnDraftChangedDuringLoad();
+      return;
+    }
     if (voucher) {
       loadVoucher(voucher);
       return;
     }
     await refreshNextNumber();
+    if (draftChangedSince(snapshot)) {
+      warnDraftChangedDuringLoad();
+      return;
+    }
     startNew(target);
     if (!options.quiet) {
       toast(`سند شماره ${vfFa(target)} یافت نشد؛ سند جدید با این شماره آغاز شد.`, 'info');
@@ -859,6 +888,7 @@ async function navigatePrev() {
     return;
   }
 
+  const snapshot = JSON.stringify(collectDraft());
   state.busy = true;
   try {
     const target = await invoke('adjacent_voucher_number', { number: base, direction: 'previous' });
@@ -869,6 +899,10 @@ async function navigatePrev() {
     }
     const voucher = await invoke('get_voucher', { number: target });
     state.busy = false;
+    if (draftChangedSince(snapshot)) {
+      warnDraftChangedDuringLoad();
+      return;
+    }
     if (voucher) loadVoucher(voucher);
     else toast(`سند شماره ${vfFa(target)} یافت نشد.`, 'info');
   } catch (error) {
@@ -884,24 +918,45 @@ async function navigateNext() {
     return;
   }
 
+  const snapshot = JSON.stringify(collectDraft());
   const base = currentNumber();
   state.busy = true;
   try {
     const target = await invoke('adjacent_voucher_number', { number: base, direction: 'next' });
+    if (draftChangedSince(snapshot)) {
+      state.busy = false;
+      warnDraftChangedDuringLoad();
+      return;
+    }
     if (target == null) {
       await refreshNextNumber();
+      if (draftChangedSince(snapshot)) {
+        state.busy = false;
+        warnDraftChangedDuringLoad();
+        return;
+      }
       state.busy = false;
       startNew(state.nextNumber);
       toast('سند بعدی وجود ندارد؛ سند جدید آغاز شد.', 'info');
       return;
     }
     const voucher = await invoke('get_voucher', { number: target });
+    if (draftChangedSince(snapshot)) {
+      state.busy = false;
+      warnDraftChangedDuringLoad();
+      return;
+    }
     if (voucher) {
       state.busy = false;
       loadVoucher(voucher);
       return;
     }
     await refreshNextNumber();
+    if (draftChangedSince(snapshot)) {
+      state.busy = false;
+      warnDraftChangedDuringLoad();
+      return;
+    }
     state.busy = false;
     if (target >= state.nextNumber) {
       startNew(state.nextNumber);
@@ -998,14 +1053,19 @@ async function deleteVoucher() {
   }
 
   const ok = await confirmAction(
-    `سند شماره ${vfFa(voucher.number)} برای همیشه حذف شود؟ این کار قابل بازگشت نیست.`,
+    state.dirty
+      ? `سند شماره ${vfFa(voucher.number)} برای همیشه حذف شود؟ تغییرات ذخیره‌نشدهٔ فرم نیز از بین می‌رود و این کار قابل بازگشت نیست.`
+      : `سند شماره ${vfFa(voucher.number)} برای همیشه حذف شود؟ این کار قابل بازگشت نیست.`,
     'حذف سند'
   );
   if (!ok) return;
 
   state.busy = true;
   try {
-    await invoke('delete_voucher', { id: voucher.id });
+    await invoke('delete_voucher', {
+      id: voucher.id,
+      expectedUpdatedAt: voucher.updatedAt || null,
+    });
     state.busy = false;
     // The deletion has committed. Do not report it as failed just because
     // refreshing the suggested next number has a transient error.
@@ -2439,6 +2499,7 @@ async function openVoucherTransfer(mode) {
   modal.hidden = false;
   if (main) main.inert = true;
   target?.focus(); target?.select();
+  void updateTransferTargetInfo();
 }
 function closeVoucherTransfer() {
   if (state.busy) return;
@@ -2450,23 +2511,96 @@ function closeVoucherTransfer() {
   transferReturnFocus = null;
   if (returnFocus?.isConnected && !returnFocus.closest('[inert]')) returnFocus.focus();
 }
+let transferTargetInfoSeq = 0;
+function transferTargetNumber() {
+  const text = toAsciiDigits($('#vfTransferTarget')?.value || '').trim();
+  if (!/^\d+$/.test(text)) return { text, number: null };
+  const number = Number(text);
+  if (!Number.isSafeInteger(number) || number <= 0) return { text, number: null };
+  return { text, number };
+}
+function setTransferTargetInfo(message, tone = '') {
+  const info = $('#vfTransferTargetInfo');
+  if (!info) return;
+  info.textContent = message;
+  if (tone) info.dataset.tone = tone;
+  else delete info.dataset.tone;
+}
+async function updateTransferTargetInfo() {
+  const { text, number } = transferTargetNumber();
+  if (!text) {
+    setTransferTargetInfo('');
+    return;
+  }
+  if (number == null) {
+    setTransferTargetInfo('شماره سند مقصد باید فقط شامل رقم باشد و بزرگ‌تر از صفر.', 'error');
+    return;
+  }
+  if (!invoke) return;
+  const seq = ++transferTargetInfoSeq;
+  setTransferTargetInfo('در حال بررسی سند مقصد…');
+  try {
+    const voucher = await invoke('get_voucher', { number });
+    if (seq !== transferTargetInfoSeq || !transferModalOpen()) return;
+    if (voucher) {
+      setTransferTargetInfo(
+        `سند مقصد موجود است: شماره ${vfFa(voucher.number)} · تاریخ ${vfFa(voucher.date)} · ${voucher.type}`,
+        'ok'
+      );
+    } else {
+      setTransferTargetInfo(
+        `سند شماره ${vfFa(number)} وجود ندارد؛ با اجرای عملیات، سند جدیدی با این شماره ساخته می‌شود.`,
+        'info'
+      );
+    }
+  } catch (error) {
+    if (seq !== transferTargetInfoSeq) return;
+    setTransferTargetInfo(`بررسی سند مقصد ناموفق بود: ${errorText(error)}`, 'error');
+  }
+}
 async function submitVoucherTransfer() {
   if (state.busy) return;
   const source = state.transfer.source;
   const lineIds = Array.from(state.transfer.selectedIds);
-  const targetText = digitsOnly($('#vfTransferTarget')?.value || '');
-  const targetNumber = Number(targetText);
+  const { text: targetText, number: targetNumber } = transferTargetNumber();
   if (!source || lineIds.length < 2) { toast('حداقل دو ردیف مرتبط را انتخاب کنید.', 'warning'); return; }
-  if (!targetText || !Number.isSafeInteger(targetNumber) || targetNumber <= 0) {
-    toast('شماره سند مقصد معتبر نیست.', 'error'); return;
+  if (!targetText || targetNumber == null) {
+    toast('شماره سند مقصد باید فقط شامل رقم باشد و بزرگ‌تر از صفر.', 'error'); return;
   }
   if (targetNumber === Number(source.number)) { toast('شماره سند مقصد باید با سند مبدأ متفاوت باشد.', 'error'); return; }
+
+  state.busy = true;
+  let targetVoucher;
+  try {
+    targetVoucher = await invoke('get_voucher', { number: targetNumber });
+  } catch (error) {
+    state.busy = false;
+    toast(`بررسی سند مقصد ناموفق بود: ${errorText(error)}`, 'error');
+    return;
+  }
+  state.busy = false;
+
+  const targetLabel = targetVoucher
+    ? `سند مقصد: شماره ${vfFa(targetVoucher.number)} · تاریخ ${vfFa(targetVoucher.date)} · ${targetVoucher.type}`
+    : `سند مقصد: شماره ${vfFa(targetNumber)} (سند جدید)`;
+  setTransferTargetInfo(targetLabel, targetVoucher ? 'ok' : 'info');
+
+  if (transferTargetNumber().number !== targetNumber) {
+    state.busy = false;
+    toast('شماره سند مقصد حین بررسی تغییر کرد؛ عملیات متوقف شد.', 'warning');
+    return;
+  }
+
   if (state.transfer.mode === 'move') {
     const ok = await confirmAction(
-      'ردیف‌های انتخاب‌شده از سند مبدأ حذف و به سند مقصد افزوده می‌شوند. فقط در صورتی عملیات انجام می‌شود که هر دو سند پس از انتقال تراز بمانند. ادامه می‌دهید؟',
+      `${targetLabel} · ردیف‌های انتخاب‌شده از سند مبدأ حذف و به سند مقصد افزوده می‌شوند. فقط در صورتی عملیات انجام می‌شود که هر دو سند پس از انتقال تراز بمانند. ادامه می‌دهید؟`,
       'انتقال ردیف‌ها'
     );
     if (!ok) return;
+    if (transferTargetNumber().number !== targetNumber) {
+      toast('شماره سند مقصد حین تأیید تغییر کرد؛ عملیات متوقف شد.', 'warning');
+      return;
+    }
   }
   const operationMode = state.transfer.mode;
   state.busy = true; setStatus('info', 'در حال کپی یا انتقال ردیف‌ها…');
@@ -2489,6 +2623,7 @@ function bindVoucherTransfer() {
   $('#vfTransferClose')?.addEventListener('click', closeVoucherTransfer);
   $('#vfTransferCancel')?.addEventListener('click', closeVoucherTransfer);
   $('#vfTransferSubmit')?.addEventListener('click', submitVoucherTransfer);
+  $('#vfTransferTarget')?.addEventListener('change', () => void updateTransferTargetInfo());
   $('#vfTransferModal')?.addEventListener('click', (event) => {
     if (event.target.id === 'vfTransferModal') closeVoucherTransfer();
   });
@@ -2912,6 +3047,25 @@ async function bindVoucherRequests() {
   }
 }
 
+async function handleDatabaseRestored() {
+  await loadAccounts();
+  if (!state.voucher) return;
+  if (state.dirty) {
+    state.restoredConflict = true;
+    setStatus('error', 'پایگاه داده بازیابی شده؛ ذخیره مسدود است');
+    toast('پایگاه داده هنگام ویرایش این سند بازیابی شد. برای جلوگیری از بازنویسی داده‌ها، ذخیره مسدود است؛ پنجره را ببندید و سند را دوباره باز کنید.', 'error');
+    return;
+  }
+  const voucher = await invoke('get_voucher', { number: state.voucher.number });
+  if (voucher) {
+    loadVoucher(voucher);
+  } else {
+    state.restoredConflict = true;
+    setStatus('error', 'سند در پایگاه بازیابی‌شده موجود نیست');
+    toast('این سند در پایگاه بازیابی‌شده وجود ندارد؛ پنجره را ببندید و سند را دوباره انتخاب کنید.', 'error');
+  }
+}
+
 /* ── Init ───────────────────────────────────────────────────── */
 
 async function init() {
@@ -2944,6 +3098,14 @@ async function init() {
   state.busy = true;
   try {
     await bindVoucherRequests();
+    if (typeof TAURI.event?.listen === 'function') {
+      await TAURI.event.listen('accounts-changed', () => {
+        loadAccounts().catch(() => {});
+      });
+      await TAURI.event.listen('database-restored', () => {
+        handleDatabaseRestored().catch((error) => toast(errorText(error), 'error'));
+      });
+    }
     await Promise.all([loadSettings(), loadAccounts(), refreshNextNumber()]);
     const requested = await invoke('take_voucher_request');
     state.ready = true;

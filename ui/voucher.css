@@ -283,6 +283,10 @@ body.voucher-page {
 .vf-transfer-fields label { display:grid; gap:4px; min-width:190px; color:#52657a; font-size:11px; font-weight:700; }
 .vf-transfer-fields input { height:32px; padding:0 9px; border:1px solid #b7c7d7; border-radius:3px; background:#fff; color:#182b3d; font:inherit; font-size:13px; }
 .vf-transfer-mode { padding:8px 0; color:#294b6b; font-size:12px; font-weight:700; }
+.vf-transfer-target-info { flex: 1 1 100%; min-height: 16px; color: #52657a; font-size: 11px; line-height: 1.7; }
+.vf-transfer-target-info[data-tone="ok"] { color: #0b6040; }
+.vf-transfer-target-info[data-tone="info"] { color: #17459a; }
+.vf-transfer-target-info[data-tone="error"] { color: var(--danger, #b3261e); }
 .vf-transfer-actions { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
 .vf-transfer-actions #vfTransferSummary { margin-inline-start:auto; color:#3f5870; font-size:11px; }
 .vf-transfer-table-wrap, .vf-excel-preview-table-wrap { flex:1; min-height:140px; overflow:auto; border:1px solid #b9c9d8; background:#fff; }

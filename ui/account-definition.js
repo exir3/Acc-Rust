@@ -1,7 +1,10 @@
 /* WebApp-inspired account-definition popup for the Rust/Tauri client. */
 (() => {
   'use strict';
-  const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+  const tauriCore = window.__TAURI__?.core || null;
+  const invoke = typeof tauriCore?.invoke === 'function'
+    ? tauriCore.invoke.bind(tauriCore)
+    : null;
   const FA = '۰۱۲۳۴۵۶۷۸۹';
   const fa = v => String(v == null ? '' : v).replace(/[0-9]/g, d => FA[Number(d)]);
   const en = v => String(v == null ? '' : v).replace(/[۰-۹]/g, c => String(c.charCodeAt(0)-0x06f0)).replace(/[٠-٩]/g, c => String(c.charCodeAt(0)-0x0660));
@@ -33,14 +36,14 @@
         '<div class="adp2-grid-wrap"><table class="adp2-grid"><thead><tr><th>ردیف</th><th>کد حساب</th><th>نام حساب</th><th>سطح</th><th>گروه حساب</th><th>ماهیت</th><th>حساب بالاتر</th><th>ثبت سند</th></tr></thead><tbody data-rows><tr><td colspan="8">در حال بارگذاری…</td></tr></tbody></table></div>' +
         '<section class="adp2-editor" data-editor hidden><div class="adp2-editor-head"><b data-editor-title>مشخصات حساب</b><span data-editor-hint></span></div>' +
           '<form data-form class="adp2-form" autocomplete="off">' +
-            '<label>کد حساب<input data-code dir="ltr" inputmode="numeric" maxlength="20" required></label>' +
+            '<label>کد حساب<input data-code dir="ltr" inputmode="numeric" maxlength="20" required aria-describedby="adpFormError"></label>' +
             '<label class="adp2-wide">نام حساب<input data-name maxlength="255" required></label>' +
             '<label>سطح حساب<select data-edit-level><option value="1">کل</option><option value="2">معین</option><option value="3">تفصیلی ۱</option></select></label>' +
             '<label>گروه حساب<select data-edit-group required></select></label>' +
             '<label>حساب بالاتر<select data-parent></select></label>' +
             '<label>ماهیت<select data-nature><option value="debtor">بدهکار</option><option value="creditor">بستانکار</option><option value="dual">دوگانه</option></select></label>' +
             '<label class="adp2-check"><input type="checkbox" data-postable> قابل ثبت در سند</label>' +
-            '<div class="adp2-form-error" data-error hidden></div><div class="adp2-form-actions">' +
+            '<div class="adp2-form-error" id="adpFormError" data-error role="alert" aria-live="assertive" hidden></div><div class="adp2-form-actions">' +
               '<button type="submit" class="adp2-button primary" data-save>ذخیره (F2)</button><button type="button" class="adp2-button" data-cancel>انصراف</button>' +
             '</div></form></section>' +
       '</div><footer class="adp2-toolbar">' +
@@ -112,7 +115,13 @@
       const crumbs=['<button type="button" data-path="">حساب‌های کل</button>'];
       chain.forEach((a,i)=>crumbs.push('<span>‹</span><button type="button" data-path="'+esc(chain.slice(0,i+1).map(x=>x.code).join(','))+'">'+fa(a.code)+' — '+esc(a.name)+'</button>'));
       $('[data-breadcrumb]').innerHTML=crumbs.join('');
-      $('[data-breadcrumb]').querySelectorAll('[data-path]').forEach(b=>b.addEventListener('click',()=>{state.path=b.dataset.path?b.dataset.path.split(','):[];render();}));
+      $('[data-breadcrumb]').querySelectorAll('[data-path]').forEach(b=>{
+        b.disabled=state.busy;
+        b.addEventListener('click',()=>{
+          if(state.busy)return;
+          state.path=b.dataset.path?b.dataset.path.split(','):[];render();
+        });
+      });
       const list=filtered();
       if(!list.some(a=>a.code===state.selected))state.selected=list[0]?.code||'';
       $('[data-count]').textContent=fa(list.length)+' حساب';
@@ -123,9 +132,18 @@
         '<td>'+esc(a.parentName||'—')+'</td><td>'+(a.isPostable?'قابل ثبت':'غیرقابل ثبت')+'</td></tr>').join(''):
         '<tr><td colspan="8" class="adp2-empty">حسابی در این سطح پیدا نشد.</td></tr>';
       rows.querySelectorAll('[data-row]').forEach(row=>{
-        row.addEventListener('click',()=>{state.selected=row.dataset.row;render();rows.querySelectorAll('[data-row]').forEach(item=>{if(item.dataset.row===state.selected)item.focus();});});
-        row.addEventListener('dblclick',()=>{const a=getRow(row.dataset.row);if(children(a.code).length){state.path=findPath(a);state.selected=a.code;render();}else edit(a);});
+        row.addEventListener('click',()=>{
+          if(state.busy)return;
+          state.selected=row.dataset.row;render();
+          rows.querySelectorAll('[data-row]').forEach(item=>{if(item.dataset.row===state.selected)item.focus();});
+        });
+        row.addEventListener('dblclick',()=>{
+          if(state.busy)return;
+          const a=getRow(row.dataset.row);
+          if(children(a.code).length){state.path=findPath(a);state.selected=a.code;render();}else edit(a);
+        });
         row.addEventListener('keydown',e=>{
+          if(state.busy)return;
           if(e.key==='Enter'){e.preventDefault();row.dispatchEvent(new MouseEvent('dblclick',{bubbles:true}));return;}
           if(e.key!=='ArrowDown'&&e.key!=='ArrowUp')return;
           e.preventDefault();
@@ -137,14 +155,21 @@
           rows.querySelectorAll('[data-row]').forEach(item=>{if(item.dataset.row===state.selected)item.focus();});
         });
       });
-      $('[data-edit]').disabled=!getSelected()||state.mode!=='view';
-      $('[data-delete]').disabled=!getSelected()||state.mode!=='view';
-      $('[data-new]').disabled=state.mode!=='view';
-      $('[data-delete-all]').disabled=state.mode!=='view'||!state.accounts.length;
+      const busy=state.busy;
+      for(const control of overlay.querySelectorAll('[data-search],[data-group],[data-level],[data-reset]'))control.disabled=busy;
+      $('[data-edit]').disabled=!getSelected()||state.mode!=='view'||busy;
+      $('[data-delete]').disabled=!getSelected()||state.mode!=='view'||busy;
+      $('[data-new]').disabled=state.mode!=='view'||busy;
+      $('[data-delete-all]').disabled=state.mode!=='view'||busy||!state.accounts.length;
+      $('[data-refresh]').disabled=busy;
+      $('[data-export]').disabled=busy;
+      $('[data-import]').disabled=busy;
+      $('[data-save]').disabled=busy;
+      $('[data-cancel]').disabled=busy;
     };
     const getRow = c => state.accounts.find(a=>a.code===c);
-    const refresh = async resetSelection => {
-      state.busy=true;say('در حال دریافت حساب‌ها و گروه‌ها…');
+    const refresh = async (resetSelection, keepBusy = false) => {
+      state.busy=true;render();say('در حال دریافت حساب‌ها و گروه‌ها…');
       try{
         const result=await Promise.all([invoke('list_accounts'),invoke('list_account_groups')]);
         state.accounts=result[0].accounts||[];state.groups=result[1].groups||[];fillGroups();
@@ -152,18 +177,19 @@
         state.path=state.path.filter((c,i)=>{const a=getRow(c);return a&&Number(a.level)===i+1&&(a.parentCode||'')===(i?state.path[i-1]:'');});
         render();say(fa(state.accounts.length)+' حساب بارگذاری شد.','ok');
       }catch(e){say(e.message||String(e),'error');}
-      finally{state.busy=false;}
+      finally{if(!keepBusy)state.busy=false;render();}
     };
-    const parentsFor = (preferred) => {
+    const parentsFor = (preferred, allowGroupChange = false) => {
       const n=Number(level.value);
       if(n===1){parent.innerHTML='<option value="">حساب سطح کل (بدون والد)</option>';parent.disabled=true;group.disabled=false;postable.checked=false;postable.disabled=true;if(state.mode==='new')code.value=fa(newCode(1,''));return;}
-      parent.disabled=false;group.disabled=true;postable.disabled=false;
+      parent.disabled=false;group.disabled=!allowGroupChange;postable.disabled=false;
       const candidates=state.accounts.filter(a=>Number(a.level)===n-1&&a.groupCode===group.value);
       parent.innerHTML='<option value="">— انتخاب حساب بالاتر —</option>'+candidates.map(a=>'<option value="'+esc(a.code)+'">'+fa(a.code)+' — '+esc(a.name)+'</option>').join('');
       parent.value=preferred||candidates[0]?.code||'';
       if(state.mode==='new')code.value=fa(newCode(n,parent.value));
     };
     const startNew = () => {
+      if(state.busy||state.mode!=='view')return;
       if(!state.groups.length){say('ابتدا یک گروه حساب تعریف کنید.','error');return;}
       const pc=state.path[state.path.length-1]||'', p=getRow(pc), n=p?Number(p.level)+1:1;
       if(n>3){say('در ساختار جدید فقط سه سطح کل، معین و تفصیلی ۱ پشتیبانی می‌شود. برای حساب‌های سطح چهارم قدیمی امکان ایجاد زیرحساب جدید وجود ندارد.','error');return;}
@@ -172,57 +198,64 @@
       $('[data-editor-hint]').textContent='کد پیشنهادی مطابق کدهای موجود تولید می‌شود.';
       level.innerHTML='<option value="1">کل</option><option value="2">معین</option><option value="3">تفصیلی ۱</option>';
       level.value=String(n);fillGroups(p?p.groupCode:state.groups[0].code);group.disabled=!!p;
-      name.value='';code.readOnly=false;postable.checked=n>1;errorBox.hidden=true;
+      name.value='';code.readOnly=false;postable.checked=n>1;errorBox.hidden=true;code.removeAttribute('aria-invalid');
       parentsFor(pc);if(pc)parent.value=pc;
       rememberEditorValues();
       $('[data-save]').textContent='ثبت حساب (F2)';render();name.focus();
     };
     const edit = account => {
-      if(!account)return;
+      if(state.busy||state.mode!=='view'||!account)return;
       state.selected=account.code;state.mode='edit';editor.hidden=false;fillGroups(account.groupCode);
       $('[data-editor-title]').textContent='اصلاح حساب';
-      $('[data-editor-hint]').textContent='کد، سطح، گروه و حساب بالاتر در نسخه فعلی قابل تغییر نیستند.';
+      $('[data-editor-hint]').textContent='گروه و حساب بالاتر فقط وقتی قابل تغییرند که حساب در سندی استفاده نشده باشد.';
       code.value=fa(account.code);code.readOnly=true;name.value=account.name;
       level.innerHTML='<option value="'+account.level+'">'+levelText(account.level)+'</option>';level.value=String(account.level);
-      group.value=account.groupCode;group.disabled=true;
-      parent.innerHTML='<option value="'+esc(account.parentCode)+'">'+(account.parentCode?fa(account.parentCode)+' — '+esc(account.parentName):'حساب سطح کل')+'</option>';
-      parent.disabled=true;nature.value=account.nature;postable.checked=!!account.isPostable;
+      group.value=account.groupCode;
+      parentsFor(account.parentCode,true);
+      nature.value=account.nature;postable.checked=!!account.isPostable;
       postable.disabled=Number(account.level)===1||children(account.code).length>0;
       rememberEditorValues();
-      $('[data-save]').textContent='ذخیره تغییرات (F2)';errorBox.hidden=true;render();name.focus();
+      $('[data-save]').textContent='ذخیره تغییرات (F2)';errorBox.hidden=true;code.removeAttribute('aria-invalid');render();name.focus();
     };
-    const cancel = () => {state.mode='view';editor.hidden=true;errorBox.hidden=true;render();};
+    const cancel = () => {state.mode='view';editor.hidden=true;errorBox.hidden=true;code.removeAttribute('aria-invalid');render();};
     const save = async e => {
       e.preventDefault();if(state.busy||state.mode==='view')return;
       const c=nums(code.value),n=name.value.trim().replace(/\s+/g,' '),l=Number(level.value),g=group.value,p=l===1?'':parent.value;
-      if(!c||!n||!g||(l>1&&!p)){errorBox.textContent='کد، نام، گروه و حساب بالاتر الزامی هستند.';errorBox.hidden=false;return;}
+      if(!c||!n||!g||(l>1&&!p)){
+        errorBox.textContent='کد، نام، گروه و حساب بالاتر الزامی هستند.';errorBox.hidden=false;
+        code.setAttribute('aria-invalid', String(!c));
+        if(!c)code.focus();
+        return;
+      }
+      code.removeAttribute('aria-invalid');
       const button=$('[data-save]');button.disabled=true;state.busy=true;
       try{
         if(state.mode==='edit')await invoke('update_account',{id:getSelected().id,name:n,groupCode:g,nature:nature.value,parentCode:p,isPostable:postable.checked});
         else await invoke('create_account',{code:c,name:n,level:l,groupCode:g,nature:nature.value,parentCode:p,isPostable:postable.checked});
         window.dispatchEvent(new Event('accounts-changed'));
-        state.selected=c;state.mode='view';editor.hidden=true;await refresh(false);state.selected=c;render();say('اطلاعات حساب ذخیره شد.','ok');
+        state.selected=c;state.mode='view';editor.hidden=true;await refresh(false,true);state.selected=c;render();say('اطلاعات حساب ذخیره شد.','ok');
       }catch(err){errorBox.textContent=err.message||String(err);errorBox.hidden=false;}
-      finally{state.busy=false;button.disabled=false;}
+      finally{state.busy=false;button.disabled=false;render();}
     };
     const removeSelected = async () => {
       const a=getSelected();if(!a||state.busy)return;
       if(!window.confirm('حساب «'+fa(a.code)+' — '+a.name+'» حذف شود؟ حساب دارای زیرحساب یا گردش سند قابل حذف نیست.'))return;
-      state.busy=true;
-      try{await invoke('delete_account',{id:a.id});window.dispatchEvent(new Event('accounts-changed'));state.selected='';await refresh(false);say('حساب حذف شد.','ok');}
-      catch(e){say(e.message||String(e),'error');}finally{state.busy=false;}
+      state.busy=true;render();
+      try{await invoke('delete_account',{id:a.id});window.dispatchEvent(new Event('accounts-changed'));state.selected='';await refresh(false,true);say('حساب حذف شد.','ok');}
+      catch(e){say(e.message||String(e),'error');}finally{state.busy=false;render();}
     };
     const removeAll = async () => {
       if(!state.accounts.length||state.busy)return;
       if(!window.confirm('تلاش برای حذف همه '+fa(state.accounts.length)+' حساب انجام شود؟ حساب‌های دارای زیرحساب یا سابقه سند باقی می‌مانند.'))return;
-      state.busy=true;let done=0;const blocked=[];
+      if(window.prompt('برای تأیید حذف گروهی، کلمه «حذف» را وارد کنید.')!=='حذف')return;
+      state.busy=true;render();let done=0;const blocked=[];
       try{
         const ordered=[...state.accounts].sort((a,b)=>Number(b.level)-Number(a.level));
         for(const a of ordered){try{await invoke('delete_account',{id:a.id});done++;}catch(e){blocked.push(fa(a.code)+' — '+a.name+': '+(e.message||String(e)));}}
         if(done)window.dispatchEvent(new Event('accounts-changed'));
-        state.selected='';await refresh(false);say(fa(done)+' حساب حذف شد؛ '+fa(blocked.length)+' حساب باقی ماند.',blocked.length?'error':'ok');
+        state.selected='';await refresh(false,true);say(fa(done)+' حساب حذف شد؛ '+fa(blocked.length)+' حساب باقی ماند.',blocked.length?'error':'ok');
         if(blocked.length)window.alert('حساب‌های حذف‌نشده:\n'+blocked.slice(0,25).join('\n')+(blocked.length>25?'\n…':''));
-      }finally{state.busy=false;}
+      }finally{state.busy=false;render();}
     };
     const currentWindow = window.__TAURI__?.window?.getCurrentWindow?.();
     const hasUnsavedChanges = () => state.mode !== 'view' && initialEditorValues !== editorValues();
@@ -263,12 +296,39 @@
     $('[data-group]').addEventListener('change',e=>{state.group=e.target.value;render();});
     $('[data-level]').addEventListener('change',e=>{state.level=e.target.value;render();});
     level.addEventListener('change',()=>parentsFor(''));
-    group.addEventListener('change',()=>parentsFor(''));
+    group.addEventListener('change',()=>parentsFor('',state.mode==='edit'));
     parent.addEventListener('change',()=>{if(state.mode==='new')code.value=fa(newCode(Number(level.value),parent.value));});
     code.addEventListener('input',()=>{if(state.mode==='new')code.value=fa(nums(code.value));});
     form.addEventListener('submit',save);$('[data-cancel]').addEventListener('click',cancel);
-    $('[data-export]').addEventListener('click',async()=>{try{const path=await invoke('export_account_excel');if(path)say('فایل اکسل ذخیره شد: '+path,'ok');}catch(e){say(e.message||String(e),'error');}});
-    $('[data-import]').addEventListener('click',async()=>{if(!window.confirm('حساب‌ها از فایل اکسل مطابق قالب WebApp وارد شوند؟'))return;try{const result=await invoke('import_account_excel');if(!result)return;window.dispatchEvent(new Event('accounts-changed'));await refresh(true);const msg=fa(result.createdCount)+' حساب جدید و '+fa(result.skippedCount)+' حساب موجود';say(msg+(result.errors.length?'؛ '+fa(result.errors.length)+' خطا':''),result.errors.length?'error':'ok');if(result.errors.length)window.alert('موارد ناموفق:\n'+result.errors.slice(0,30).join('\n'));}catch(e){say(e.message||String(e),'error');}});
+    $('[data-export]').addEventListener('click',async()=>{
+      if(state.busy)return;
+      state.busy=true;render();
+      try{
+        const result=await invoke('export_account_excel');
+        if(result){
+          say('فایل اکسل ذخیره شد: '+result.path,'ok');
+          if(result.skippedCodes?.length){
+            window.alert('حساب‌های سطح چهارم در قالب فعلی صادر نشدند:\n'+result.skippedCodes.map(fa).join('، '));
+          }
+        }
+      }
+      catch(e){say(e.message||String(e),'error');}
+      finally{state.busy=false;render();}
+    });
+    $('[data-import]').addEventListener('click',async()=>{
+      if(state.busy||!window.confirm('حساب‌ها از فایل اکسل مطابق قالب WebApp وارد شوند؟'))return;
+      state.busy=true;render();
+      try{
+        const result=await invoke('import_account_excel');
+        if(!result)return;
+        window.dispatchEvent(new Event('accounts-changed'));
+        await refresh(true,true);
+        const msg=fa(result.createdCount)+' حساب جدید و '+fa(result.skippedCount)+' حساب موجود';
+        say(msg+(result.errors.length?'؛ '+fa(result.errors.length)+' خطا':''),result.errors.length?'error':'ok');
+        if(result.errors.length)window.alert('موارد ناموفق:\n'+result.errors.slice(0,30).join('\n'));
+      }catch(e){say(e.message||String(e),'error');}
+      finally{state.busy=false;render();}
+    });
     document.addEventListener('keydown',keys,true);document.body.appendChild(overlay);
     refresh(true);setTimeout(()=>$('[data-search]').focus(),30);
   }

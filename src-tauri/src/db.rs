@@ -90,6 +90,44 @@ const SCHEMA: &str = r#"
     CREATE INDEX IF NOT EXISTS idx_voucher_lines_voucher ON voucher_lines(voucher_id);
     CREATE INDEX IF NOT EXISTS idx_voucher_lines_account ON voucher_lines(account_code);
 
+    CREATE TRIGGER IF NOT EXISTS vouchers_positive_number_insert
+    BEFORE INSERT ON vouchers
+    WHEN NEW.number <= 0
+    BEGIN
+        SELECT RAISE(ABORT, 'voucher number must be positive');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS vouchers_positive_number_update
+    BEFORE UPDATE OF number ON vouchers
+    WHEN NEW.number <= 0
+    BEGIN
+        SELECT RAISE(ABORT, 'voucher number must be positive');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS voucher_lines_valid_insert
+    BEFORE INSERT ON voucher_lines
+    WHEN NEW.row_no <= 0
+      OR NOT ((NEW.debit > 0 AND NEW.credit = 0) OR (NEW.credit > 0 AND NEW.debit = 0))
+      OR EXISTS (
+          SELECT 1 FROM voucher_lines
+           WHERE voucher_id = NEW.voucher_id AND row_no = NEW.row_no
+      )
+    BEGIN
+        SELECT RAISE(ABORT, 'invalid voucher line');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS voucher_lines_valid_update
+    BEFORE UPDATE ON voucher_lines
+    WHEN NEW.row_no <= 0
+      OR NOT ((NEW.debit > 0 AND NEW.credit = 0) OR (NEW.credit > 0 AND NEW.debit = 0))
+      OR EXISTS (
+          SELECT 1 FROM voucher_lines
+           WHERE voucher_id = NEW.voucher_id AND row_no = NEW.row_no AND id <> OLD.id
+      )
+    BEGIN
+        SELECT RAISE(ABORT, 'invalid voucher line');
+    END;
+
     INSERT OR IGNORE INTO app_meta(key, value) VALUES ('schema_version', '3');
 "#;
 
@@ -113,7 +151,7 @@ const DEFAULT_GROUPS: [(&str, &str, &str); 11] = [
 ];
 
 /// (code, name, level, group code, nature, parent code, postable)
-const DEFAULT_ACCOUNTS: [(&str, &str, i64, &str, &str, &str, bool); 27] = [
+const DEFAULT_ACCOUNTS: [(&str, &str, i64, &str, &str, &str, bool); 34] = [
     ("1101", "صندوق", 1, "1", "debtor", "", false),
     ("1102", "بانک‌ها", 1, "1", "debtor", "", false),
     ("1103", "تنخواه گردان‌ها", 1, "1", "debtor", "", false),
@@ -229,6 +267,69 @@ const DEFAULT_ACCOUNTS: [(&str, &str, i64, &str, &str, &str, bool); 27] = [
         "210101",
         true,
     ),
+    (
+        "510101",
+        "مواد و دستمزد مستقیم بهای تمام‌شده",
+        2,
+        "9",
+        "debtor",
+        "5101",
+        true,
+    ),
+    (
+        "7101",
+        "سایر درآمدها و هزینه‌های عملیاتی",
+        1,
+        "10",
+        "dual",
+        "",
+        false,
+    ),
+    (
+        "710101",
+        "درآمد خدمات جانبی",
+        2,
+        "10",
+        "creditor",
+        "7101",
+        true,
+    ),
+    (
+        "710102",
+        "هزینه عملیاتی متفرقه",
+        2,
+        "10",
+        "debtor",
+        "7101",
+        true,
+    ),
+    (
+        "8101",
+        "سایر درآمدها و هزینه‌های غیرعملیاتی",
+        1,
+        "11",
+        "dual",
+        "",
+        false,
+    ),
+    (
+        "810101",
+        "درآمد غیرعملیاتی",
+        2,
+        "11",
+        "creditor",
+        "8101",
+        true,
+    ),
+    (
+        "810102",
+        "هزینه غیرعملیاتی",
+        2,
+        "11",
+        "debtor",
+        "8101",
+        true,
+    ),
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -291,18 +392,143 @@ pub struct Settings {
 pub struct Database {
     conn: Mutex<Option<Connection>>,
     path: Mutex<Option<PathBuf>>,
+    /// Set when a restore failed and its safety copy could not be rolled back.
+    /// Every later read/write is refused so an uncertain database is never used.
+    failed: Mutex<Option<String>>,
+}
+
+/// A validated-at-save account definition used by batch creation.
+pub struct NewAccount {
+    pub code: String,
+    pub name: String,
+    pub level: i64,
+    pub group_code: String,
+    pub nature: String,
+    pub parent_code: String,
+    pub is_postable: bool,
+}
+
+impl NewAccount {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        code: &str,
+        name: &str,
+        level: i64,
+        group_code: &str,
+        nature: &str,
+        parent_code: &str,
+        is_postable: bool,
+    ) -> Self {
+        Self {
+            code: code.to_string(),
+            name: name.to_string(),
+            level,
+            group_code: group_code.to_string(),
+            nature: nature.to_string(),
+            parent_code: parent_code.to_string(),
+            is_postable,
+        }
+    }
+}
+
+fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, String> {
+    let group_exists = conn
+        .query_row(
+            "SELECT 1 FROM account_groups WHERE code = ?1",
+            params![account.group_code],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(db_error)?
+        .is_some();
+    if !group_exists {
+        return Err("گروه حساب انتخاب‌شده وجود ندارد.".to_string());
+    }
+
+    let duplicate = conn
+        .query_row(
+            "SELECT 1 FROM accounts WHERE code = ?1",
+            params![account.code],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(db_error)?;
+    if duplicate.is_some() {
+        return Err("این کد حساب قبلاً ثبت شده است.".to_string());
+    }
+
+    let (parent_code, parent_name) = resolve_parent(
+        conn,
+        &account.code,
+        account.level,
+        &account.parent_code,
+        &account.group_code,
+    )?;
+
+    // An account that already carries vouchers cannot also become a heading
+    // for sub-accounts: its balance would be counted twice in the ledger.
+    if let Some(parent) = &parent_code {
+        if account_has_lines(conn, parent)? {
+            return Err(
+                "حساب بالاتر در اسناد استفاده شده است؛ برای آن زیرحساب تعریف نمی‌شود."
+                    .to_string(),
+            );
+        }
+    }
+
+    let postable = account.level > 1 && account.is_postable;
+    conn.execute(
+        "INSERT INTO accounts
+            (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            account.code,
+            account.name,
+            account.level,
+            account.group_code,
+            account.nature,
+            parent_code,
+            parent_name,
+            i64::from(postable)
+        ],
+    )
+    .map_err(db_error)?;
+    let new_id = conn.last_insert_rowid();
+
+    // The parent is now a heading and can no longer receive vouchers.
+    if let Some(parent) = &parent_code {
+        conn.execute(
+            "UPDATE accounts
+                SET postable_before_children = COALESCE(postable_before_children, is_postable),
+                    is_postable = 0,
+                    updated_at = datetime('now', 'localtime')
+              WHERE code = ?1",
+            params![parent],
+        )
+        .map_err(db_error)?;
+    }
+
+    fetch_account(conn, new_id)
 }
 
 impl Database {
     pub fn attach(&self, connection: Connection, path: PathBuf) {
-        *self.conn.lock().unwrap() = Some(connection);
-        *self.path.lock().unwrap() = Some(path);
+        // A panic in an earlier database operation must not make the
+        // application panic again while attaching/reopening its connection.
+        *self
+            .conn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(connection);
+        *self
+            .path
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(path);
     }
 
     pub fn path_string(&self) -> String {
         self.path
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default()
@@ -318,13 +544,22 @@ impl Database {
             let temporary = unique_sibling_path(destination, "backup-tmp");
             let _ = std::fs::remove_file(&temporary);
             let mut target = Connection::open(&temporary).map_err(db_error)?;
-            {
-                let backup = Backup::new(source, &mut target).map_err(db_error)?;
-                backup
-                    .run_to_completion(128, Duration::from_millis(10), None)
-                    .map_err(db_error)?;
-            }
+            let validation = (|| {
+                {
+                    let backup = Backup::new(source, &mut target).map_err(db_error)?;
+                    backup
+                        .run_to_completion(128, Duration::from_millis(10), None)
+                        .map_err(db_error)?;
+                }
+                // Do not publish a snapshot that is structurally valid SQLite
+                // but already contains invalid accounting data or references.
+                validate_backup_connection(&target)
+            })();
             drop(target);
+            if let Err(error) = validation {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(error);
+            }
             replace_file(&temporary, destination)
         })
     }
@@ -356,14 +591,29 @@ impl Database {
                     .run_to_completion(128, Duration::from_millis(10), None)
                     .map_err(db_error)
             }
-            .and_then(|()| validate_backup_connection(target));
+            .and_then(|()| validate_backup_connection(target))
+            .and_then(|()| reset_schema_triggers(target));
             if let Err(error) = restore_result {
-                let safety = Connection::open(&safety_path).map_err(db_error)?;
-                {
-                    let rollback = Backup::new(&safety, target).map_err(db_error)?;
-                    rollback
-                        .run_to_completion(128, Duration::from_millis(10), None)
-                        .map_err(db_error)?;
+                let rollback_result = (|| -> Result<(), String> {
+                    let safety = Connection::open(&safety_path).map_err(db_error)?;
+                    {
+                        let rollback = Backup::new(&safety, target).map_err(db_error)?;
+                        rollback
+                            .run_to_completion(128, Duration::from_millis(10), None)
+                            .map_err(db_error)?;
+                    }
+                    Ok(())
+                })();
+                if let Err(rollback_error) = rollback_result {
+                    let reason = format!(
+                        "بازیابی پشتیبان و بازگردانی خودکار نسخهٔ ایمنی هر دو ناموفق بودند. برای جلوگیری از خواندن یا نوشتن روی پایگاه دادهٔ نامطمئن، برنامه تا راه‌اندازی مجدد متوقف شد. نسخهٔ ایمنی در «{}» نگهداری می‌شود؛ آن را دستی بازیابی کنید. خطای بازیابی: {error} | خطای بازگردانی: {rollback_error}",
+                        safety_path.display()
+                    );
+                    *self
+                        .failed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason.clone());
+                    return Err(reason);
                 }
                 return Err(format!(
                     "بازیابی انجام نشد و پایگاه قبلی بازگردانده شد: {error}"
@@ -376,10 +626,20 @@ impl Database {
         &self,
         f: impl FnOnce(&mut Connection) -> Result<T, String>,
     ) -> Result<T, String> {
+        if let Some(reason) = self
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            return Err(reason.clone());
+        }
+        // The connection remains owned and usable after mutex poisoning; a
+        // panicking caller will have dropped any in-flight SQLite transaction.
         let mut guard = self
             .conn
             .lock()
-            .map_err(|_| "پایگاه داده در دسترس نیست.".to_string())?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let conn = guard
             .as_mut()
             .ok_or_else(|| "پایگاه داده هنوز آماده نشده است.".to_string())?;
@@ -559,90 +819,48 @@ impl Database {
         parent_code: &str,
         is_postable: bool,
     ) -> Result<Account, String> {
-        let code = validate_account_code(code)?;
-        let name = validate_name(name, "نام حساب")?;
-        let level = validate_level(level)?;
-        let nature = validate_nature(nature)?;
-        let group_code = normalize_code(group_code);
-        let parent_code = normalize_code(parent_code);
+        let mut created = self.create_accounts_atomic(vec![NewAccount::new(
+            code,
+            name,
+            level,
+            group_code,
+            nature,
+            parent_code,
+            is_postable,
+        )])?;
+        created
+            .pop()
+            .ok_or_else(|| "ساخت حساب انجام نشد.".to_string())
+    }
 
-        self.with_conn(|conn| {
+    /// Creates a group of accounts in one transaction. If any account in the
+    /// batch fails validation or insertion, none of them is saved. This keeps
+    /// an imported hierarchy level from being left behind half-created.
+    pub fn create_accounts_atomic(&self, accounts: Vec<NewAccount>) -> Result<Vec<Account>, String> {
+        if accounts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut normalized = Vec::with_capacity(accounts.len());
+        for account in accounts {
+            normalized.push(NewAccount {
+                code: validate_account_code(&account.code)?,
+                name: validate_name(&account.name, "نام حساب")?,
+                level: validate_level(account.level)?,
+                group_code: normalize_code(&account.group_code),
+                nature: validate_nature(&account.nature)?,
+                parent_code: normalize_code(&account.parent_code),
+                is_postable: account.is_postable,
+            });
+        }
+
+        self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db_error)?;
-            let group_exists = tx
-                .query_row(
-                    "SELECT 1 FROM account_groups WHERE code = ?1",
-                    params![group_code],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map_err(db_error)?
-                .is_some();
-            if !group_exists {
-                return Err("گروه حساب انتخاب‌شده وجود ندارد.".to_string());
+            let mut created = Vec::with_capacity(normalized.len());
+            for account in &normalized {
+                created.push(insert_account(&tx, account)?);
             }
-
-            let duplicate = tx
-                .query_row(
-                    "SELECT 1 FROM accounts WHERE code = ?1",
-                    params![code],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map_err(db_error)?;
-            if duplicate.is_some() {
-                return Err("این کد حساب قبلاً ثبت شده است.".to_string());
-            }
-
-            let (parent_code, parent_name) =
-                resolve_parent(&tx, &code, level, &parent_code, &group_code)?;
-
-            // An account that already carries vouchers cannot also become a
-            // heading for sub-accounts: its balance would be counted twice
-            // in the ledger of the parent.
-            if let Some(parent) = &parent_code {
-                if account_has_lines(&tx, parent)? {
-                    return Err(
-                        "حساب بالاتر در اسناد استفاده شده است؛ برای آن زیرحساب تعریف نمی‌شود."
-                            .to_string(),
-                    );
-                }
-            }
-
-            let postable = level > 1 && is_postable;
-            tx.execute(
-                "INSERT INTO accounts
-                    (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    code,
-                    name,
-                    level,
-                    group_code,
-                    nature,
-                    parent_code,
-                    parent_name,
-                    i64::from(postable)
-                ],
-            )
-            .map_err(db_error)?;
-            let new_id = tx.last_insert_rowid();
-
-            // The parent is now a heading and can no longer receive vouchers.
-            if let Some(parent) = &parent_code {
-                tx.execute(
-                    "UPDATE accounts
-                        SET postable_before_children = COALESCE(postable_before_children, is_postable),
-                            is_postable = 0,
-                            updated_at = datetime('now', 'localtime')
-                      WHERE code = ?1",
-                    params![parent],
-                )
-                .map_err(db_error)?;
-            }
-
-            let account = fetch_account(&tx, new_id)?;
             tx.commit().map_err(db_error)?;
-            Ok(account)
+            Ok(created)
         })
     }
 
@@ -1003,7 +1221,6 @@ fn migrate_legacy_database(data_dir: &Path, destination: &Path) -> Result<(), St
 /// Applies additive, versioned schema changes. Migration 3 remembers whether
 /// a parent account was manually postable before its first child was added.
 fn apply_schema_migrations(conn: &Connection) -> Result<(), String> {
-    const CURRENT_VERSION: i64 = 3;
     let version_text: String = conn
         .query_row(
             "SELECT value FROM app_meta WHERE key = 'schema_version'",
@@ -1014,15 +1231,18 @@ fn apply_schema_migrations(conn: &Connection) -> Result<(), String> {
     let version = version_text
         .parse::<i64>()
         .map_err(|_| "نسخه ساختار پایگاه داده معتبر نیست.".to_string())?;
-    if version > CURRENT_VERSION {
+    if version > CURRENT_SCHEMA_VERSION {
         return Err(format!(
             "نسخه پایگاه داده ({}) از نسخه قابل پشتیبانی برنامه جدیدتر است.",
             version
         ));
     }
 
-    {
-        let mut statement = conn
+    // DDL and the version marker must move together. If any step fails, the
+    // transaction is rolled back instead of leaving a half-applied migration.
+    let tx = conn.unchecked_transaction().map_err(db_error)?;
+    let columns = {
+        let mut statement = tx
             .prepare("PRAGMA table_info(accounts)")
             .map_err(db_error)?;
         let columns = statement
@@ -1030,25 +1250,26 @@ fn apply_schema_migrations(conn: &Connection) -> Result<(), String> {
             .map_err(db_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(db_error)?;
-        if !columns
-            .iter()
-            .any(|column| column == "postable_before_children")
-        {
-            conn.execute(
-                "ALTER TABLE accounts ADD COLUMN postable_before_children INTEGER CHECK(postable_before_children IN (0, 1))",
-                [],
-            )
-            .map_err(db_error)?;
-        }
-        if version < CURRENT_VERSION {
-            conn.execute(
-                "UPDATE app_meta SET value = '3' WHERE key = 'schema_version'",
-                [],
-            )
-            .map_err(db_error)?;
-        }
+        columns
+    };
+    if !columns
+        .iter()
+        .any(|column| column == "postable_before_children")
+    {
+        tx.execute(
+            "ALTER TABLE accounts ADD COLUMN postable_before_children INTEGER CHECK(postable_before_children IN (0, 1))",
+            [],
+        )
+        .map_err(db_error)?;
     }
-    Ok(())
+    if version < CURRENT_SCHEMA_VERSION {
+        tx.execute(
+            "UPDATE app_meta SET value = ?1 WHERE key = 'schema_version'",
+            params![CURRENT_SCHEMA_VERSION.to_string()],
+        )
+        .map_err(db_error)?;
+    }
+    tx.commit().map_err(db_error)
 }
 
 fn copy_sqlite_database(source: &Path, destination: &Path) -> Result<(), String> {
@@ -1063,6 +1284,24 @@ fn copy_sqlite_database(source: &Path, destination: &Path) -> Result<(), String>
     Ok(())
 }
 
+const SCHEMA_TRIGGERS: [&str; 4] = [
+    "vouchers_positive_number_insert",
+    "vouchers_positive_number_update",
+    "voucher_lines_valid_insert",
+    "voucher_lines_valid_update",
+];
+
+/// `SCHEMA` uses `CREATE TRIGGER IF NOT EXISTS`, so a restored database could
+/// keep a tampered trigger that happens to use an allowed name. Drop the
+/// known triggers first and recreate them from the application's own schema.
+fn reset_schema_triggers(conn: &Connection) -> Result<(), String> {
+    for trigger in SCHEMA_TRIGGERS {
+        conn.execute(&format!("DROP TRIGGER IF EXISTS \"{trigger}\""), [])
+            .map_err(db_error)?;
+    }
+    conn.execute_batch(SCHEMA).map_err(db_error)
+}
+
 fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
     let integrity: String = conn
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
@@ -1072,7 +1311,15 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
     }
     let unexpected_trigger: Option<String> = conn
         .query_row(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger' LIMIT 1",
+            "SELECT name FROM sqlite_master
+                            WHERE type = 'trigger'
+                                AND name NOT IN (
+                                        'vouchers_positive_number_insert',
+                                        'vouchers_positive_number_update',
+                                        'voucher_lines_valid_insert',
+                                        'voucher_lines_valid_update'
+                                )
+                            LIMIT 1",
             [],
             |row| row.get(0),
         )
@@ -1190,7 +1437,7 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
     if let Some(code) = backup_first_text(
         conn,
         "SELECT code FROM account_groups
-          WHERE code = '' OR length(code) > 50 OR code GLOB '*[^0-9]*'
+          WHERE code = '' OR length(code) > 50 OR code GLOB '*[^0-9]*' OR trim(code, '0') = ''
           LIMIT 1",
     )? {
         return Err(format!("کد گروه «{code}» در فایل پشتیبان معتبر نیست."));
@@ -1209,7 +1456,7 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
     if let Some(code) = backup_first_text(
         conn,
         "SELECT code FROM accounts
-          WHERE code = '' OR length(code) > 20 OR code GLOB '*[^0-9]*'
+          WHERE code = '' OR length(code) > 20 OR code GLOB '*[^0-9]*' OR trim(code, '0') = ''
           LIMIT 1",
     )? {
         return Err(format!("کد حساب «{code}» در فایل پشتیبان معتبر نیست."));
@@ -1334,19 +1581,38 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
             "مبلغ، شماره ردیف یا شرح ردیف {line} در فایل پشتیبان معتبر نیست."
         ));
     }
-    if let Some(number) = backup_first_text(
+    if let Some(line) = backup_first_text(
         conn,
-        "SELECT CAST(v.number AS TEXT)
-           FROM vouchers v
-           LEFT JOIN voucher_lines l ON l.voucher_id = v.id
-          GROUP BY v.id
-         HAVING COUNT(l.id) < 2
-             OR COALESCE(SUM(l.debit), 0) = 0
-             OR COALESCE(SUM(l.debit), 0) <> COALESCE(SUM(l.credit), 0)
+        "SELECT CAST(l.id AS TEXT)
+           FROM voucher_lines l
+           LEFT JOIN accounts a ON a.code = l.account_code
+          WHERE a.code IS NULL
+             OR a.is_postable = 0
+             OR EXISTS (SELECT 1 FROM accounts child WHERE child.parent_code = a.code)
           LIMIT 1",
     )? {
         return Err(format!(
-            "سند شماره {number} در فایل پشتیبان تراز نیست یا ردیف کافی ندارد."
+            "حساب ردیف {line} در فایل پشتیبان وجود ندارد یا قابل ثبت نیست."
+        ));
+    }
+    if let Some(number) = backup_first_text(
+        conn,
+        &format!(
+            "SELECT CAST(v.number AS TEXT)
+               FROM vouchers v
+               LEFT JOIN voucher_lines l ON l.voucher_id = v.id
+              GROUP BY v.id
+             HAVING COUNT(l.id) < 2
+                 OR COUNT(l.id) > {}
+                 OR COUNT(DISTINCT l.row_no) <> COUNT(l.id)
+                 OR COALESCE(SUM(l.debit), 0) = 0
+                 OR COALESCE(SUM(l.debit), 0) <> COALESCE(SUM(l.credit), 0)
+              LIMIT 1",
+            crate::vouchers::MAX_LINES
+        ),
+    )? {
+        return Err(format!(
+            "ساختار ردیف‌ها یا تراز سند شماره {number} در فایل پشتیبان معتبر نیست."
         ));
     }
 
@@ -1823,6 +2089,99 @@ mod tests {
     }
 
     #[test]
+    fn database_recovers_from_poisoned_connection_and_path_mutexes() {
+        let db = test_database();
+
+        let path_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = db.path.lock().unwrap();
+            panic!("simulate a panic while holding the path mutex");
+        }));
+        assert!(path_panic.is_err());
+        assert_eq!(db.path_string(), ":memory:");
+
+        let connection_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = db.conn.lock().unwrap();
+            panic!("simulate a panic while holding the connection mutex");
+        }));
+        assert!(connection_panic.is_err());
+        assert_eq!(db.list_account_groups().unwrap().groups.len(), 11);
+
+        // Reattaching after a poisoned lock must also remain non-panicking.
+        db.attach(
+            Connection::open_in_memory().unwrap(),
+            PathBuf::from(":memory:reopened"),
+        );
+        assert_eq!(db.path_string(), ":memory:reopened");
+    }
+
+    #[test]
+    fn backup_refuses_to_publish_a_snapshot_with_invalid_accounting_data() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-invalid-backup-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let active_path = dir.join(DB_FILE_NAME);
+        let backup_path = dir.join("backup.sqlite3");
+        let db = file_database(&active_path);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/13/01', ?1)",
+                params![crate::vouchers::VOUCHER_TYPES[0]],
+            )
+            .map_err(db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let error = db.backup_to(&backup_path).unwrap_err();
+        assert!(error.contains("تاریخ"));
+        assert!(!backup_path.exists());
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sqlite_rejects_invalid_voucher_numbers_and_lines() {
+        let db = test_database();
+        db.with_conn(|conn| {
+            assert!(conn
+                .execute(
+                    "INSERT INTO vouchers (number, date, type) VALUES (0, '1405/01/01', ?1)",
+                    params![crate::vouchers::VOUCHER_TYPES[0]],
+                )
+                .is_err());
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', ?1)",
+                params![crate::vouchers::VOUCHER_TYPES[0]],
+            )
+            .map_err(db_error)?;
+            let voucher_id = conn.last_insert_rowid();
+
+            assert!(conn
+                .execute(
+                    "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit) VALUES (?1, 1, '110101', 0, 0)",
+                    params![voucher_id],
+                )
+                .is_err());
+            conn.execute(
+                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit) VALUES (?1, 1, '110101', 100, 0)",
+                params![voucher_id],
+            )
+            .map_err(db_error)?;
+            assert!(conn
+                .execute(
+                    "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit) VALUES (?1, 1, '410101', 0, 100)",
+                    params![voucher_id],
+                )
+                .is_err());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn seeds_default_groups_and_accounts_once() {
         let db = test_database();
         let list = db.list_account_groups().unwrap();
@@ -1830,9 +2189,21 @@ mod tests {
         assert_eq!(list.groups[0].code, "1");
 
         let accounts = db.list_accounts().unwrap();
-        assert_eq!(accounts.accounts.len(), 27);
+        assert_eq!(accounts.accounts.len(), 34);
         assert_eq!(accounts.accounts[0].code, "1101");
         assert!(!accounts.accounts[0].is_postable);
+        assert!(accounts
+            .accounts
+            .iter()
+            .any(|account| account.code == "510101" && account.is_postable));
+        assert!(accounts
+            .accounts
+            .iter()
+            .any(|account| account.code == "710101" && account.is_postable));
+        assert!(accounts
+            .accounts
+            .iter()
+            .any(|account| account.code == "810102" && account.is_postable));
     }
 
     #[test]
@@ -2090,7 +2461,23 @@ mod tests {
             .find(|account| account.code == "110101")
             .unwrap();
         assert!(restored_parent.is_postable);
-        assert_eq!(db.list_accounts().unwrap().accounts.len(), 27);
+        assert_eq!(db.list_accounts().unwrap().accounts.len(), 34);
+    }
+
+    #[test]
+    fn account_batch_is_atomic_when_a_later_level_fails() {
+        let db = test_database();
+        let before = db.list_accounts().unwrap().accounts.len();
+
+        let error = db
+            .create_accounts_atomic(vec![
+                NewAccount::new("110199", "معین موقت", 2, "1", "debtor", "1101", true),
+                NewAccount::new("110199", "معین تکراری", 2, "1", "debtor", "1101", true),
+            ])
+            .unwrap_err();
+
+        assert!(error.contains("قبلاً"));
+        assert_eq!(db.list_accounts().unwrap().accounts.len(), before);
     }
 
     #[test]

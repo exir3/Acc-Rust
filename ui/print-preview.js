@@ -6,8 +6,11 @@
    an A4 sheet and offers print / save-HTML / zoom.
    ============================================================ */
 
-const invoke = (window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core.invoke : null;
-const tauriWindow = (window.__TAURI__ && window.__TAURI__.window) ? window.__TAURI__.window : null;
+const tauriCore = window.__TAURI__?.core || null;
+const invoke = typeof tauriCore?.invoke === 'function'
+  ? tauriCore.invoke.bind(tauriCore)
+  : null;
+const tauriWindow = window.__TAURI__?.window || null;
 
 const PX_PER_MM = 96 / 25.4;
 const MIN_ZOOM = 0.25;

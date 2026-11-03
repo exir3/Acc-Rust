@@ -17,7 +17,43 @@ const MAX_IMPORT_LINES: usize = 1000;
 const MAX_LINE_DESCRIPTION: usize = 500;
 const HEADER_SCAN_ROWS: usize = 30;
 const MAX_BULK_IMPORT_ROWS: usize = 300_000;
+const MAX_BULK_IMPORT_COLUMNS: usize = 40;
+const MAX_VOUCHER_IMPORT_ROWS: usize = 20_000;
+const MAX_ACCOUNT_IMPORT_ROWS: usize = 10_000;
+const MAX_SHEET_COLUMNS: usize = 50;
+const MAX_EXCEL_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_AMOUNT: i64 = 999_999_999_999_999;
+
+/// Rejects an oversized workbook before calamine allocates its used range.
+fn ensure_excel_file_size(path: &Path) -> Result<(), String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("خواندن اطلاعات فایل اکسل ناموفق بود: {error}"))?;
+    if !metadata.is_file() {
+        return Err("مسیر انتخاب‌شده یک فایل نیست.".to_string());
+    }
+    if metadata.len() > MAX_EXCEL_FILE_BYTES {
+        return Err(format!(
+            "حجم فایل اکسل بیش از حد مجاز است (حداکثر {} مگابایت).",
+            db::to_fa_digits(MAX_EXCEL_FILE_BYTES / (1024 * 1024))
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_sheet_dimensions(
+    range: &calamine::Range<Data>,
+    max_rows: usize,
+    max_columns: usize,
+) -> Result<(), String> {
+    if range.height() as usize > max_rows || range.width() as usize > max_columns {
+        return Err(format!(
+            "ابعاد کاربرگ اکسل بیش از حد مجاز است (حداکثر {} ردیف و {} ستون).",
+            db::to_fa_digits(max_rows),
+            db::to_fa_digits(max_columns)
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct BulkVoucherImport {
@@ -483,14 +519,51 @@ fn find_columns(range: &calamine::Range<Data>) -> Option<(usize, ImportColumns)>
             .iter()
             .map(|cell| normalize_header(&cell_text(cell)))
             .collect();
-        let find = |needles: &[&str]| {
-            headers
+        let find = |needles: &[&str]| -> Option<usize> {
+            // Prefer an exact alias. Otherwise a header such as «کد سند» could
+            // win over «کد حساب» only because it appears in an earlier column.
+            for needle in needles {
+                let needle = normalize_header(needle);
+                if let Some(index) = headers.iter().position(|header| header == &needle) {
+                    return Some(index);
+                }
+            }
+            let matches: Vec<usize> = headers
                 .iter()
-                .position(|header| needles.iter().any(|needle| header.contains(needle)))
+                .enumerate()
+                .filter(|(_, header)| {
+                    needles
+                        .iter()
+                        .any(|needle| header.contains(&normalize_header(needle)))
+                })
+                .map(|(index, _)| index)
+                .collect();
+            if matches.len() == 1 {
+                Some(matches[0])
+            } else {
+                None
+            }
         };
 
         let columns = ImportColumns {
-            account_code: find(&["کدحساب", "کد"]),
+            account_code: headers
+                .iter()
+                .position(|header| {
+                    header == "کد حساب" || header == "کدحساب" || header == "کد"
+                })
+                .or_else(|| {
+                    let matches: Vec<usize> = headers
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, header)| header.contains("حساب") && header.contains("کد"))
+                        .map(|(index, _)| index)
+                        .collect();
+                    if matches.len() == 1 {
+                        Some(matches[0])
+                    } else {
+                        None
+                    }
+                }),
             description: find(&["شرح"]),
             debit: find(&["بدهکار", "بدهی"]),
             credit: find(&["بستانکار", "ستانکار"]),
@@ -616,6 +689,7 @@ pub fn import_vouchers() -> Result<Option<BulkVoucherImport>, String> {
 }
 
 fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
+    ensure_excel_file_size(path)?;
     let mut workbook =
         open_workbook_auto(&path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
     let range = match workbook.worksheet_range_at(0) {
@@ -623,12 +697,7 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
         Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
         None => return Err("فایل اکسل هیچ کاربرگی ندارد.".to_string()),
     };
-    if range.height() as usize > MAX_BULK_IMPORT_ROWS {
-        return Err(format!(
-            "تعداد ردیف‌های فایل اکسل نمی‌تواند بیشتر از {} باشد.",
-            db::to_fa_digits(MAX_BULK_IMPORT_ROWS)
-        ));
-    }
+    ensure_sheet_dimensions(&range, MAX_BULK_IMPORT_ROWS, MAX_BULK_IMPORT_COLUMNS)?;
 
     let Some((header_row, columns)) = find_bulk_columns(&range) else {
         return Err("عنوان ستون‌های فایل پیدا نشد. ستون‌های «سند»، «تاریخ»، «کد کل»، «بدهکار» و «بستانکار» الزامی هستند.".to_string());
@@ -842,6 +911,7 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
         return Ok(None);
     };
 
+    ensure_excel_file_size(&path)?;
     let mut workbook =
         open_workbook_auto(&path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
     let range = match workbook.worksheet_range_at(0) {
@@ -856,6 +926,8 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
                 .to_string(),
         );
     };
+
+    ensure_sheet_dimensions(&range, MAX_VOUCHER_IMPORT_ROWS, MAX_SHEET_COLUMNS)?;
 
     let read = |row: &[Data], index: Option<usize>| -> Data {
         index
@@ -961,6 +1033,13 @@ pub struct AccountImportResult {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountExportResult {
+    pub path: String,
+    pub skipped_codes: Vec<String>,
+}
+
 #[derive(Default)]
 struct AccountImportColumns {
     group_code: Option<usize>,
@@ -1047,24 +1126,13 @@ fn account_nature(raw: &str, fallback: &str) -> Result<String, String> {
 }
 
 /// Export the chart in the same 11-column hierarchy layout used by WebApp.
-pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String> {
+pub fn export_accounts(database: &db::Database) -> Result<Option<AccountExportResult>, String> {
     let accounts = database.list_accounts()?.accounts;
-    let unsupported: Vec<&str> = accounts
+    let skipped_codes: Vec<String> = accounts
         .iter()
         .filter(|account| account.level > 3)
-        .take(5)
-        .map(|account| account.code.as_str())
+        .map(|account| account.code.clone())
         .collect();
-    if !unsupported.is_empty() {
-        return Err(format!(
-            "خروجی فعلی حداکثر سه سطح را پشتیبانی می‌کند؛ حساب‌های سطح چهارم مانند {} صادر نشدند.",
-            unsupported
-                .iter()
-                .map(|code| db::to_fa_digits(code))
-                .collect::<Vec<_>>()
-                .join("، ")
-        ));
-    }
     let by_code: BTreeMap<String, db::Account> = accounts
         .iter()
         .cloned()
@@ -1114,12 +1182,13 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String
     // Repeated parent data is intentional: it makes every row independently importable.
     let parent_codes: std::collections::BTreeSet<&str> = accounts
         .iter()
+        .filter(|account| account.level <= 3)
         .map(|account| account.parent_code.as_str())
         .filter(|code| !code.is_empty())
         .collect();
     let mut terminals: Vec<&db::Account> = accounts
         .iter()
-        .filter(|account| !parent_codes.contains(account.code.as_str()))
+        .filter(|account| account.level <= 3 && !parent_codes.contains(account.code.as_str()))
         .collect();
     terminals.sort_by(|a, b| a.code.cmp(&b.code));
 
@@ -1174,7 +1243,10 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<String>, String
     }
     worksheet.set_freeze_panes(1, 0).map_err(xlsx_error)?;
     workbook.save(&path).map_err(xlsx_error)?;
-    Ok(Some(path.to_string_lossy().to_string()))
+    Ok(Some(AccountExportResult {
+        path: path.to_string_lossy().to_string(),
+        skipped_codes,
+    }))
 }
 
 /// Import accounts from the WebApp 11-column workbook. Each hierarchy level is
@@ -1188,6 +1260,7 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
         return Ok(None);
     };
 
+    ensure_excel_file_size(&path)?;
     let mut workbook =
         open_workbook_auto(&path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
     let range = match workbook.worksheet_range_at(0) {
@@ -1195,9 +1268,7 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
         Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
         None => return Err("فایل اکسل هیچ کاربرگی ندارد.".to_string()),
     };
-    if range.height() > 10_001 || range.width() > 50 {
-        return Err("فایل اکسل بیش از حد مجاز است (حداکثر ۱۰٬۰۰۰ ردیف و ۵۰ ستون).".to_string());
-    }
+    ensure_sheet_dimensions(&range, MAX_ACCOUNT_IMPORT_ROWS, MAX_SHEET_COLUMNS)?;
     let Some((header_row, columns)) = find_account_columns(&range) else {
         return Err("ستون‌های فایل با قالب حساب‌های WebApp مطابقت ندارد؛ ستون‌های «کد گروه»، «کد کل» و «عنوان کل» الزامی هستند.".to_string());
     };
@@ -1279,6 +1350,7 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
             let mut parent_nature = "debtor".to_string();
             let mut row_created = 0usize;
             let mut row_skipped = 0usize;
+            let mut pending: Vec<db::NewAccount> = Vec::new();
             for (level_index, (_, raw_name, raw_nature)) in cells.iter().enumerate() {
                 if raw_name.trim().is_empty() {
                     break;
@@ -1318,7 +1390,7 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                     parent_nature = nature;
                     continue;
                 }
-                let account = database.create_account(
+                pending.push(db::NewAccount::new(
                     &code,
                     &name,
                     level,
@@ -1326,12 +1398,15 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                     &nature,
                     &parent_code,
                     level > 1,
-                )?;
-                accounts.push(account);
-                created_count += 1;
-                row_created += 1;
+                ));
                 parent_code = code;
                 parent_nature = nature;
+            }
+            if !pending.is_empty() {
+                let created = database.create_accounts_atomic(pending)?;
+                row_created += created.len();
+                created_count += created.len();
+                accounts.extend(created);
             }
             Ok((row_created, row_skipped))
         })();
@@ -1480,6 +1555,50 @@ mod tests {
         assert_eq!(columns.description, Some(3));
         assert_eq!(columns.debit, Some(4));
         assert_eq!(columns.credit, Some(5));
+    }
+
+    #[test]
+    fn account_code_is_not_taken_from_a_document_code_column() {
+        let mut range = calamine::Range::new((0, 0), (0, 5));
+        for (col, value) in ["کد سند", "کد حساب", "شرح", "بدهکار", "بستانکار", "ردیف"]
+            .iter()
+            .enumerate()
+        {
+            range.set_value((0, col as u32), text(value));
+        }
+        let (_, columns) = find_columns(&range).expect("header row");
+        assert_eq!(columns.account_code, Some(1));
+    }
+
+    #[test]
+    fn exact_account_code_header_wins_over_a_similar_one() {
+        let mut range = calamine::Range::new((0, 0), (0, 4));
+        for (col, value) in ["کد حساب", "کد حساب تفصیلی", "بدهکار", "بستانکار", "شرح"]
+            .iter()
+            .enumerate()
+        {
+            range.set_value((0, col as u32), text(value));
+        }
+        let (_, columns) = find_columns(&range).expect("header row");
+        assert_eq!(columns.account_code, Some(0));
+    }
+
+    #[test]
+    fn ambiguous_account_columns_are_rejected() {
+        let mut range = calamine::Range::new((0, 0), (0, 4));
+        for (col, value) in [
+            "کد حساب تفصیلی",
+            "شماره حساب کد",
+            "بدهکار",
+            "بستانکار",
+            "شرح",
+        ]
+        .iter()
+        .enumerate()
+        {
+            range.set_value((0, col as u32), text(value));
+        }
+        assert!(find_columns(&range).is_none());
     }
 
     #[test]

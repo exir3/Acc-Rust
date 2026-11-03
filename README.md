@@ -76,7 +76,24 @@ build.bat clean        :: پاک کردن کش ساخت
 ```bat
 run.bat            :: ساخت debug و اجرا
 run.bat release    :: ساخت release و اجرا
+run.bat cleanup    :: پاک کردن کش incremental پروفایل debug
 ```
+
+### بررسی‌های خودکار
+
+برای بررسی نحوی همه فایل‌های JavaScript رابط کاربری (بدون نصب وابستگی جدید) اجرا کنید:
+
+```bash
+npm run check:js
+```
+
+آزمون‌های واحد هسته Rust و منطق پایگاه داده نیز با ابزار زنجیره Rust اجرا می‌شوند:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+`check:js` فقط خطاهای نحوی JavaScript را تشخیص می‌دهد و جایگزین آزمون یکپارچه رابط کاربری یا آزمون عملی روی Windows نیست.
 
 ### روش دستی
 

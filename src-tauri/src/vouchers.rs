@@ -29,7 +29,7 @@ pub const VOUCHER_TYPES: [&str; 4] = [
 
 pub(crate) const MAX_DESCRIPTION: usize = 1000;
 pub(crate) const MAX_LINE_DESCRIPTION: usize = 500;
-const MAX_LINES: usize = 1000;
+pub(crate) const MAX_LINES: usize = 1000;
 pub const MAX_VOUCHER_NUMBER: i64 = 9_007_199_254_740_991;
 
 /// Largest amount accepted on one line (1e15 Rials). It stays below 2^53 so
@@ -414,6 +414,7 @@ pub struct Voucher {
     pub id: i64,
     pub number: i64,
     pub date: String,
+    pub updated_at: String,
     #[serde(rename = "type")]
     pub voucher_type: String,
     pub description: String,
@@ -430,6 +431,7 @@ pub struct VoucherSummary {
     pub id: i64,
     pub number: i64,
     pub date: String,
+    pub updated_at: String,
     #[serde(rename = "type")]
     pub voucher_type: String,
     pub description: String,
@@ -446,6 +448,8 @@ pub struct VoucherList {
     pub vouchers: Vec<VoucherSummary>,
     /// Number of vouchers in the whole book, ignoring any filter.
     pub total_count: i64,
+    /// Number of vouchers matching the active date and search filters.
+    pub matched_count: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub total_debit: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
@@ -595,6 +599,12 @@ pub struct IncomeStatementReport {
     pub cogs: Vec<AmountRow>,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub cogs_total: i64,
+    pub other_operating_revenues: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub other_operating_revenue_total: i64,
+    pub other_operating_expenses: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub other_operating_expense_total: i64,
     pub expenses: Vec<AmountRow>,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub expense_total: i64,
@@ -867,11 +877,10 @@ impl Database {
 
         let (vouchers, total_count) = self.with_conn(|conn| {
             let vouchers = list_vouchers(conn, &from, &to, &terms)?;
-            // The list is already filtered by date and search; its count
-            // must describe the visible result set, not the whole database.
-            let total = vouchers.len() as i64;
+            let total = count(conn, "SELECT COUNT(*) FROM vouchers")?;
             Ok((vouchers, total))
         })?;
+        let matched_count = vouchers.len() as i64;
         let total_debit = checked_sum(
             vouchers.iter().map(|v| v.total_debit),
             "جمع بدهکار فهرست اسناد",
@@ -883,6 +892,7 @@ impl Database {
         Ok(VoucherList {
             vouchers,
             total_count,
+            matched_count,
             total_debit,
             total_credit,
             database_path: self.path_string(),
@@ -953,7 +963,7 @@ impl Database {
                 }
                 tx.execute(
                     "UPDATE vouchers
-                        SET description = ?1, updated_at = datetime('now', 'localtime')
+                        SET description = ?1, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
                       WHERE id = ?2",
                     params![group.description, group.keep_id],
                 )
@@ -961,7 +971,12 @@ impl Database {
             }
 
             for (index, (voucher_id, _)) in plan.number_changes.iter().enumerate() {
-                let temporary_number = i64::MIN + index as i64;
+                let offset = i64::try_from(index)
+                    .map_err(|_| "تعداد اسناد برای بازشماره‌گذاری بیش از حد مجاز است.".to_string())?;
+                let temporary_number = MAX_VOUCHER_NUMBER
+                    .checked_add(1)
+                    .and_then(|base| base.checked_add(offset))
+                    .ok_or_else(|| "شماره موقت بازشماره‌گذاری از محدوده خارج است.".to_string())?;
                 tx.execute(
                     "UPDATE vouchers SET number = ?1 WHERE id = ?2",
                     params![temporary_number, voucher_id],
@@ -970,7 +985,7 @@ impl Database {
             }
             for (voucher_id, change) in &plan.number_changes {
                 tx.execute(
-                    "UPDATE vouchers SET number = ?1, updated_at = datetime('now', 'localtime') WHERE id = ?2",
+                    "UPDATE vouchers SET number = ?1, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime') WHERE id = ?2",
                     params![change.new_number, voucher_id],
                 )
                 .map_err(db::db_error)?;
@@ -1088,16 +1103,7 @@ impl Database {
                         db::to_fa_digits(*row_no)
                     ));
                 }
-                let postable = tx.query_row(
-                                        "SELECT is_postable FROM accounts
-                                            WHERE code = ?1
-                                                AND NOT EXISTS(
-                                                        SELECT 1 FROM accounts child WHERE child.parent_code = accounts.code
-                                                )",
-                    params![&line.account_code],
-                    |row| row.get::<_, i64>(0),
-                ).optional().map_err(db::db_error)?.unwrap_or(0);
-                if postable == 0 {
+                if assert_postable_leaf(&tx, &line.account_code).is_err() {
                     return Err(format!(
                         "حساب ردیف {} دیگر قابل ثبت نیست؛ انتقال متوقف شد.",
                         db::to_fa_digits(*row_no)
@@ -1137,17 +1143,32 @@ impl Database {
                 }
             }
 
-            let existing_target_id = tx.query_row(
-                "SELECT id FROM vouchers WHERE number = ?1",
-                params![target_number],
-                |row| row.get::<_, i64>(0),
-            ).optional().map_err(db::db_error)?;
-            if existing_target_id == Some(source_id) {
+            let existing_target = tx
+                .query_row(
+                    "SELECT id, type FROM vouchers WHERE number = ?1",
+                    params![target_number],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(db::db_error)?;
+            if existing_target.as_ref().map(|(id, _)| *id) == Some(source_id) {
                 return Err("سند مقصد نمی‌تواند همان سند مبدأ باشد.".to_string());
             }
+            let target_type = existing_target
+                .as_ref()
+                .map(|(_, kind)| kind.clone())
+                .unwrap_or_else(|| source_type.clone());
+
+            // The selected lines join the target voucher, so they must agree
+            // with the target's type even when they came from another type.
+            let selected_lines: Vec<VoucherLineInput> = selected
+                .iter()
+                .map(|(_, _, line)| line.clone())
+                .collect();
+            assert_voucher_type_matches_lines(&tx, &target_type, &selected_lines)?;
 
             let (target_id, target_count, target_debit, target_credit, created_target) =
-                if let Some(id) = existing_target_id {
+                if let Some((id, _)) = existing_target {
                     let totals = tx.query_row(
                         "SELECT COUNT(*), COALESCE(SUM(debit), 0), COALESCE(SUM(credit), 0)
                            FROM voucher_lines WHERE voucher_id = ?1",
@@ -1208,12 +1229,12 @@ impl Database {
                     }
                 }
                 tx.execute(
-                    "UPDATE vouchers SET updated_at = datetime('now', 'localtime') WHERE id = ?1",
+                    "UPDATE vouchers SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime') WHERE id = ?1",
                     params![source_id],
                 ).map_err(db::db_error)?;
             }
             tx.execute(
-                "UPDATE vouchers SET updated_at = datetime('now', 'localtime') WHERE id = ?1",
+                    "UPDATE vouchers SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime') WHERE id = ?1",
                 params![target_id],
             ).map_err(db::db_error)?;
 
@@ -1225,6 +1246,25 @@ impl Database {
     }
 
     pub fn save_voucher(&self, input: VoucherInput) -> Result<Voucher, String> {
+        self.save_voucher_inner(input, None)
+    }
+
+    pub fn save_voucher_if_unchanged(
+        &self,
+        input: VoucherInput,
+        expected_updated_at: Option<&str>,
+    ) -> Result<Voucher, String> {
+        if input.id.is_some() && expected_updated_at.is_none() {
+            return Err("نسخه سند مشخص نیست؛ سند را دوباره بارگذاری کنید.".to_string());
+        }
+        self.save_voucher_inner(input, expected_updated_at.map(str::to_string))
+    }
+
+    fn save_voucher_inner(
+        &self,
+        input: VoucherInput,
+        expected_updated_at: Option<String>,
+    ) -> Result<Voucher, String> {
         let date = normalize_date(&input.date, "تاریخ سند")?;
         let voucher_type = validate_voucher_type(&input.voucher_type)?;
         let description = validate_description(&input.description, "شرح سند", MAX_DESCRIPTION)?;
@@ -1311,51 +1351,35 @@ impl Database {
 
             // Every line must point at a real, postable account.
             for line in &lines {
-                let account = tx
-                    .query_row(
-                        "SELECT name, is_postable,
-                                EXISTS(SELECT 1 FROM accounts child WHERE child.parent_code = accounts.code)
-                           FROM accounts WHERE code = ?1",
-                        params![line.account_code],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, i64>(1)?,
-                                row.get::<_, bool>(2)?,
-                            ))
-                        },
-                    )
-                    .optional()
-                    .map_err(db::db_error)?
-                    .ok_or_else(|| {
-                        format!(
-                            "حساب با کد {} یافت نشد.",
-                            db::to_fa_digits(&line.account_code)
-                        )
-                    })?;
-                if account.1 == 0 || account.2 {
-                    return Err(format!(
-                        "حساب «{}» قابل ثبت نیست؛ حساب کل یا حساب غیرقابل ثبت را انتخاب نکنید.",
-                        account.0
-                    ));
-                }
+                assert_postable_leaf(&tx, &line.account_code)?;
             }
+            assert_voucher_type_matches_lines(&tx, &voucher_type, &lines)?;
 
-            let existing_number = if id > 0 {
+            let existing = if id > 0 {
                 tx.query_row(
-                    "SELECT number FROM vouchers WHERE id = ?1",
+                    "SELECT number, updated_at FROM vouchers WHERE id = ?1",
                     params![id],
-                    |row| row.get::<_, i64>(0),
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()
                 .map_err(db::db_error)?
             } else {
                 None
             };
-            if id > 0 && existing_number.is_none() {
+            if id > 0 && existing.is_none() {
                 return Err("سند حسابداری یافت نشد.".to_string());
             }
+            if let (Some(expected), Some((_, current))) =
+                (expected_updated_at.as_deref(), existing.as_ref())
+            {
+                if expected != current {
+                    return Err(
+                        "سند پس از باز شدن تغییر کرده است؛ دوباره بارگذاری کنید.".to_string()
+                    );
+                }
+            }
 
+            let existing_number = existing.as_ref().map(|(number, _)| *number);
             let number = match (requested_number, existing_number) {
                 (number, _) if number > 0 => number,
                 (_, Some(current_number)) => current_number,
@@ -1387,14 +1411,29 @@ impl Database {
             }
 
             let voucher_id = if id > 0 {
-                tx.execute(
-                    "UPDATE vouchers
-                        SET number = ?1, date = ?2, type = ?3, description = ?4,
-                            updated_at = datetime('now', 'localtime')
-                      WHERE id = ?5",
-                    params![number, date, voucher_type, description, id],
-                )
+                let updated = if let Some(expected) = expected_updated_at.as_deref() {
+                    tx.execute(
+                        "UPDATE vouchers
+                            SET number = ?1, date = ?2, type = ?3, description = ?4,
+                                updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
+                          WHERE id = ?5 AND updated_at = ?6",
+                        params![number, date, voucher_type, description, id, expected],
+                    )
+                } else {
+                    tx.execute(
+                        "UPDATE vouchers
+                            SET number = ?1, date = ?2, type = ?3, description = ?4,
+                                updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
+                          WHERE id = ?5",
+                        params![number, date, voucher_type, description, id],
+                    )
+                }
                 .map_err(db::db_error)?;
+                if updated == 0 && expected_updated_at.is_some() {
+                    return Err(
+                        "سند پس از باز شدن تغییر کرده است؛ دوباره بارگذاری کنید.".to_string()
+                    );
+                }
                 tx.execute(
                     "DELETE FROM voucher_lines WHERE voucher_id = ?1",
                     params![id],
@@ -1688,18 +1727,7 @@ impl Database {
 
             for (number, date, voucher_type, description, lines) in prepared {
                 for line in &lines {
-                    let account = tx
-                        .query_row(
-                            "SELECT name, is_postable FROM accounts WHERE code = ?1",
-                            params![line.account_code],
-                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-                        )
-                        .optional()
-                        .map_err(db::db_error)?
-                        .ok_or_else(|| format!("حساب با کد {} یافت نشد.", db::to_fa_digits(&line.account_code)))?;
-                    if account.1 == 0 {
-                        return Err(format!("حساب «{}» قابل ثبت نیست؛ حساب کل یا حساب غیرقابل ثبت انتخاب شده است.", account.0));
-                    }
+                    assert_postable_leaf(&tx, &line.account_code)?;
                 }
                 let mut stored_number = number;
                 if used_numbers.contains(&number) {
@@ -1741,16 +1769,60 @@ impl Database {
         })
     }
 
-    pub fn delete_voucher(&self, id: i64) -> Result<(), String> {
+    pub fn delete_voucher(&self, id: i64, expected_updated_at: Option<&str>) -> Result<(), String> {
         if id <= 0 {
             return Err("شناسه سند نامعتبر است.".to_string());
         }
-        self.with_conn(|conn| {
+        let expected = expected_updated_at
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "نسخه سند مشخص نیست؛ سند را دوباره بارگذاری کنید.".to_string())?
+            .to_string();
+        self.with_conn(move |conn| {
+            let current = conn
+                .query_row(
+                    "SELECT updated_at FROM vouchers WHERE id = ?1",
+                    params![id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(db::db_error)?;
+            let Some(current) = current else {
+                return Err("سند حسابداری یافت نشد.".to_string());
+            };
+            if current != expected {
+                return Err(
+                    "این سند پس از باز شدن تغییر کرده است؛ فهرست یا سند را دوباره بارگذاری کنید و حذف را تکرار کنید."
+                        .to_string(),
+                );
+            }
             let affected = conn
-                .execute("DELETE FROM vouchers WHERE id = ?1", params![id])
+                .execute(
+                    "DELETE FROM vouchers WHERE id = ?1 AND updated_at = ?2",
+                    params![id, expected],
+                )
                 .map_err(db::db_error)?;
             if affected == 0 {
-                return Err("سند حسابداری یافت نشد.".to_string());
+                return Err(
+                    "این سند پس از باز شدن تغییر کرده است؛ فهرست یا سند را دوباره بارگذاری کنید و حذف را تکرار کنید."
+                        .to_string(),
+                );
+            }
+            Ok(())
+        })
+    }
+
+    /// Checks that every line points at a real, postable leaf account. The
+    /// Excel export validates amounts itself, so this keeps an invalid draft
+    /// from becoming a file that cannot be imported again.
+    pub fn validate_voucher_accounts(&self, lines: &[VoucherLineInput]) -> Result<(), String> {
+        self.with_conn(|conn| {
+            for line in lines {
+                let account_code = db::normalize_code(&line.account_code);
+                if account_code.is_empty() {
+                    return Err("برای هر ردیف، کد حساب الزامی است.".to_string());
+                }
+                assert_postable_leaf(conn, &account_code)?;
             }
             Ok(())
         })
@@ -2259,7 +2331,7 @@ fn list_vouchers(
     terms: &SearchTerms,
 ) -> Result<Vec<VoucherSummary>, String> {
     let sql = format!(
-        "SELECT v.id, v.number, v.date, v.type, v.description,
+        "SELECT v.id, v.number, v.date, v.updated_at, v.type, v.description,
                 COALESCE(SUM(l.debit), 0), COALESCE(SUM(l.credit), 0), COUNT(l.id)
            FROM vouchers v
            LEFT JOIN voucher_lines l ON l.voucher_id = v.id
@@ -2278,11 +2350,12 @@ fn list_vouchers(
                 id: row.get(0)?,
                 number: row.get(1)?,
                 date: row.get(2)?,
-                voucher_type: row.get(3)?,
-                description: row.get(4)?,
-                total_debit: row.get(5)?,
-                total_credit: row.get(6)?,
-                line_count: row.get(7)?,
+                updated_at: row.get(3)?,
+                voucher_type: row.get(4)?,
+                description: row.get(5)?,
+                total_debit: row.get(6)?,
+                total_credit: row.get(7)?,
+                line_count: row.get(8)?,
             })
         })
         .map_err(db::db_error)?
@@ -2303,10 +2376,102 @@ fn fetch_voucher_by_number(conn: &Connection, number: i64) -> Result<Option<Vouc
     .transpose()
 }
 
-fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher, String> {
-    let (number, date, voucher_type, description) = conn
+fn assert_postable_leaf(conn: &Connection, account_code: &str) -> Result<String, String> {
+    let account = conn
         .query_row(
-            "SELECT number, date, type, description FROM vouchers WHERE id = ?1",
+            "SELECT name, is_postable,
+                    EXISTS(SELECT 1 FROM accounts child WHERE child.parent_code = accounts.code)
+               FROM accounts WHERE code = ?1",
+            params![account_code],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(db::db_error)?
+        .ok_or_else(|| format!("حساب با کد {} یافت نشد.", db::to_fa_digits(account_code)))?;
+    if account.1 == 0 || account.2 {
+        return Err(format!(
+            "حساب «{}» قابل ثبت نیست؛ حساب کل یا حساب غیرقابل ثبت را انتخاب نکنید.",
+            account.0
+        ));
+    }
+    Ok(account.0)
+}
+
+/// A voucher type is not a free label: the closing/opening types decide which
+/// reports count the voucher. Reject lines whose accounts contradict the type.
+fn assert_voucher_type_matches_lines(
+    conn: &Connection,
+    voucher_type: &str,
+    lines: &[VoucherLineInput],
+) -> Result<(), String> {
+    let (forbidden, description): (&[AccountClass], &str) =
+        if voucher_type == CLOSING_TEMPORARY {
+            (
+                &[AccountClass::Asset, AccountClass::Liability],
+                "حساب‌های دارایی یا بدهی",
+            )
+        } else if voucher_type == CLOSING_FINAL || voucher_type == VOUCHER_TYPES[1] {
+            (
+                &[AccountClass::Income, AccountClass::Expense],
+                "حساب‌های درآمد یا هزینه",
+            )
+        } else {
+            return Ok(());
+        };
+
+    for line in lines {
+        let class = account_class_for_type_rule(conn, &line.account_code)?;
+        if forbidden.contains(&class) {
+            return Err(format!(
+                "نوع سند «{voucher_type}» با ردیف حساب {} سازگار نیست؛ این نوع سند نباید شامل {} باشد.",
+                db::to_fa_digits(&line.account_code),
+                description
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn account_class_for_type_rule(
+    conn: &Connection,
+    account_code: &str,
+) -> Result<AccountClass, String> {
+    let (group_code, group_type, nature) = conn
+        .query_row(
+            "SELECT g.code, g.type, a.nature
+               FROM accounts a
+               JOIN account_groups g ON g.code = a.group_code
+              WHERE a.code = ?1",
+            params![account_code],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(db::db_error)?;
+    if group_code == "10" || group_code == "11" {
+        return Ok(if nature == "creditor" {
+            AccountClass::Income
+        } else {
+            AccountClass::Expense
+        });
+    }
+    Ok(classify(&group_type, account_code))
+}
+
+fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher, String> {
+    let (number, date, updated_at, voucher_type, description) = conn
+        .query_row(
+            "SELECT number, date, updated_at, type, description FROM vouchers WHERE id = ?1",
             params![id],
             |row| {
                 Ok((
@@ -2314,6 +2479,7 @@ fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher, String> {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             },
         )
@@ -2352,6 +2518,7 @@ fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher, String> {
         id,
         number,
         date,
+        updated_at,
         voucher_type,
         description,
         lines,
@@ -2519,6 +2686,8 @@ fn build_income_statement(
 ) -> Result<IncomeStatementReport, String> {
     let mut revenues = Vec::new();
     let mut cogs = Vec::new();
+    let mut other_operating_revenues = Vec::new();
+    let mut other_operating_expenses = Vec::new();
     let mut expenses = Vec::new();
     let mut non_operating_revenues = Vec::new();
     let mut non_operating_expenses = Vec::new();
@@ -2544,8 +2713,8 @@ fn build_income_statement(
                 amount,
             };
             match (activity.group_code.as_str(), net < 0) {
-                ("10", true) => revenues.push(row),
-                ("10", false) => expenses.push(row),
+                ("10", true) => other_operating_revenues.push(row),
+                ("10", false) => other_operating_expenses.push(row),
                 ("11", true) => non_operating_revenues.push(row),
                 ("11", false) => non_operating_expenses.push(row),
                 _ => unreachable!(),
@@ -2589,6 +2758,14 @@ fn build_income_statement(
         "جمع درآمد صورت سود و زیان",
     )?;
     let cogs_total = checked_sum(cogs.iter().map(|r| r.amount), "جمع بهای تمام‌شده")?;
+    let other_operating_revenue_total = checked_sum(
+        other_operating_revenues.iter().map(|r| r.amount),
+        "جمع سایر درآمدهای عملیاتی",
+    )?;
+    let other_operating_expense_total = checked_sum(
+        other_operating_expenses.iter().map(|r| r.amount),
+        "جمع سایر هزینه‌های عملیاتی",
+    )?;
     let expense_total = checked_sum(
         expenses.iter().map(|r| r.amount),
         "جمع هزینه صورت سود و زیان",
@@ -2602,7 +2779,19 @@ fn build_income_statement(
         "جمع هزینه‌های غیرعملیاتی",
     )?;
     let gross_profit = checked_sub(revenue_total, cogs_total, "سود ناخالص")?;
-    let operating_profit = checked_sub(gross_profit, expense_total, "سود عملیاتی")?;
+    let operating_profit = checked_sub(
+        checked_add(
+            gross_profit,
+            other_operating_revenue_total,
+            "سود عملیاتی پس از سایر درآمدها",
+        )?,
+        checked_add(
+            expense_total,
+            other_operating_expense_total,
+            "هزینه‌های عملیاتی",
+        )?,
+        "سود عملیاتی",
+    )?;
     let net_profit = checked_sub(
         checked_add(
             operating_profit,
@@ -2619,6 +2808,10 @@ fn build_income_statement(
         revenue_total,
         cogs,
         cogs_total,
+        other_operating_revenues,
+        other_operating_revenue_total,
+        other_operating_expenses,
+        other_operating_expense_total,
         expenses,
         expense_total,
         non_operating_revenues,
@@ -2788,19 +2981,21 @@ mod tests {
     }
 
     #[test]
-    fn voucher_list_total_count_matches_active_filters() {
+    fn voucher_list_separates_book_count_from_filtered_count() {
         let db = db::memory_database();
         db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
         db.save_voucher(cash_sale("1405/02/10", 2_000)).unwrap();
 
         let by_date = db.list_vouchers("۱۴۰۵/۰۲/۰۱", "۱۴۰۵/۰۲/۳۱", "").unwrap();
         assert_eq!(by_date.vouchers.len(), 1);
-        assert_eq!(by_date.total_count, 1);
+        assert_eq!(by_date.total_count, 2);
+        assert_eq!(by_date.matched_count, 1);
 
         let by_search = db.list_vouchers("", "", "۲").unwrap();
         assert_eq!(by_search.vouchers.len(), 1);
         assert_eq!(by_search.vouchers[0].number, 2);
-        assert_eq!(by_search.total_count, by_search.vouchers.len() as i64);
+        assert_eq!(by_search.total_count, 2);
+        assert_eq!(by_search.matched_count, 1);
     }
 
     #[test]
@@ -2870,6 +3065,32 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("قابل ثبت نیست"));
+    }
+
+    #[test]
+    fn transfer_cannot_put_income_lines_into_a_final_closing_voucher() {
+        let db = db::memory_database();
+        let source = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+        let mut target = voucher(
+            "1405/01/10",
+            vec![line("310101", 1_000, 0), line("110101", 0, 1_000)],
+        );
+        target.number = Some(2);
+        target.voucher_type = CLOSING_FINAL.to_string();
+        db.save_voucher(target).unwrap();
+
+        let error = db
+            .transfer_voucher_lines(VoucherTransferInput {
+                source_voucher_id: source.id,
+                source_voucher_number: source.number,
+                target_voucher_number: 2,
+                line_ids: source.lines.iter().map(|line| line.id).collect(),
+                mode: "copy".to_string(),
+            })
+            .unwrap_err();
+
+        assert!(error.contains("سازگار نیست"));
+        assert_eq!(db.get_voucher(2).unwrap().unwrap().lines.len(), 2);
     }
 
     #[test]
@@ -3027,6 +3248,10 @@ mod tests {
         .unwrap();
 
         let report = db.get_income_statement("1405/01/01", "1405/01/31").unwrap();
+        assert_eq!(report.revenue_total, 1_000);
+        assert_eq!(report.gross_profit, 1_000);
+        assert_eq!(report.other_operating_revenue_total, 40);
+        assert_eq!(report.other_operating_expense_total, 10);
         assert_eq!(report.operating_profit, 830);
         assert_eq!(report.non_operating_revenue_total, 100);
         assert_eq!(report.non_operating_expense_total, 50);
@@ -3114,6 +3339,37 @@ mod tests {
     }
 
     #[test]
+    fn bulk_import_rejects_legacy_postable_parent_accounts() {
+        let db = db::memory_database();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE accounts SET is_postable = 1 WHERE code = '1102'",
+                [],
+            )
+            .map_err(db::db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let import = crate::excel::BulkVoucherImport {
+            file_name: "legacy.xlsx".to_string(),
+            accounts: Vec::new(),
+            vouchers: vec![VoucherInput {
+                id: None,
+                number: Some(1),
+                date: "1405/01/01".to_string(),
+                voucher_type: VOUCHER_TYPES[0].to_string(),
+                description: String::new(),
+                lines: vec![line("1102", 100, 0), line("410101", 0, 100)],
+            }],
+        };
+
+        let error = db.import_vouchers(import, false).unwrap_err();
+        assert!(error.contains("قابل ثبت"));
+        assert!(db.get_voucher(1).unwrap().is_none());
+    }
+
+    #[test]
     fn reorganize_preview_merges_then_sorts_by_date() {
         let db = db::memory_database();
         db.save_voucher(cash_sale("1405/01/02", 1_000)).unwrap();
@@ -3121,7 +3377,10 @@ mod tests {
         let mut source = cash_sale("1405/01/02", 500);
         source.description = "شرح سند مبدأ".to_string();
         db.save_voucher(source).unwrap();
-        let mut opening = cash_sale("1405/01/02", 750);
+        let mut opening = voucher(
+            "1405/01/02",
+            vec![line("110101", 750, 0), line("310101", 0, 750)],
+        );
         opening.voucher_type = VOUCHER_TYPES[1].to_string();
         db.save_voucher(opening).unwrap();
 
@@ -3277,7 +3536,7 @@ mod tests {
                 date: "1405/01/11".to_string(),
                 voucher_type: "سند حسابداری افتتاحیه".to_string(),
                 description: "اصلاح سند".to_string(),
-                lines: vec![line("110101", 800_000, 0), line("410101", 0, 800_000)],
+                lines: vec![line("110101", 800_000, 0), line("310101", 0, 800_000)],
             })
             .unwrap();
 
@@ -3321,6 +3580,29 @@ mod tests {
     }
 
     #[test]
+    fn stale_voucher_version_cannot_overwrite_a_newer_edit() {
+        let db = db::memory_database();
+        let saved = db.save_voucher(cash_sale("1405/01/10", 500_000)).unwrap();
+        let mut first_edit = cash_sale("1405/01/11", 600_000);
+        first_edit.id = Some(saved.id);
+        let updated = db
+            .save_voucher_if_unchanged(first_edit, Some(&saved.updated_at))
+            .unwrap();
+
+        let mut stale_edit = cash_sale("1405/01/12", 700_000);
+        stale_edit.id = Some(saved.id);
+        let error = db
+            .save_voucher_if_unchanged(stale_edit, Some(&saved.updated_at))
+            .unwrap_err();
+
+        assert!(error.contains("پس از باز شدن تغییر کرده"));
+        assert_eq!(
+            db.get_voucher(saved.number).unwrap().unwrap().date,
+            updated.date
+        );
+    }
+
+    #[test]
     fn deletes_voucher_and_its_lines() {
         let db = db::memory_database();
         let saved = db.save_voucher(cash_sale("1405/01/10", 300_000)).unwrap();
@@ -3329,12 +3611,45 @@ mod tests {
             2
         );
 
-        db.delete_voucher(saved.id).unwrap();
+        db.delete_voucher(saved.id, Some(&saved.updated_at)).unwrap();
         assert!(db.get_voucher(saved.number).unwrap().is_none());
         assert!(db.list_vouchers("", "", "").unwrap().vouchers.is_empty());
         assert!(db.get_journal("", "", "").unwrap().rows.is_empty());
         assert_eq!(db.get_dashboard().unwrap().line_count, 0);
-        assert!(db.delete_voucher(saved.id).is_err());
+        assert!(db.delete_voucher(saved.id, Some(&saved.updated_at)).is_err());
+    }
+
+    #[test]
+    fn delete_rejects_a_stale_voucher_version() {
+        let db = db::memory_database();
+        let saved = db.save_voucher(cash_sale("1405/01/10", 300_000)).unwrap();
+
+        let error = db
+            .delete_voucher(saved.id, Some("2000-01-01 00:00:00.000"))
+            .unwrap_err();
+        assert!(error.contains("تغییر کرده"));
+        assert!(db.get_voucher(saved.number).unwrap().is_some());
+
+        db.delete_voucher(saved.id, Some(&saved.updated_at)).unwrap();
+        assert!(db.get_voucher(saved.number).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_a_voucher_type_that_contradicts_its_accounts() {
+        let db = db::memory_database();
+
+        let mut opening = cash_sale("1405/01/10", 100_000);
+        opening.voucher_type = VOUCHER_TYPES[1].to_string();
+        let error = db.save_voucher(opening).unwrap_err();
+        assert!(error.contains("سازگار نیست"));
+
+        let mut closing = voucher(
+            "1405/01/10",
+            vec![line("110101", 100_000, 0), line("310101", 0, 100_000)],
+        );
+        closing.voucher_type = CLOSING_TEMPORARY.to_string();
+        let error = db.save_voucher(closing).unwrap_err();
+        assert!(error.contains("سازگار نیست"));
     }
 
     #[test]
@@ -3640,7 +3955,8 @@ mod tests {
 
         let list = db.list_vouchers("1405/02/01", "", "").unwrap();
         assert_eq!(list.vouchers.len(), 1);
-        assert_eq!(list.total_count, 1);
+        assert_eq!(list.total_count, 2);
+        assert_eq!(list.matched_count, 1);
 
         assert!(db.list_vouchers("1405/03/01", "1405/02/01", "").is_err());
         assert!(db.get_journal("1405/03/01", "1405/02/01", "").is_err());

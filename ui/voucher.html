@@ -456,8 +456,9 @@
       </div>
       <div class="vf-transfer-content">
         <div class="vf-transfer-fields">
-          <label>شماره سند مقصد<input id="vfTransferTarget" type="text" inputmode="numeric" dir="ltr" autocomplete="off" /></label>
+          <label>شماره سند مقصد<input id="vfTransferTarget" type="text" inputmode="numeric" dir="ltr" autocomplete="off" aria-describedby="vfTransferTargetInfo" /></label>
           <div class="vf-transfer-mode" id="vfTransferModeLabel">حالت عملیات: کپی</div>
+          <div class="vf-transfer-target-info" id="vfTransferTargetInfo" role="status" aria-live="polite"></div>
         </div>
         <div class="vf-transfer-actions">
           <button type="button" class="ap-tool" id="vfTransferSelectAll">انتخاب همه</button>

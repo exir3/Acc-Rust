@@ -230,6 +230,42 @@ body.is-trial-popup .page-scroll {
   min-height: 0;
 }
 
+.workspace-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px 28px;
+}
+
+.workspace-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.workspace-hero h2 {
+  margin: 2px 0 4px;
+  font-size: 18px;
+  color: #0f2a4d;
+}
+
+.workspace-hero p {
+  margin: 0;
+  font-size: 11.5px;
+  color: #67788f;
+}
+
+.workspace-eyebrow {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .4px;
+  color: var(--accent);
+}
+
+.workspace-dashboard .card { margin: 0; }
+
 .page-head {
   display: flex;
   align-items: center;

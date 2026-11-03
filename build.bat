@@ -43,19 +43,22 @@ echo   Build cache   : %CARGO_TARGET_DIR%
 echo ============================================================
 echo.
 
+REM --- Validate requested mode before checking build tools -----
+if /i "%MODE%"=="clean" goto :do_clean
+if /i "%MODE%"=="portable" goto :mode_valid
+if /i "%MODE%"=="installer" goto :mode_valid
+if /i "%MODE%"=="all" goto :mode_valid
+echo [ERROR] Unknown mode: %MODE%
+echo         Valid modes: portable, installer, all, clean
+goto :fail
+
+:mode_valid
 REM --- Sanity checks -----------------------------------------
 where cargo >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] cargo not found. Install Rust from https://rustup.rs
     echo         then reopen this window and try again.
     goto :fail
-)
-
-if /i "%MODE%"=="clean" (
-    echo Removing build cache: %CARGO_TARGET_DIR%
-    if exist "%CARGO_TARGET_DIR%" rmdir /s /q "%CARGO_TARGET_DIR%"
-    echo Done.
-    goto :end
 )
 
 REM --- Tauri CLI (installed as a cargo subcommand) -------------
@@ -81,7 +84,7 @@ if errorlevel 1 (
 
 if /i "%MODE%"=="portable" goto :do_portable
 if /i "%MODE%"=="installer" goto :do_installer
-goto :do_all
+if /i "%MODE%"=="all" goto :do_all
 
 :do_portable
 echo [1/1] Building portable exe, release profile ...
@@ -138,6 +141,12 @@ if "%MADE_INSTALLER%"=="1" if exist "%CARGO_TARGET_DIR%\release\bundle\nsis\*.ex
 echo.
 pause
 goto :eof
+
+:do_clean
+echo Removing build cache: %CARGO_TARGET_DIR%
+if exist "%CARGO_TARGET_DIR%" rmdir /s /q "%CARGO_TARGET_DIR%"
+echo Done.
+goto :end
 
 :fail
 echo.

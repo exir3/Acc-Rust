@@ -4,8 +4,9 @@
    نرم‌افزار حسابداری — main window controller
    ============================================================ */
 
-const invoke = (window.__TAURI__ && window.__TAURI__.core)
-  ? window.__TAURI__.core.invoke
+const tauriCore = window.__TAURI__?.core || null;
+const invoke = typeof tauriCore?.invoke === 'function'
+  ? tauriCore.invoke.bind(tauriCore)
   : null;
 
 const currentWindow = (window.__TAURI__ && window.__TAURI__.window
@@ -448,7 +449,7 @@ function confirmDialog(title, message, confirmLabel = 'حذف', danger = true) {
   return new Promise((resolve) => {
     const dialog = openDialog({
       title,
-      body: `<div class="note"${danger ? ' data-tone="danger"' : ''}>${message}</div>`,
+      body: `<div class="note"${danger ? ' data-tone="danger"' : ''}>${esc(message)}</div>`,
       hideClose: true,
       onClose: () => resolve(false),
       actions: [
@@ -716,7 +717,7 @@ function renderVoucherTable(vouchers) {
       <td class="center nowrap">
         <button type="button" class="btn btn-sm" data-open-voucher="${v.number}" title="ویرایش سند">${icon('i-edit')}</button>
         <button type="button" class="btn btn-sm" data-print-voucher="${v.number}" title="چاپ سند">${icon('i-print')}</button>
-        <button type="button" class="btn btn-sm" data-delete-voucher="${v.id}" data-voucher-label="${esc(v.description || `سند ${v.number}`)}" title="حذف سند">${icon('i-trash')}</button>
+        <button type="button" class="btn btn-sm" data-delete-voucher="${v.id}" data-voucher-updated="${esc(v.updatedAt || '')}" data-voucher-label="${esc(v.description || `سند ${v.number}`)}" title="حذف سند">${icon('i-trash')}</button>
       </td>
     </tr>`).join('');
   return `<div class="table-wrap">
@@ -749,11 +750,14 @@ function bindVoucherRowActions(root) {
       const label = button.dataset.voucherLabel || 'این سند';
       const confirmed = await confirmDialog(
         'حذف سند حسابداری',
-        `آیا از حذف «${esc(label)}» مطمئن هستید؟ ردیف‌های سند نیز حذف می‌شوند و این عملیات قابل بازگشت نیست.`
+        `آیا از حذف «${label}» مطمئن هستید؟ ردیف‌های سند نیز حذف می‌شوند و این عملیات قابل بازگشت نیست.`
       );
       if (!confirmed) return;
       try {
-        await invoke('delete_voucher', { id });
+        await invoke('delete_voucher', {
+          id,
+          expectedUpdatedAt: button.dataset.voucherUpdated || null,
+        });
         toast('سند حسابداری حذف شد.', 'ok');
         await navigate(state.page, { force: true });
       } catch (error) {
@@ -761,6 +765,66 @@ function bindVoucherRowActions(root) {
       }
     });
   });
+}
+
+/* ── Workspace dashboard ────────────────────────────────────── */
+
+function renderWorkspace(dashboard) {
+  const recent = Array.isArray(dashboard.recent) ? dashboard.recent : [];
+  const balanced = amountBigInt(dashboard.totalDebit) === amountBigInt(dashboard.totalCredit);
+  const profit = amountBigInt(dashboard.netProfit);
+  return `
+  <div class="workspace-dashboard">
+    <div class="card workspace-hero">
+      <div>
+        <div class="workspace-eyebrow">فضای کار</div>
+        <h2>${esc(dashboard.companyName || 'نرم‌افزار حسابداری')}</h2>
+        <p>سال مالی ${esc(dashboard.fiscalYear || '—')} · امروز ${faDate(dashboard.today)}</p>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn btn-primary" data-new-voucher>${icon('i-plus')}<span>سند جدید</span></button>
+        <button type="button" class="btn" data-go="accounts">${icon('i-tree')}<span>حساب‌ها</span></button>
+      </div>
+    </div>
+
+    <div class="report-summary">
+      <div class="kpi"><span>حساب‌ها</span><strong>${toFa(dashboard.accountCount)}</strong></div>
+      <div class="kpi"><span>گروه‌های حساب</span><strong>${toFa(dashboard.groupCount)}</strong></div>
+      <div class="kpi"><span>اسناد</span><strong>${toFa(dashboard.voucherCount)}</strong></div>
+      <div class="kpi"><span>ردیف‌های سند</span><strong>${toFa(dashboard.lineCount)}</strong></div>
+      <div class="kpi" data-tone="${balanced ? 'ok' : 'danger'}"><span>تراز دفتر</span><strong>${balanced ? 'متوازن' : 'مغایرت'}</strong></div>
+      <div class="kpi" data-tone="${profit >= 0n ? 'ok' : 'danger'}"><span>سود (زیان) خالص</span><strong>${money(dashboard.netProfit)}</strong></div>
+    </div>
+
+    <div class="card">
+      <div class="section-head">
+        <h2>${icon('i-scale')} خلاصه وضعیت</h2>
+        <button type="button" class="link-btn" data-go="balance">ترازنامه</button>
+      </div>
+      <dl class="info-list">
+        <div><dt>جمع بدهکار دفتر</dt><dd>${money(dashboard.totalDebit)}</dd></div>
+        <div><dt>جمع بستانکار دفتر</dt><dd>${money(dashboard.totalCredit)}</dd></div>
+        <div><dt>جمع دارایی‌ها</dt><dd>${money(dashboard.assetsTotal)}</dd></div>
+        <div><dt>جمع بدهی‌ها</dt><dd>${money(dashboard.liabilitiesTotal)}</dd></div>
+        <div><dt>حقوق مالکانه</dt><dd>${money(dashboard.equityTotal)}</dd></div>
+        <div><dt>درآمدها</dt><dd>${money(dashboard.incomeTotal)}</dd></div>
+        <div><dt>هزینه‌ها</dt><dd>${money(dashboard.expenseTotal)}</dd></div>
+      </dl>
+    </div>
+
+    <div class="card">
+      <div class="section-head">
+        <h2>${icon('i-doc')} آخرین اسناد</h2>
+        <button type="button" class="link-btn" data-go="vouchers">همه اسناد</button>
+      </div>
+      ${recent.length ? renderVoucherTable(recent) : `<div class="empty-state">
+        ${icon('i-doc')}
+        <b>هنوز سندی ثبت نشده است</b>
+        <span>برای شروع، نخستین سند حسابداری را ثبت کنید.</span>
+        <button type="button" class="btn btn-primary" data-new-voucher>${icon('i-plus')}<span>ثبت سند جدید</span></button>
+      </div>`}
+    </div>
+  </div>`;
 }
 
 /* ── Journal ────────────────────────────────────────────────── */
@@ -801,6 +865,7 @@ function journalFilterBar() {
 
 function renderJournal(report) {
   const balanced = amountBigInt(report.totalDebit) === amountBigInt(report.totalCredit);
+  const hasSearch = Boolean(state.filters.journal.search.trim());
   let lastVoucher = null;
   const rows = report.rows.map((row) => {
     const first = row.voucherId !== lastVoucher;
@@ -823,7 +888,9 @@ function renderJournal(report) {
     <div class="kpi"><span>تعداد ردیف</span><strong>${toFa(report.rows.length)}</strong></div>
     <div class="kpi"><span>جمع بدهکار</span><strong>${money(report.totalDebit)}</strong></div>
     <div class="kpi"><span>جمع بستانکار</span><strong>${money(report.totalCredit)}</strong></div>
-    <div class="kpi" data-tone="${balanced ? 'ok' : 'danger'}"><span>تراز دفتر</span><strong>${balanced ? 'متوازن' : 'مغایرت'}</strong></div>
+    ${hasSearch
+      ? '<div class="kpi"><span>جمع ردیف‌های فیلترشده</span><strong>—</strong></div>'
+      : `<div class="kpi" data-tone="${balanced ? 'ok' : 'danger'}"><span>تراز دفتر</span><strong>${balanced ? 'متوازن' : 'مغایرت'}</strong></div>`}
   </div>
   <div class="card">
     ${report.rows.length ? `
@@ -1182,6 +1249,8 @@ function renderIncomeStatement(report) {
     <div class="kpi"><span>جمع درآمدها</span><strong>${money(report.revenueTotal)}</strong></div>
     <div class="kpi"><span>بهای تمام شده</span><strong>${money(report.cogsTotal)}</strong></div>
     <div class="kpi"><span>هزینه‌های عملیاتی</span><strong>${money(report.expenseTotal)}</strong></div>
+    <div class="kpi"><span>سایر درآمدهای عملیاتی</span><strong>${money(report.otherOperatingRevenueTotal)}</strong></div>
+    <div class="kpi"><span>سایر هزینه‌های عملیاتی</span><strong>${money(report.otherOperatingExpenseTotal)}</strong></div>
     <div class="kpi"><span>درآمدهای غیرعملیاتی</span><strong>${money(report.nonOperatingRevenueTotal)}</strong></div>
     <div class="kpi"><span>هزینه‌های غیرعملیاتی</span><strong>${money(report.nonOperatingExpenseTotal)}</strong></div>
     <div class="kpi"><span>سود (زیان) ناخالص</span><strong>${money(report.grossProfit)}</strong></div>
@@ -1196,6 +1265,17 @@ function renderIncomeStatement(report) {
     </div>
   </div>
   <div class="card" style="margin-top:12px">
+    <div class="report-total-line"><span>سود (زیان) ناخالص</span><span class="money">${money(report.grossProfit)}</span></div>
+  </div>
+  <div class="report-layout" style="margin-top:12px">
+    <div class="card">
+      ${incomeSection('سایر درآمدهای عملیاتی', report.otherOperatingRevenues, report.otherOperatingRevenueTotal, 'i-trend')}
+    </div>
+    <div class="card">
+      ${incomeSection('سایر هزینه‌های عملیاتی', report.otherOperatingExpenses, report.otherOperatingExpenseTotal, 'i-bank')}
+    </div>
+  </div>
+  <div class="card" style="margin-top:12px">
     ${incomeSection('هزینه‌های عملیاتی', report.expenses, report.expenseTotal, 'i-bank')}
   </div>
   <div class="report-layout" style="margin-top:12px">
@@ -1207,7 +1287,6 @@ function renderIncomeStatement(report) {
     </div>
   </div>
   <div class="card" style="margin-top:12px">
-    <div class="report-total-line"><span>سود (زیان) ناخالص</span><span class="money">${money(report.grossProfit)}</span></div>
     <div class="report-total-line"><span>سود (زیان) عملیاتی</span><span class="money">${money(report.operatingProfit)}</span></div>
     <div class="report-total-line net"><span>سود (زیان) خالص دوره</span><span class="money">${money(net)}</span></div>
   </div>`;
@@ -1490,7 +1569,7 @@ function bindAccounts(root) {
       const code = button.dataset.accountCode || '';
       const confirmed = await confirmDialog(
         'حذف حساب',
-        `آیا از حذف حساب «${toFa(code)} — ${esc(label)}» مطمئن هستید؟ حسابی که در اسناد استفاده شده باشد قابل حذف نیست.`
+        `آیا از حذف حساب «${toFa(code)} — ${label}» مطمئن هستید؟ حسابی که در اسناد استفاده شده باشد قابل حذف نیست.`
       );
       if (!confirmed) return;
       try {
@@ -1849,12 +1928,14 @@ function bindSettings(root) {
     }
   });
   root.querySelector('[data-restore-database]')?.addEventListener('click', async (event) => {
+    // `currentTarget` is cleared once this handler awaits, so keep the
+    // button reference before opening the confirmation dialog.
+    const button = event.currentTarget;
     const confirmed = await confirmDialog(
       'بازیابی پشتیبان',
       'اطلاعات فعلی با فایل پشتیبان جایگزین می‌شود. پیش از بازیابی یک نسخهٔ ایمنی خودکار ساخته خواهد شد. ادامه می‌دهید؟'
     );
     if (!confirmed) return;
-    const button = event.currentTarget;
     button.disabled = true;
     try {
       const safetyPath = await invoke('restore_database');
@@ -2406,6 +2487,90 @@ function bindMenubar() {
     }
   });
 
+  // Keyboard support for the menu bar: arrows move between menus and items.
+  nav.addEventListener('keydown', (event) => {
+    const item = event.target.closest('.menu-item');
+    const trigger = event.target.closest('.menu-root');
+    if (!item && !trigger) return;
+
+    const triggers = $$('#menubarNav .menu-root');
+    const activeTrigger = trigger || item.closest('.menu-wrap')?.querySelector('.menu-root');
+    const menuIndex = triggers.indexOf(activeTrigger);
+    if (menuIndex < 0) return;
+
+    const focusItems = (index, last = false) => {
+      const wrap = $$('#menubarNav .menu-wrap')[index];
+      const items = wrap ? $$('.menu-item', wrap) : [];
+      const target = last ? items[items.length - 1] : items[0];
+      if (target) target.focus();
+    };
+    const moveMenu = (offset, focusFirst = false) => {
+      const nextIndex = (menuIndex + offset + triggers.length) % triggers.length;
+      if (item) {
+        closeMenubarMenus();
+        openMenubarMenu(nextIndex);
+        if (focusFirst) focusItems(nextIndex);
+        else triggers[nextIndex].focus();
+      } else {
+        triggers[nextIndex].focus();
+        if (openMenuIndex !== null) {
+          openMenubarMenu(nextIndex);
+          focusItems(nextIndex);
+        }
+      }
+    };
+
+    if (item) {
+      const items = $$('.menu-item', item.closest('.menu-wrap'));
+      const itemIndex = items.indexOf(item);
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        items[(itemIndex + 1) % items.length]?.focus();
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        items[(itemIndex - 1 + items.length) % items.length]?.focus();
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        items[0]?.focus();
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        items[items.length - 1]?.focus();
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        moveMenu(1, true);
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        moveMenu(-1, true);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenubarMenus();
+        triggers[menuIndex]?.focus();
+      } else if (event.key === 'Tab') {
+        closeMenubarMenus();
+      }
+      return;
+    }
+
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      moveMenu(1);
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      moveMenu(-1);
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      openMenubarMenu(menuIndex);
+      focusItems(menuIndex);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      openMenubarMenu(menuIndex);
+      focusItems(menuIndex, true);
+    } else if (event.key === 'Escape' && openMenuIndex !== null) {
+      event.preventDefault();
+      closeMenubarMenus();
+    }
+  });
+
   document.addEventListener('pointerdown', (event) => {
     const bar = $('.menubar');
     if (bar && !bar.contains(event.target)) closeMenubarMenus();
@@ -2538,15 +2703,43 @@ async function navigate(page, { force = false } = {}) {
     return;
   }
   if (page === 'workspace') {
-    navSeq += 1;
+    const seq = ++navSeq;
     state.page = page;
     updateNavActive();
     $('.accounting-app')?.classList.add('is-workspace-home');
     renderActions([]);
     const root = $('#page');
-    if (root) root.replaceChildren();
+    if (!root) return;
     document.title = 'نرم‌افزار حسابداری';
-    setStatus('فضای کار آماده است.', 'ok');
+    if (!invoke) {
+      root.replaceChildren();
+      setStatus('فضای کار آماده است.', 'ok');
+      return;
+    }
+    root.innerHTML = `<div class="empty-state">
+      <div class="spinner" aria-hidden="true" style="width:26px;height:26px"></div>
+      <b>در حال بارگذاری داشبورد…</b>
+    </div>`;
+    try {
+      const dashboard = await invoke('get_dashboard');
+      if (seq !== navSeq || state.page !== page) return;
+      state.voucherCount = dashboard.voucherCount || 0;
+      updateVoucherBadge();
+      root.innerHTML = renderWorkspace(dashboard);
+      bindPageCommon(root);
+      bindVoucherRowActions(root);
+      setStatus('فضای کار آماده است.', 'ok');
+    } catch (error) {
+      if (seq !== navSeq || state.page !== page) return;
+      root.innerHTML = `<div class="empty-state">
+        ${icon('i-info')}
+        <b>داشبورد بارگذاری نشد</b>
+        <span>${esc(errorText(error))}</span>
+        <button type="button" class="btn" data-go="workspace">${icon('i-refresh')}<span>تلاش دوباره</span></button>
+      </div>`;
+      bindPageCommon(root);
+      setStatus('داشبورد بارگذاری نشد.', 'error');
+    }
     return;
   }
   const def = PAGES[page];
@@ -2648,6 +2841,12 @@ function bindChrome() {
     state.groupsLoaded = false;
     if (state.page === 'accounts') void navigate('accounts', { force: true });
   });
+  const eventApi = window.__TAURI__?.event;
+  if (typeof eventApi?.listen === 'function') {
+    void eventApi.listen('accounts-changed', () => {
+      window.dispatchEvent(new Event('accounts-changed'));
+    }).catch(() => {});
+  }
   $('#btnExitApp')?.addEventListener('click', () => {
     void exitApplication();
   });

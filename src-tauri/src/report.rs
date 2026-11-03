@@ -515,15 +515,27 @@ pub fn income_statement_print_doc(report: &IncomeStatementReport, meta: &ReportM
         r#"{head}
 {revenues}
 {cogs}
+<div class="rpt-total"><span>سود (زیان) ناخالص</span><span>{gross}</span></div>
+{other_operating_revenues}
+{other_operating_expenses}
 {expenses}
 {non_operating_revenues}
 {non_operating_expenses}
-<div class="rpt-total"><span>سود (زیان) ناخالص</span><span>{gross}</span></div>
 <div class="rpt-total"><span>سود (زیان) عملیاتی</span><span>{operating}</span></div>
 <div class="rpt-total net"><span>سود (زیان) خالص دوره</span><span>{net}</span></div>"#,
         head = head("صورت سود و زیان", meta, &period(&report.from, &report.to)),
         revenues = section("درآمدها", &report.revenues, report.revenue_total),
         cogs = section("بهای تمام شده درآمدها", &report.cogs, report.cogs_total),
+        other_operating_revenues = section(
+            "سایر درآمدهای عملیاتی",
+            &report.other_operating_revenues,
+            report.other_operating_revenue_total
+        ),
+        other_operating_expenses = section(
+            "سایر هزینه‌های عملیاتی",
+            &report.other_operating_expenses,
+            report.other_operating_expense_total
+        ),
         expenses = section("هزینه‌های عملیاتی", &report.expenses, report.expense_total),
         non_operating_revenues = section(
             "درآمدهای غیرعملیاتی",
@@ -735,6 +747,7 @@ mod tests {
             id: 1,
             number: 1,
             date: "1405/01/01<script>alert(1)</script>".to_string(),
+            updated_at: "1405-01-01 00:00:00.000".to_string(),
             voucher_type: "<b>نوع</b>".to_string(),
             description: "<img src=x onerror=alert(1)>".to_string(),
             lines: vec![crate::vouchers::VoucherLine {

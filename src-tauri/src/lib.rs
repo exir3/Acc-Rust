@@ -9,10 +9,10 @@ pub mod excel;
 pub mod report;
 pub mod vouchers;
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::{
-    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use vouchers::VoucherInput;
 
 /// A poisoned lock only means another thread panicked while holding it; the
@@ -23,10 +23,14 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn notify_accounts_changed(app: &AppHandle) {
+    let _ = app.emit("accounts-changed", ());
+}
+
 #[derive(Default)]
 pub struct AppState {
-    /// Latest report waiting to be rendered by the preview window.
-    print_doc: Mutex<Option<report::PrintDoc>>,
+    /// Reports waiting to be rendered, keyed by their preview-window label.
+    print_docs: Mutex<HashMap<String, report::PrintDoc>>,
     /// Voucher number requested by the main window the next time the
     /// voucher form asks for one. `Some(None)` means "start a blank voucher".
     pending_voucher: Mutex<Option<Option<i64>>>,
@@ -85,13 +89,16 @@ fn create_account_group(
     code: String,
     name: String,
     group_type: String,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::AccountGroup, String> {
     require_window(&window, &["main", "account-groups"])?;
-    state
+    let group = state
         .database
-        .create_account_group(&code, &name, &group_type)
+        .create_account_group(&code, &name, &group_type)?;
+    notify_accounts_changed(&app);
+    Ok(group)
 }
 
 #[tauri::command(async)]
@@ -100,23 +107,29 @@ fn update_account_group(
     code: String,
     name: String,
     group_type: String,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::AccountGroup, String> {
     require_window(&window, &["main", "account-groups"])?;
-    state
+    let group = state
         .database
-        .update_account_group(id, &code, &name, &group_type)
+        .update_account_group(id, &code, &name, &group_type)?;
+    notify_accounts_changed(&app);
+    Ok(group)
 }
 
 #[tauri::command(async)]
 fn delete_account_group(
     id: i64,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "account-groups"])?;
-    state.database.delete_account_group(id)
+    state.database.delete_account_group(id)?;
+    notify_accounts_changed(&app);
+    Ok(())
 }
 
 /* ── Chart of accounts ──────────────────────────────────────── */
@@ -135,11 +148,12 @@ fn create_account(
     nature: String,
     parent_code: String,
     is_postable: bool,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    state.database.create_account(
+    let account = state.database.create_account(
         &code,
         &name,
         level,
@@ -147,7 +161,9 @@ fn create_account(
         &nature,
         &parent_code,
         is_postable,
-    )
+    )?;
+    notify_accounts_changed(&app);
+    Ok(account)
 }
 
 #[tauri::command(async)]
@@ -158,41 +174,60 @@ fn update_account(
     nature: String,
     parent_code: String,
     is_postable: bool,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    state
-        .database
-        .update_account(id, &name, &group_code, &nature, &parent_code, is_postable)
+    let account = state.database.update_account(
+        id,
+        &name,
+        &group_code,
+        &nature,
+        &parent_code,
+        is_postable,
+    )?;
+    notify_accounts_changed(&app);
+    Ok(account)
 }
 
 #[tauri::command(async)]
 fn delete_account(
     id: i64,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    state.database.delete_account(id)
+    state.database.delete_account(id)?;
+    notify_accounts_changed(&app);
+    Ok(())
 }
 
 #[tauri::command(async)]
 fn export_account_excel(
     window: WebviewWindow,
     state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<excel::AccountExportResult>, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
     excel::export_accounts(&state.database)
 }
 
 #[tauri::command(async)]
 fn import_account_excel(
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<excel::AccountImportResult>, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    excel::import_accounts(&state.database)
+    let result = excel::import_accounts(&state.database)?;
+    if result
+        .as_ref()
+        .is_some_and(|result| result.created_count > 0)
+    {
+        notify_accounts_changed(&app);
+    }
+    Ok(result)
 }
 
 /* ── Settings ───────────────────────────────────────────────── */
@@ -265,29 +300,39 @@ fn transfer_voucher_lines(
 #[tauri::command(async)]
 fn save_voucher(
     input: VoucherInput,
+    expected_updated_at: Option<String>,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::Voucher, String> {
     require_window(&window, &["main", "voucher"])?;
-    state.database.save_voucher(input)
+    state
+        .database
+        .save_voucher_if_unchanged(input, expected_updated_at.as_deref())
 }
 
 #[tauri::command(async)]
 fn delete_voucher(
     id: i64,
+    expected_updated_at: Option<String>,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher"])?;
-    state.database.delete_voucher(id)
+    state
+        .database
+        .delete_voucher(id, expected_updated_at.as_deref())
 }
 
 #[tauri::command(async)]
 fn export_voucher_excel(
     input: VoucherInput,
     window: WebviewWindow,
+    state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     require_window(&window, &["main", "voucher"])?;
+    state
+        .database
+        .validate_voucher_accounts(&input.lines)?;
     excel::export_voucher(&input)
 }
 
@@ -317,6 +362,7 @@ fn analyze_bulk_voucher_excel(
 #[tauri::command(async)]
 fn commit_bulk_voucher_excel(
     renumber_conflicts: bool,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
@@ -326,6 +372,7 @@ fn commit_bulk_voucher_excel(
         .ok_or_else(|| "ابتدا فایل اکسل را انتخاب و تحلیل کنید.".to_string())?;
     let imported_count = state.database.import_vouchers(import, renumber_conflicts)?;
     *lock(&state.bulk_voucher_import) = None;
+    notify_accounts_changed(&app);
     Ok(imported_count)
 }
 
@@ -511,8 +558,8 @@ fn get_print_doc(
     state: State<'_, AppState>,
 ) -> Result<report::PrintDoc, String> {
     require_preview_window(&window)?;
-    lock(&state.print_doc)
-        .clone()
+    lock(&state.print_docs)
+        .remove(window.label())
         .ok_or_else(|| "گزارشی برای پیش‌نمایش آماده نیست.".to_string())
 }
 
@@ -560,6 +607,7 @@ fn backup_database(
 
 #[tauri::command]
 fn restore_database(
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
@@ -572,6 +620,8 @@ fn restore_database(
         return Ok(None);
     };
     let safety_path = state.database.restore_from(&path)?;
+    notify_accounts_changed(&app);
+    let _ = app.emit("database-restored", ());
     Ok(Some(safety_path.to_string_lossy().to_string()))
 }
 
@@ -601,35 +651,51 @@ fn stamp() -> u128 {
         .unwrap_or(0)
 }
 
+static PREVIEW_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 /// Keeps a single preview window open: stores the new document and rebuilds
 /// the window so it always shows the latest report.
 fn show_preview_window(app: &AppHandle, doc: report::PrintDoc) -> Result<(), String> {
     let state = app.state::<AppState>();
-    *lock(&state.print_doc) = Some(doc);
 
     for (label, window) in app.webview_windows() {
         if label.starts_with("print-preview") {
+            lock(&state.print_docs).remove(&label);
             let _ = window.close();
         }
     }
 
-    let label = format!("print-preview-{}", stamp());
-    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("print.html".into()))
-        .title("پیش‌نمایش چاپ — نرم‌افزار حسابداری")
-        .inner_size(1180.0, 900.0)
-        .min_inner_size(720.0, 520.0)
-        .center()
-        .resizable(true);
+    let label = format!(
+        "print-preview-{}-{}",
+        stamp(),
+        PREVIEW_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    lock(&state.print_docs).insert(label.clone(), doc);
+    let mut builder =
+        WebviewWindowBuilder::new(app, label.clone(), WebviewUrl::App("print.html".into()))
+            .title("پیش‌نمایش چاپ — نرم‌افزار حسابداری")
+            .inner_size(1180.0, 900.0)
+            .min_inner_size(720.0, 520.0)
+            .center()
+            .resizable(true);
 
     if let Some(main) = app.get_webview_window("main") {
-        builder = builder
-            .parent(&main)
-            .map_err(|e| format!("تعیین پنجره اصلی به‌عنوان مالک ناموفق بود: {e}"))?;
+        builder = match builder.parent(&main) {
+            Ok(builder) => builder,
+            Err(error) => {
+                lock(&state.print_docs).remove(&label);
+                return Err(format!("تعیین پنجره اصلی به‌عنوان مالک ناموفق بود: {error}"));
+            }
+        };
     }
 
-    let window = builder
-        .build()
-        .map_err(|e| format!("باز کردن پنجره پیش‌نمایش ناموفق بود: {e}"))?;
+    let window = match builder.build() {
+        Ok(window) => window,
+        Err(error) => {
+            lock(&state.print_docs).remove(&label);
+            return Err(format!("باز کردن پنجره پیش‌نمایش ناموفق بود: {error}"));
+        }
+    };
     let _ = window.maximize();
     let _ = window.set_focus();
     Ok(())

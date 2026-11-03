@@ -4,8 +4,9 @@
    تعریف گروه حساب‌ها — standalone window controller
    ============================================================ */
 
-const invoke = (window.__TAURI__ && window.__TAURI__.core)
-  ? window.__TAURI__.core.invoke
+const tauriCore = window.__TAURI__?.core || null;
+const invoke = typeof tauriCore?.invoke === 'function'
+  ? tauriCore.invoke.bind(tauriCore)
   : null;
 const tauriWindow = (window.__TAURI__ && window.__TAURI__.window)
   ? window.__TAURI__.window
@@ -34,6 +35,7 @@ const state = {
   errorTimer: null,
   toastTimer: null,
   toastHideTimer: null,
+  refreshQueued: false,
   initialized: false,
 };
 
@@ -333,6 +335,13 @@ async function loadGroups() {
     showError(`خطا در بارگذاری گروه‌های حساب: ${errorText(error)}`, 'network');
     render();
   }
+
+  // Changes made while a local save/delete or another reload was running are
+  // picked up once, without interrupting an active edit.
+  if (state.refreshQueued) {
+    state.refreshQueued = false;
+    void loadGroups();
+  }
 }
 
 /* ── Selection / modes ───────────────────────────────────────── */
@@ -502,6 +511,7 @@ async function save() {
     render();
     toast(wasNew ? 'گروه حساب با موفقیت ایجاد شد.' : 'گروه حساب با موفقیت به‌روزرسانی شد.');
     focusSelectedRow();
+    flushQueuedGroupRefresh();
   } catch (error) {
     state.saving = false;
     render();
@@ -556,9 +566,16 @@ function deleteSelected() {
       } finally {
         state.deleting = false;
         render();
+        flushQueuedGroupRefresh();
       }
     },
   });
+}
+
+function flushQueuedGroupRefresh() {
+  if (!state.refreshQueued) return;
+  state.refreshQueued = false;
+  void loadGroups();
 }
 
 /* ── Confirmation dialog ─────────────────────────────────────── */
@@ -800,6 +817,17 @@ function init() {
   bindEvents();
   bindWindowClose();
   state.initialized = true;
+  const eventApi = window.__TAURI__?.event;
+  if (typeof eventApi?.listen === 'function') {
+    void eventApi.listen('accounts-changed', () => {
+      if (!state.initialized) return;
+      if (state.loading || state.saving || state.deleting) {
+        state.refreshQueued = true;
+        return;
+      }
+      void loadGroups();
+    }).catch(() => {});
+  }
   loadGroups();
 }
 
