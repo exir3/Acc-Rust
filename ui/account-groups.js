@@ -747,8 +747,21 @@ function handleKeydown(event) {
 
   if (event.key === 'Escape') {
     event.preventDefault();
-    if (state.mode !== 'view') cancelEdit();
-    else requestClose();
+    if (state.mode === 'view') {
+      requestClose();
+    } else if (isDirty()) {
+      // Escape must not throw away typed changes silently; it follows the
+      // same confirmation path as the cancel and close buttons.
+      openConfirm({
+        title: 'لغو ویرایش',
+        message: 'تغییرات ذخیره‌نشده از بین می‌رود. لغو ویرایش را تأیید می‌کنید؟',
+        confirmLabel: 'لغو تغییرات',
+        tone: 'danger',
+        onConfirm: () => cancelEdit(),
+      });
+    } else {
+      cancelEdit();
+    }
     return;
   }
 

@@ -123,7 +123,7 @@ body {
   background: var(--bg);
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
-  user-select: none;
+  user-select: text;
 }
 
 button, input, select, textarea { font-family: inherit; font-size: inherit; color: inherit; }
@@ -376,6 +376,17 @@ input, textarea, select { user-select: text; }
 .input[readonly] { background: var(--surface-3); color: var(--text-2); }
 .input.code { width: 88px; text-align: center; direction: ltr; font-variant-numeric: tabular-nums; }
 .input.date { width: 108px; text-align: center; direction: ltr; font-variant-numeric: tabular-nums; }
+.input.is-invalid {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px rgba(192, 57, 43, .14);
+}
+.field-error {
+  display: block;
+  margin-top: 3px;
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
 .req { color: var(--danger); }
 
 /* ── Splitter ─────────────────────────────────────────────────────────── */
@@ -842,11 +853,12 @@ input, textarea, select { user-select: text; }
   white-space: nowrap;
   border-bottom: 1px solid #0a1c33;
   border-inline-end: 1px solid rgba(255, 255, 255, .09);
-  cursor: pointer;
+  cursor: default;
   user-select: none;
 }
 .data-table thead th:last-child { border-inline-end: 0; }
-.data-table thead th:hover { background: linear-gradient(180deg, #255086 0%, #1a3d68 100%); }
+.data-table thead th.sortable { cursor: pointer; }
+.data-table thead th.sortable:hover { background: linear-gradient(180deg, #255086 0%, #1a3d68 100%); }
 .data-table thead th.static { cursor: default; }
 .data-table thead th.static:hover { background: linear-gradient(180deg, #1b3f6c 0%, #122c4e 100%); }
 .data-table thead th.sorted {
@@ -1981,9 +1993,14 @@ input, textarea, select { user-select: text; }
   font-family: var(--font);
   font-size: 13px;
 }
-.vf-grid input:focus { background: transparent; }
-.vf-grid input:focus-visible,
-.vf-grid input:focus-within { outline: none; outline-offset: 0; }
+.vf-grid input:focus { background: #fffdf2; }
+.vf-grid input:focus-visible {
+  outline: 2px solid #1d6fd6;
+  outline-offset: -2px;
+  background: #fffdf2;
+  box-shadow: inset 0 0 0 1px #ffffff;
+}
+.vf-grid td:focus-within { box-shadow: inset 0 0 0 2px rgba(29, 111, 214, .35); }
 .vf-code-input { text-align: center; direction: ltr; font-variant-numeric: tabular-nums; }
 .vf-desc-input { text-align: right; direction: rtl; padding: 0 8px; }
 .vf-amount-input {
@@ -2464,4 +2481,13 @@ input, textarea, select { user-select: text; }
   .ap-content { padding: 8px 6px; }
   .ap-toolbar { padding: 6px; }
   .ap-tool { min-width: 64px; padding-inline: 7px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

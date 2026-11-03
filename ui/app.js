@@ -163,6 +163,90 @@ function digitsOnly(value) {
   return toEn(value).replace(/[^0-9]/g, '');
 }
 
+// Mirrors jalali_calendar's 33-year leap rule so the report filters can reject
+// impossible dates (e.g. 31 Mehr or 30 Esfand in a common year) before the
+// whole page is replaced by a backend error.
+function isJalaliLeapYear(year) {
+  const countLeapDays = (value) => Math.trunc(value / 33) * 8
+    + Math.trunc((((value % 33) + 3) / 4));
+  const shifted = year + 1595;
+  return countLeapDays(shifted + 1) - countLeapDays(shifted) === 1;
+}
+
+function isValidJalaliDate(value) {
+  const text = toEn(value).trim().replace(/-/g, '/');
+  const parts = text.split('/');
+  if (parts.length !== 3) return false;
+  if (!/^\d{4}$/.test(parts[0]) || !/^\d{1,2}$/.test(parts[1]) || !/^\d{1,2}$/.test(parts[2])) {
+    return false;
+  }
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+  if (year < 1 || year > 3177 || month < 1 || month > 12) return false;
+  const maxDay = month <= 6 ? 31 : month <= 11 ? 30 : isJalaliLeapYear(year) ? 30 : 29;
+  return day >= 1 && day <= maxDay;
+}
+
+function padJalaliDate(value) {
+  const parts = toEn(value).trim().replace(/-/g, '/').split('/');
+  if (parts.length !== 3) return toEn(value).trim();
+  return `${parts[0].padStart(4, '0')}/${parts[1].padStart(2, '0')}/${parts[2].padStart(2, '0')}`;
+}
+
+function setFieldError(input, message) {
+  input.classList.add('is-invalid');
+  input.setAttribute('aria-invalid', 'true');
+  const field = input.closest('.field');
+  if (!field) return;
+  let error = field.querySelector('.field-error');
+  if (!error) {
+    error = document.createElement('small');
+    error.className = 'field-error';
+    field.append(error);
+  }
+  error.textContent = message;
+}
+
+function clearFieldError(input) {
+  input.classList.remove('is-invalid');
+  input.removeAttribute('aria-invalid');
+  input.closest('.field')?.querySelector('.field-error')?.remove();
+}
+
+function validateDateFields(form) {
+  let firstInvalid = null;
+  form.querySelectorAll('input[data-date]').forEach((input) => {
+    clearFieldError(input);
+    const value = input.value.trim();
+    if (!value) {
+      if (input.name === 'asOf') {
+        setFieldError(input, 'تاریخ ترازنامه را وارد کنید.');
+        firstInvalid = firstInvalid || input;
+      }
+      return;
+    }
+    if (!isValidJalaliDate(value)) {
+      setFieldError(input, 'تاریخ شمسی معتبر نیست؛ نمونه: ۱۴۰۵/۱۲/۲۹.');
+      firstInvalid = firstInvalid || input;
+    }
+  });
+  const from = form.querySelector('[name="from"]');
+  const to = form.querySelector('[name="to"]');
+  if (from?.value.trim() && to?.value.trim()) {
+    if (padJalaliDate(from.value) > padJalaliDate(to.value)) {
+      setFieldError(to, 'تاریخ پایان نباید پیش از تاریخ شروع باشد.');
+      firstInvalid = firstInvalid || to;
+    }
+  }
+  if (firstInvalid) {
+    firstInvalid.focus();
+    setStatus('تاریخ واردشده معتبر نیست.', 'error');
+    return false;
+  }
+  return true;
+}
+
 function amountBigInt(value) {
   const text = String(value ?? 0).replace(/,/g, '').trim();
   if (/^-?\d+$/.test(text)) return BigInt(text);
@@ -1188,6 +1272,7 @@ function openTrialFilterDialog() {
         onClick: (result) => {
           const form = result.body.querySelector('[data-trial-filter-form]');
           if (!form?.reportValidity()) return;
+          if (!validateDateFields(form)) return;
           const data = new FormData(form);
           state.filters.trial.from = String(data.get('from') || '');
           state.filters.trial.to = String(data.get('to') || '');
@@ -1233,6 +1318,7 @@ function openTrialFilterDialog() {
   });
   form?.querySelectorAll('input[data-date]').forEach((input) => {
     input.addEventListener('input', () => {
+      clearFieldError(input);
       const cleaned = toEn(input.value).replace(/[^\d/]/g, '');
       if (input.value !== cleaned) input.value = cleaned;
     });
@@ -1479,7 +1565,18 @@ function incomeSection(title, rows, total, iconName) {
 
 PAGES.balance = {
   actions: () => [
-    { label: 'چاپ گزارش', icon: 'i-print', onClick: () => printWithFeedback('open_balance_sheet_preview', { asOf: state.filters.balance.asOf }) },
+    {
+      label: 'چاپ گزارش',
+      icon: 'i-print',
+      onClick: () => {
+        const asOf = state.filters.balance.asOf;
+        if (!asOf || !isValidJalaliDate(asOf)) {
+          toast('تاریخ ترازنامه معتبر نیست؛ آن را اصلاح کنید.', 'error');
+          return;
+        }
+        printWithFeedback('open_balance_sheet_preview', { asOf });
+      },
+    },
     { label: 'به‌روزرسانی', icon: 'i-refresh', onClick: () => navigate('balance', { force: true }) },
   ],
   load: async () => {
@@ -2190,6 +2287,7 @@ function bindPageCommon(root) {
   // Digits and date input hygiene.
   root.querySelectorAll('input[data-date]').forEach((input) => {
     input.addEventListener('input', () => {
+      clearFieldError(input);
       const cleaned = toEn(input.value).replace(/[^\d/]/g, '');
       if (input.value !== cleaned) input.value = cleaned;
     });
@@ -2200,6 +2298,7 @@ function bindPageCommon(root) {
     const key = form.dataset.filter;
     form.addEventListener('submit', (event) => {
       event.preventDefault();
+      if (!validateDateFields(form)) return;
       const data = new FormData(form);
       if (key === 'accountFilters') {
         state.accountFilters = {

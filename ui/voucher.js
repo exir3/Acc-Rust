@@ -94,11 +94,15 @@ function voucherAlreadyUsesAccount(code) {
   );
 }
 
-function accountAllowedForNewLine(account) {
+function accountAllowedForNewLine(account, row = null) {
   if (!account) return false;
-  const alreadyOnVoucher = voucherAlreadyUsesAccount(account.code);
-  const activeOk = account.isActive !== false || alreadyOnVoucher;
-  const postableOk = account.isPostable || (Number(account.level) > 3 && alreadyOnVoucher);
+  // Only the exact saved row linked to this account may use an inactive or
+  // legacy (level-4) account. A new row, or a row whose account changed, must
+  // pass the normal active/postable checks.
+  const savedRow = !!row && !!row.dataset.lineId
+    && row.dataset.savedAccount === digitsOnly(account.code);
+  const activeOk = account.isActive !== false || savedRow;
+  const postableOk = account.isPostable || (Number(account.level) > 3 && savedRow);
   return activeOk && postableOk;
 }
 
@@ -329,6 +333,13 @@ function updateRowAccount(row, final = false) {
   if (!row) return null;
   const input = row.querySelector('.vf-code-input');
   const code = digitsOnly(input?.value || '');
+  // A saved row keeps its stable id only while it still points at the account
+  // it was saved with. Changing the account turns it into a new posting, so the
+  // "already saved" exceptions in the backend must not apply to it anymore.
+  if (row.dataset.lineId && row.dataset.savedAccount !== code) {
+    delete row.dataset.lineId;
+    delete row.dataset.savedAccount;
+  }
   const account = accountForCode(code);
   const detailCell = row.querySelector('.vf-detail1');
   const detail1 = account ? accountHierarchy(account).find((item) => Number(item.level) === 3) : null;
@@ -339,9 +350,9 @@ function updateRowAccount(row, final = false) {
   }
   if (input) {
     input.title = account
-      ? `${account.code} — ${account.name}${accountAllowedForNewLine(account) ? '' : account.isActive === false ? ' (غیرفعال)' : ' (قابل ثبت نیست)'}`
+      ? `${account.code} — ${account.name}${accountAllowedForNewLine(account, row) ? '' : account.isActive === false ? ' (غیرفعال)' : ' (قابل ثبت نیست)'}`
       : 'برای انتخاب حساب Space یا F4 را بزنید';
-    if (accountAllowedForNewLine(account)) input.classList.remove('is-invalid');
+    if (accountAllowedForNewLine(account, row)) input.classList.remove('is-invalid');
     else if (!code) input.classList.remove('is-invalid');
     else if (final) input.classList.add('is-invalid');
   }
@@ -673,6 +684,13 @@ function fillGrid(lines) {
     rendered.forEach((line, index) => {
       const row = rows[index];
       if (!row) return;
+      // Keep the stable id of the saved line so the backend can tell an edited
+      // saved row from a newly added row using the same (possibly inactive or
+      // legacy) account.
+      if (line.id != null) {
+        row.dataset.lineId = String(line.id);
+        row.dataset.savedAccount = digitsOnly(line.accountCode || '');
+      }
       row.querySelector('.vf-code-input').value = line.accountCode || '';
       row.querySelector('.vf-desc-input').value = line.description || '';
       if (Number(line.debit) > 0) {
@@ -727,7 +745,8 @@ function collectDraft() {
     const debit = Number(parseAmount(row.querySelector('.vf-debit-input')?.value || ''));
     const credit = Number(parseAmount(row.querySelector('.vf-credit-input')?.value || ''));
     if (!accountCode && !description && !debit && !credit) continue;
-    lines.push({ accountCode, description, debit, credit });
+    const lineId = Number(row.dataset.lineId || 0);
+    lines.push({ id: lineId > 0 ? lineId : null, accountCode, description, debit, credit });
   }
 
   const numberValue = Number(digitsOnly($('#vfDocNo')?.value || ''));
@@ -773,11 +792,15 @@ function validateDraft(draft) {
     if (!line.accountCode) return `کد حساب ردیف ${rowNo} را وارد کنید.`;
     const account = accountForCode(line.accountCode);
     if (!account) return `حساب با کد ${vfFa(line.accountCode)} یافت نشد.`;
-    if (!voucherAlreadyUsesAccount(line.accountCode) && account.isActive === false) {
+    const savedLine = line.id == null
+      ? null
+      : (state.voucher?.lines || []).find((saved) => saved.id === line.id) || null;
+    const savedAccountMatches = !!savedLine
+      && digitsOnly(savedLine.accountCode) === line.accountCode;
+    if (!savedAccountMatches && account.isActive === false) {
       return `حساب «${account.name}» غیرفعال است و برای ردیف جدید سند قابل انتخاب نیست.`;
     }
-    const legacyAccountAlreadyOnThisVoucher = Number(account.level) > 3
-      && voucherAlreadyUsesAccount(line.accountCode);
+    const legacyAccountAlreadyOnThisVoucher = Number(account.level) > 3 && savedAccountMatches;
     if (!account.isPostable && !legacyAccountAlreadyOnThisVoucher) {
       return `حساب «${account.name}» (سطح ${levelLabel(account.level)}) قابل ثبت نیست. لطفاً یک حساب معین یا تفصیلی ۱ قابل ثبت انتخاب کنید.`;
     }
@@ -1403,7 +1426,7 @@ function chooseAccountPickerRow() {
   const account = apVisible[apIndex];
   if (!account) return;
 
-  if (!accountAllowedForNewLine(account)) {
+  if (!accountAllowedForNewLine(account, apTarget?.closest?.('tr') || null)) {
     const hasChildren = state.accounts.some((item) =>
       digitsOnly(item.parentCode) === digitsOnly(account.code)
     );
@@ -2251,11 +2274,24 @@ function renderAccountLedger() {
   const foot = $('#accountLedgerFoot');
   foot.replaceChildren();
   const total = document.createElement('tr');
-  ledgerCell(total, `گردش دوره و مانده اختتامیه (${vfFa(filtered.length)} ردیف)`, 'ledger-total-label').colSpan = 3;
-  ledgerCell(total, vfFa(formatAmount(BigInt(String(report.totalDebit || 0)))), 'money bold');
-  ledgerCell(total, vfFa(formatAmount(BigInt(String(report.totalCredit || 0)))), 'money bold');
-  ledgerCell(total, vfFa(formatAmount(BigInt(String(report.closingDebit || 0)))), 'money bold');
-  ledgerCell(total, vfFa(formatAmount(BigInt(String(report.closingCredit || 0)))), 'money bold');
+  const searching = normalizeSearch(state.ledger.query).length > 0;
+  if (searching) {
+    // The closing balance belongs to the whole period, not to the searched
+    // subset, so show sums of the visible rows instead of mixing the two.
+    const filteredDebit = filtered.reduce((sum, item) => sum + BigInt(String(item.debit || 0)), 0n);
+    const filteredCredit = filtered.reduce((sum, item) => sum + BigInt(String(item.credit || 0)), 0n);
+    ledgerCell(total, `جمع ردیف‌های فیلترشده (${vfFa(filtered.length)} از ${vfFa((report.rows || []).length)})`, 'ledger-total-label').colSpan = 3;
+    ledgerCell(total, vfFa(formatAmount(filteredDebit)), 'money bold');
+    ledgerCell(total, vfFa(formatAmount(filteredCredit)), 'money bold');
+    ledgerCell(total, '—', 'money bold');
+    ledgerCell(total, '—', 'money bold');
+  } else {
+    ledgerCell(total, `گردش دوره و مانده اختتامیه (${vfFa(filtered.length)} ردیف)`, 'ledger-total-label').colSpan = 3;
+    ledgerCell(total, vfFa(formatAmount(BigInt(String(report.totalDebit || 0)))), 'money bold');
+    ledgerCell(total, vfFa(formatAmount(BigInt(String(report.totalCredit || 0)))), 'money bold');
+    ledgerCell(total, vfFa(formatAmount(BigInt(String(report.closingDebit || 0)))), 'money bold');
+    ledgerCell(total, vfFa(formatAmount(BigInt(String(report.closingCredit || 0)))), 'money bold');
+  }
   foot.append(total);
 
   const message = $('#accountLedgerMessage');

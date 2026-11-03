@@ -1599,7 +1599,15 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
         ("settings", &["key", "value"]),
         (
             "account_groups",
-            &["id", "code", "name", "type", "created_at", "updated_at"],
+            &[
+                "id",
+                "code",
+                "name",
+                "type",
+                "default_section",
+                "created_at",
+                "updated_at",
+            ],
         ),
         (
             "accounts",
@@ -1613,6 +1621,7 @@ fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
                 "parent_code",
                 "parent_name",
                 "is_postable",
+                "is_active",
                 "postable_before_children",
                 "created_at",
                 "updated_at",
@@ -2297,6 +2306,12 @@ pub(crate) fn today_jalali() -> String {
 }
 
 pub(crate) fn db_error(error: rusqlite::Error) -> String {
+    // SQLite raises this when SUM() of integer columns leaves i64. The
+    // numbers are not corrupted, but the raw English message is unhelpful.
+    if error.to_string().contains("integer overflow") {
+        return "جمع مبالغ از محدوده عددی مجاز بیشتر است؛ بازه گزارش را کوچک‌تر کنید."
+            .to_string();
+    }
     format!("خطا در پایگاه داده: {error}")
 }
 

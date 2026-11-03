@@ -342,7 +342,11 @@
         await refresh(true,true);
         const msg=fa(result.createdCount)+' حساب جدید و '+fa(result.skippedCount)+' حساب موجود';
         say(msg+(result.errors.length?'؛ '+fa(result.errors.length)+' خطا':''),result.errors.length?'error':'ok');
-        if(result.errors.length)window.alert('موارد ناموفق:\n'+result.errors.slice(0,30).join('\n'));
+        if(result.errors.length){
+          const shown=result.errors.slice(0,30);
+          const rest=result.errors.length-shown.length;
+          window.alert('موارد ناموفق'+(rest?' (نمایش '+fa(shown.length)+' مورد از '+fa(result.errors.length)+')':'')+':\n'+shown.join('\n'));
+        }
       }catch(e){say(e.message||String(e),'error');}
       finally{state.busy=false;render();}
     });

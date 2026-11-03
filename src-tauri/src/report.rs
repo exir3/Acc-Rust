@@ -137,6 +137,13 @@ fn money(value: i64) -> String {
     }
 }
 
+/// Adds two report amounts without silently clamping an overflow to a made-up
+/// number; a printed report must never show a value the data does not have.
+fn checked_total(left: i64, right: i64, label: &str) -> Result<i64, String> {
+    left.checked_add(right)
+        .ok_or_else(|| format!("{label} از محدوده عددی مجاز بیشتر است."))
+}
+
 fn date(value: &str) -> String {
     if value.trim().is_empty() {
         "—".to_string()
@@ -209,7 +216,7 @@ fn page(title: &str, body: &str, meta: &ReportMeta, landscape: bool, file_name: 
         html: html_doc,
         title: title.to_string(),
         subtitle: format!(
-            "{} — سال مالی {}",
+            "{} — سال مالی تنظیم‌شده {}",
             if meta.company.trim().is_empty() {
                 "واحد اقتصادی"
             } else {
@@ -251,7 +258,7 @@ fn head(title: &str, meta: &ReportMeta, period_text: &str) -> String {
   <div class="rpt-title">{title}</div>
   <div class="rpt-meta">
     {period}
-    <span>سال مالی: <b>{year}</b></span>
+    <span>سال مالی (تنظیمات): <b>{year}</b></span>
     {today_cell}
   </div>
 </div>"#,
@@ -439,7 +446,7 @@ pub fn trial_balance_print_doc(
     multi_level: bool,
     show_account_code: bool,
     show_account_name: bool,
-) -> PrintDoc {
+) -> Result<PrintDoc, String> {
     let is_four_column = balance_type == "چهار ستونی";
     let show_opening = balance_type == "شش ستونی" || balance_type == "هشت ستونی";
     let show_accumulated = balance_type == "هشت ستونی";
@@ -506,12 +513,8 @@ pub fn trial_balance_print_doc(
         // columns, exactly like the WebApp report.
         let (turnover_debit, turnover_credit) = if is_four_column {
             (
-                row.opening_debit
-                    .checked_add(row.period_debit)
-                    .unwrap_or(i64::MAX),
-                row.opening_credit
-                    .checked_add(row.period_credit)
-                    .unwrap_or(i64::MAX),
+                checked_total(row.opening_debit, row.period_debit, "جمع گردش بدهکار")?,
+                checked_total(row.opening_credit, row.period_credit, "جمع گردش بستانکار")?,
             )
         } else {
             (row.period_debit, row.period_credit)
@@ -528,16 +531,16 @@ pub fn trial_balance_print_doc(
         let accumulated = if show_accumulated {
             format!(
                 r#"<td class="num">{}</td><td class="num">{}</td>"#,
-                money(
-                    row.opening_debit
-                        .checked_add(row.period_debit)
-                        .unwrap_or(i64::MAX)
-                ),
-                money(
-                    row.opening_credit
-                        .checked_add(row.period_credit)
-                        .unwrap_or(i64::MAX)
-                )
+                money(checked_total(
+                    row.opening_debit,
+                    row.period_debit,
+                    "جمع مانده بدهکار"
+                )?),
+                money(checked_total(
+                    row.opening_credit,
+                    row.period_credit,
+                    "جمع مانده بستانکار"
+                )?)
             )
         } else {
             String::new()
@@ -595,14 +598,12 @@ pub fn trial_balance_print_doc(
     };
     let (total_turnover_debit, total_turnover_credit) = if is_four_column {
         (
-            report
-                .opening_debit
-                .checked_add(report.period_debit)
-                .unwrap_or(i64::MAX),
-            report
-                .opening_credit
-                .checked_add(report.period_credit)
-                .unwrap_or(i64::MAX),
+            checked_total(report.opening_debit, report.period_debit, "جمع گردش بدهکار")?,
+            checked_total(
+                report.opening_credit,
+                report.period_credit,
+                "جمع گردش بستانکار",
+            )?,
         )
     } else {
         (report.period_debit, report.period_credit)
@@ -611,18 +612,16 @@ pub fn trial_balance_print_doc(
     let accumulated_total = if show_accumulated {
         format!(
             r#"<td class="num">{}</td><td class="num">{}</td>"#,
-            money(
-                report
-                    .opening_debit
-                    .checked_add(report.period_debit)
-                    .unwrap_or(i64::MAX)
-            ),
-            money(
-                report
-                    .opening_credit
-                    .checked_add(report.period_credit)
-                    .unwrap_or(i64::MAX)
-            )
+            money(checked_total(
+                report.opening_debit,
+                report.period_debit,
+                "جمع مانده بدهکار",
+            )?),
+            money(checked_total(
+                report.opening_credit,
+                report.period_credit,
+                "جمع مانده بستانکار",
+            )?)
         )
     } else {
         String::new()
@@ -678,7 +677,7 @@ pub fn trial_balance_print_doc(
         cc = money(report.closing_credit),
     );
 
-    page("تراز آزمایشی", &body, meta, true, "تراز-آزمایشی.html")
+    Ok(page("تراز آزمایشی", &body, meta, true, "تراز-آزمایشی.html"))
 }
 
 /* ── Income statement ───────────────────────────────────────── */
@@ -1010,14 +1009,16 @@ mod tests {
             show_print_date_time: false,
         };
 
-        let minimal = trial_balance_print_doc(&report, &meta, "شش ستونی", false, false, false);
+        let minimal = trial_balance_print_doc(&report, &meta, "شش ستونی", false, false, false)
+            .expect("minimal trial balance print doc");
         assert!(!minimal.html.contains("کد حساب"));
         assert!(!minimal.html.contains("عنوان حساب"));
         assert!(!minimal.html.contains("تاریخ تهیه"));
         assert!(minimal.html.contains("گروه"));
         assert!(minimal.html.contains("جمع کل"));
 
-        let full = trial_balance_print_doc(&report, &meta, "شش ستونی", false, true, true);
+        let full = trial_balance_print_doc(&report, &meta, "شش ستونی", false, true, true)
+            .expect("full trial balance print doc");
         assert!(full.html.contains("کد حساب"));
         assert!(full.html.contains("عنوان حساب"));
     }

@@ -26,12 +26,49 @@
   };
   const pad2 = (value) => String(value).padStart(2, '0');
 
+  // The 33-year leap rule used by the Rust calendar keeps the quick ranges and
+  // date validation in step with the backend (Esfand has 30 days only in a
+  // leap year).
+  const isJalaliLeapYear = (year) => {
+    const countLeapDays = (value) => Math.trunc(value / 33) * 8
+      + Math.trunc((((value % 33) + 3) / 4));
+    const shifted = Number(year) + 1595;
+    return countLeapDays(shifted + 1) - countLeapDays(shifted) === 1;
+  };
+
+  const jalaliMonthLength = (year, month) => {
+    if (month >= 1 && month <= 6) return 31;
+    if (month >= 7 && month <= 11) return 30;
+    return isJalaliLeapYear(year) ? 30 : 29;
+  };
+
+  const isValidJalaliDate = (value) => {
+    const text = toEn(value).trim().replace(/-/g, '/');
+    const parts = text.split('/');
+    if (parts.length !== 3) return false;
+    if (!/^\d{4}$/.test(parts[0]) || !/^\d{1,2}$/.test(parts[1]) || !/^\d{1,2}$/.test(parts[2])) {
+      return false;
+    }
+    const year = Number(parts[0]);
+    const month = Number(parts[1]);
+    const day = Number(parts[2]);
+    if (year < 1 || year > 3177 || month < 1 || month > 12) return false;
+    return day >= 1 && day <= jalaliMonthLength(year, month);
+  };
+
+  const shiftMonth = (year, month, delta) => {
+    const index = year * 12 + (month - 1) + delta;
+    return { year: Math.floor(index / 12), month: (index % 12) + 1 };
+  };
+
+
   if (document.body.dataset.bulkVoucherDelete !== 'true') return;
 
   const state = {
     step: 'choose',
     busy: false,
     preview: null,
+    previewInput: null,
     year: '',
     today: '',
     presets: [],
@@ -81,6 +118,12 @@
     toolbar.querySelectorAll('button').forEach((button) => {
       button.disabled = value;
     });
+    // Range inputs and presets stay editable otherwise, so a slow preview
+    // could come back while the user is already looking at a different range.
+    scroll.querySelectorAll('input, .bvd2-preset').forEach((element) => {
+      element.disabled = value;
+    });
+    root.setAttribute('aria-busy', value ? 'true' : 'false');
   };
 
   const setActions = (actions, { showClose = true } = {}) => {
@@ -247,7 +290,8 @@
       const pattern = /^\d{4}\/\d{1,2}\/\d{1,2}$/;
       const from = toEn(state.form.fromDate).trim();
       const to = toEn(state.form.toDate).trim();
-      if (!pattern.test(from) || !pattern.test(to)) {
+      if (!pattern.test(from) || !pattern.test(to)
+        || !isValidJalaliDate(from) || !isValidJalaliDate(to)) {
         return 'تاریخ وارد شده معتبر نیست؛ نمونه: ۱۴۰۵/۰۱/۰۱.';
       }
       const normalized = (value) => {
@@ -301,7 +345,12 @@
     );
 
     try {
-      state.preview = await invoke('preview_bulk_voucher_delete', { input: currentInput() });
+      const input = currentInput();
+      state.preview = await invoke('preview_bulk_voucher_delete', { input });
+      // Keep the exact input the preview was built from. The form is not
+      // edited on the preview step, but applying a snapshot means a later
+      // change can never be sent with an older plan token.
+      state.previewInput = input;
       state.step = 'preview';
       setBusy(false);
       renderPreview();
@@ -316,7 +365,8 @@
   };
 
   const runApply = async () => {
-    if (!state.preview || state.busy || Number(state.preview.deletableCount) === 0) return;
+    if (!state.preview || !state.previewInput || state.busy
+      || Number(state.preview.deletableCount) === 0) return;
     const confirmBox = scroll.querySelector('#bvd2Confirm');
     if (!confirmBox?.checked) return;
 
@@ -333,11 +383,12 @@
 
     try {
       const result = await invoke('apply_bulk_voucher_delete', {
-        input: currentInput(),
+        input: state.previewInput,
         planToken: state.preview.planToken,
         withBackup: state.form.withBackup,
       });
       state.preview = null;
+      state.previewInput = null;
       state.step = 'done';
       setBusy(false);
       renderDone(result);
@@ -547,12 +598,19 @@
   };
 
   const buildPresets = () => {
+    if (!state.year) {
+      state.presets = [];
+      return;
+    }
+    const year = Number(state.year);
     const month = Number(toEn(state.today).split('/')[1] || '1');
-    state.presets = state.year ? [
+    const threeMonthsAgo = shiftMonth(year, month, -2);
+    const lastDayOfYear = jalaliMonthLength(year, 12);
+    state.presets = [
       {
         id: 'last3',
         label: '۳ ماهه اخیر',
-        from: `${state.year}/${pad2(Math.max(1, month - 2))}/01`,
+        from: `${threeMonthsAgo.year}/${pad2(threeMonthsAgo.month)}/01`,
         to: state.today,
       },
       {
@@ -565,9 +623,9 @@
         id: 'full',
         label: 'کل سال',
         from: `${state.year}/01/01`,
-        to: `${state.year}/12/29`,
+        to: `${state.year}/12/${pad2(lastDayOfYear)}`,
       },
-    ] : [];
+    ];
   };
 
   const init = async () => {

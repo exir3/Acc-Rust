@@ -27,6 +27,12 @@ fn notify_accounts_changed(app: &AppHandle) {
     let _ = app.emit("accounts-changed", ());
 }
 
+/// Tells every open window that vouchers changed, so a list or report in
+/// another window refreshes instead of showing stale data.
+fn notify_vouchers_changed(app: &AppHandle) {
+    let _ = app.emit("vouchers-changed", ());
+}
+
 #[derive(Default)]
 pub struct AppState {
     /// Reports waiting to be rendered, keyed by their preview-window label.
@@ -83,7 +89,20 @@ fn require_main_or_preview_window(window: &WebviewWindow) -> Result<(), String> 
 /* ── Account groups ─────────────────────────────────────────── */
 
 #[tauri::command(async)]
-fn list_account_groups(state: State<'_, AppState>) -> Result<db::AccountGroupList, String> {
+fn list_account_groups(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::AccountGroupList, String> {
+    require_window(
+        &window,
+        &[
+            "main",
+            "voucher-list",
+            "trial-balance",
+            "account-groups",
+            "account-definition",
+        ],
+    )?;
     state.database.list_account_groups()
 }
 
@@ -147,7 +166,21 @@ fn delete_account_group(
 /* ── Chart of accounts ──────────────────────────────────────── */
 
 #[tauri::command(async)]
-fn list_accounts(state: State<'_, AppState>) -> Result<db::AccountList, String> {
+fn list_accounts(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::AccountList, String> {
+    require_window(
+        &window,
+        &[
+            "main",
+            "voucher-list",
+            "trial-balance",
+            "voucher",
+            "account-groups",
+            "account-definition",
+        ],
+    )?;
     state.database.list_accounts()
 }
 
@@ -284,7 +317,20 @@ fn import_account_excel(
 /* ── Settings ───────────────────────────────────────────────── */
 
 #[tauri::command(async)]
-fn get_settings(state: State<'_, AppState>) -> Result<db::Settings, String> {
+fn get_settings(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::Settings, String> {
+    require_window(
+        &window,
+        &[
+            "main",
+            "voucher-list",
+            "trial-balance",
+            "voucher",
+            "bulk-voucher-delete",
+        ],
+    )?;
     state.database.get_settings()
 }
 
@@ -302,12 +348,17 @@ fn save_settings(
 /* ── Vouchers ───────────────────────────────────────────────── */
 
 #[tauri::command(async)]
-fn validate_voucher_date(date: String) -> Result<String, String> {
+fn validate_voucher_date(date: String, window: WebviewWindow) -> Result<String, String> {
+    require_window(&window, &["main", "voucher"])?;
     vouchers::validate_voucher_date(&date)
 }
 
 #[tauri::command(async)]
-fn next_voucher_number(state: State<'_, AppState>) -> Result<i64, String> {
+fn next_voucher_number(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    require_window(&window, &["main", "voucher"])?;
     state.database.next_voucher_number()
 }
 
@@ -315,13 +366,19 @@ fn next_voucher_number(state: State<'_, AppState>) -> Result<i64, String> {
 fn adjacent_voucher_number(
     number: i64,
     direction: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<i64>, String> {
+    require_window(&window, &["main", "voucher"])?;
     state.database.adjacent_voucher_number(number, &direction)
 }
 
 #[tauri::command(async)]
-fn get_voucher_count(state: State<'_, AppState>) -> Result<i64, String> {
+fn get_voucher_count(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<i64, String> {
+    require_window(&window, &["main", "voucher-list", "trial-balance"])?;
     state.database.voucher_count()
 }
 
@@ -332,8 +389,10 @@ fn list_vouchers(
     search: String,
     offset: Option<i64>,
     limit: Option<i64>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::VoucherList, String> {
+    require_window(&window, &["main", "voucher", "voucher-list", "trial-balance"])?;
     state.database.list_vouchers_page(
         &from,
         &to,
@@ -346,45 +405,56 @@ fn list_vouchers(
 #[tauri::command(async)]
 fn get_voucher(
     number: i64,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<vouchers::Voucher>, String> {
+    require_window(&window, &["main", "voucher", "voucher-list"])?;
     state.database.get_voucher(number)
 }
 
 #[tauri::command(async)]
 fn transfer_voucher_lines(
     input: vouchers::VoucherTransferInput,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::VoucherTransferResult, String> {
     require_window(&window, &["main", "voucher"])?;
-    state.database.transfer_voucher_lines(input)
+    let result = state.database.transfer_voucher_lines(input)?;
+    notify_vouchers_changed(&app);
+    Ok(result)
 }
 
 #[tauri::command(async)]
 fn save_voucher(
     input: VoucherInput,
     expected_updated_at: Option<String>,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::Voucher, String> {
     require_window(&window, &["main", "voucher"])?;
-    state
+    let saved = state
         .database
-        .save_voucher_if_unchanged(input, expected_updated_at.as_deref())
+        .save_voucher_if_unchanged(input, expected_updated_at.as_deref())?;
+    notify_vouchers_changed(&app);
+    Ok(saved)
 }
 
 #[tauri::command(async)]
 fn delete_voucher(
     id: i64,
     expected_updated_at: Option<String>,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher", "voucher-list"])?;
     state
         .database
-        .delete_voucher(id, expected_updated_at.as_deref())
+        .delete_voucher(id, expected_updated_at.as_deref())?;
+    notify_vouchers_changed(&app);
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -438,6 +508,7 @@ fn commit_bulk_voucher_excel(
     let imported_count = state.database.import_vouchers(import, renumber_conflicts)?;
     *lock(&state.bulk_voucher_import) = None;
     notify_accounts_changed(&app);
+    notify_vouchers_changed(&app);
     Ok(imported_count)
 }
 
@@ -458,6 +529,7 @@ fn preview_voucher_reorganization(
 fn apply_voucher_reorganization(
     operation: String,
     plan_token: String,
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::VoucherReorganizationResult, String> {
@@ -470,6 +542,7 @@ fn apply_voucher_reorganization(
         .database
         .apply_voucher_reorganization(&operation, &plan_token)?;
     *lock(&state.reorganization_preview) = None;
+    notify_vouchers_changed(&app);
     Ok(result)
 }
 
@@ -518,8 +591,10 @@ fn get_journal(
     search: String,
     offset: Option<i64>,
     limit: Option<i64>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::JournalReport, String> {
+    require_window(&window, &["main", "voucher-list", "trial-balance"])?;
     state.database.get_journal_page(
         &from,
         &to,
@@ -534,8 +609,10 @@ fn get_ledger(
     account_code: String,
     from: String,
     to: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::LedgerReport, String> {
+    require_window(&window, &["main", "voucher", "voucher-list", "trial-balance"])?;
     state.database.get_ledger(&account_code, &from, &to)
 }
 
@@ -547,8 +624,10 @@ fn get_trial_balance(
     account_to: Option<String>,
     show_zero: Option<bool>,
     multi_level: Option<bool>,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::TrialBalanceReport, String> {
+    require_window(&window, &["main", "voucher-list", "trial-balance"])?;
     state.database.get_trial_balance_filtered(
         &from,
         &to,
@@ -563,16 +642,20 @@ fn get_trial_balance(
 fn get_income_statement(
     from: String,
     to: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::IncomeStatementReport, String> {
+    require_window(&window, &["main", "voucher-list", "trial-balance"])?;
     state.database.get_income_statement(&from, &to)
 }
 
 #[tauri::command(async)]
 fn get_balance_sheet(
     as_of: String,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::BalanceSheetReport, String> {
+    require_window(&window, &["main", "voucher-list", "trial-balance"])?;
     state.database.get_balance_sheet(&as_of)
 }
 
@@ -644,7 +727,7 @@ fn open_trial_balance_preview(
             multi_level.unwrap_or(true),
             show_account_code.unwrap_or(true),
             show_account_name.unwrap_or(true),
-        ),
+        )?,
     )
 }
 

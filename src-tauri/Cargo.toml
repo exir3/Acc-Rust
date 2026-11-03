@@ -23,6 +23,7 @@ jalali-calendar = "0.1.2"
 rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 calamine = "0.37"
 rust_xlsxwriter = "0.102"
+zip = { version = "9.2", default-features = false }
 
 [profile.release]
 codegen-units = 1

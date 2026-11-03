@@ -22,7 +22,10 @@ const MAX_VOUCHER_IMPORT_ROWS: usize = 20_000;
 const MAX_ACCOUNT_IMPORT_ROWS: usize = 10_000;
 const MAX_SHEET_COLUMNS: usize = 50;
 const MAX_EXCEL_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_XLSX_ENTRY_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_XLSX_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_AMOUNT: i64 = 999_999_999_999_999;
+const MAX_IMPORT_ERRORS: usize = 200;
 
 /// Rejects an oversized workbook before calamine allocates its used range.
 fn ensure_excel_file_size(path: &Path) -> Result<(), String> {
@@ -36,6 +39,49 @@ fn ensure_excel_file_size(path: &Path) -> Result<(), String> {
             "حجم فایل اکسل بیش از حد مجاز است (حداکثر {} مگابایت).",
             db::to_fa_digits(MAX_EXCEL_FILE_BYTES / (1024 * 1024))
         ));
+    }
+    ensure_xlsx_archive_budget(path)
+}
+
+/// Checks the declared size of every entry in the ZIP container before the
+/// workbook is parsed. A small compressed file can otherwise expand into a
+/// huge worksheet that is only rejected after it is already in memory.
+fn ensure_xlsx_archive_budget(path: &Path) -> Result<(), String> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("باز کردن فایل اکسل ناموفق بود: {error}"))?;
+    let mut signature = [0u8; 4];
+    let read = file.read(&mut signature).unwrap_or(0);
+    drop(file);
+    // Legacy .xls files are not ZIP containers; calamine handles them itself.
+    if read < 4 || &signature[..2] != b"PK" {
+        return Ok(());
+    }
+
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("باز کردن فایل اکسل ناموفق بود: {error}"))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("ساختار فایل اکسل معتبر نیست: {error}"))?;
+    let mut total = 0u64;
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index_raw(index)
+            .map_err(|error| format!("خواندن فهرست فایل اکسل ناموفق بود: {error}"))?;
+        let size = entry.size();
+        if size > MAX_XLSX_ENTRY_BYTES {
+            return Err(format!(
+                "یکی از بخش‌های فایل اکسل بیش از {} مگابایت باز می‌شود؛ فایل معتبر نیست.",
+                db::to_fa_digits(MAX_XLSX_ENTRY_BYTES / (1024 * 1024))
+            ));
+        }
+        total = total.saturating_add(size);
+        if total > MAX_XLSX_UNCOMPRESSED_BYTES {
+            return Err(format!(
+                "حجم بازشده فایل اکسل بیش از حد مجاز است (حداکثر {} مگابایت).",
+                db::to_fa_digits(MAX_XLSX_UNCOMPRESSED_BYTES / (1024 * 1024))
+            ));
+        }
     }
     Ok(())
 }
@@ -303,6 +349,9 @@ pub fn export_voucher(input: &VoucherInput, accounts: &[db::Account]) -> Result<
             return Err(format!(
                 "در ردیف {row_no} نمی‌توان هم‌زمان بدهکار و بستانکار داشت."
             ));
+        }
+        if line.debit == 0 && line.credit == 0 {
+            return Err(format!("ردیف {row_no} مبلغ بدهکار یا بستانکار ندارد."));
         }
         if line.description.chars().count() > MAX_LINE_DESCRIPTION {
             return Err(format!(
@@ -620,8 +669,8 @@ fn find_bulk_columns(range: &calamine::Range<Data>) -> Option<(usize, BulkImport
     None
 }
 
-fn imported_group_code(general_code: &str) -> &'static str {
-    match general_code.chars().next() {
+fn imported_group_code(general_code: &str) -> Result<&'static str, String> {
+    let group = match general_code.chars().next() {
         Some('1') if general_code.starts_with("15") || general_code.starts_with("16") => "2",
         Some('1') if general_code.starts_with("18") => "3",
         Some('1') => "1",
@@ -633,8 +682,14 @@ fn imported_group_code(general_code: &str) -> &'static str {
         Some('5') if general_code.starts_with("535") => "11",
         Some('5') if general_code.starts_with("50") => "9",
         Some('5') => "8",
-        _ => "11",
-    }
+        _ => {
+            return Err(format!(
+                "پیشوند حساب کل «{}» با هیچ گروه حسابداری شناخته‌شده‌ای تطبیق ندارد؛ ابتدا حساب و گروه آن را در برنامه تعریف کنید.",
+                db::to_fa_digits(general_code)
+            ));
+        }
+    };
+    Ok(group)
 }
 
 fn imported_nature(group_code: &str) -> &'static str {
@@ -656,13 +711,15 @@ fn add_imported_account(
     if code.is_empty() {
         return Err("کد حساب در فایل اکسل خالی است.".to_string());
     }
+    if name.is_empty() {
+        return Err(format!(
+            "عنوان حساب با کد «{}» در فایل اکسل خالی است.",
+            db::to_fa_digits(&code)
+        ));
+    }
     let account = ImportedAccount {
         code: code.clone(),
-        name: if name.is_empty() {
-            format!("حساب {code}")
-        } else {
-            name
-        },
+        name,
         parent_code,
         group_code: group_code.to_string(),
         level,
@@ -793,6 +850,12 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
             )?
         };
         let detail1_name = cell_text(&read(row, columns.detail1_name));
+        if subsidiary_code.is_empty() && !subsidiary_name.trim().is_empty() {
+            return Err(format!(
+                "عنوان معین در ردیف {} اکسل وارد شده اما کد آن خالی است.",
+                db::to_fa_digits(excel_row)
+            ));
+        }
         if detail1_code.is_empty() && !detail1_name.trim().is_empty() {
             return Err(format!(
                 "عنوان تفصیلی ۱ در ردیف {} اکسل وارد شده اما کد آن خالی است.",
@@ -805,7 +868,7 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
                 db::to_fa_digits(excel_row)
             ));
         }
-        let group_code = imported_group_code(&general_code);
+        let group_code = imported_group_code(&general_code)?;
         add_imported_account(
             &mut accounts,
             general_code.clone(),
@@ -890,6 +953,7 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
             ));
         }
         voucher.lines.push(VoucherLineInput {
+            id: None,
             account_code,
             description,
             debit,
@@ -1043,6 +1107,7 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
         }
 
         lines.push(VoucherLineInput {
+            id: None,
             account_code,
             description,
             debit,
@@ -1337,6 +1402,7 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
     let mut created_count = 0usize;
     let mut skipped_count = 0usize;
     let mut errors = Vec::new();
+    let mut error_count = 0usize;
 
     for (offset, row) in range.rows().skip(header_row + 1).enumerate() {
         let excel_row = header_row + offset + 2;
@@ -1389,6 +1455,21 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                     .any(|cell| !cell.1.trim().is_empty())
                 {
                     return Err("سطوح حساب باید به‌ترتیب و بدون فاصله تکمیل شوند.".to_string());
+                }
+            }
+            for (level_index, (_, raw_name, _)) in cells.iter().enumerate() {
+                let level = level_index + 1;
+                let has_code = !cell_text(&account_code_cells[level_index]).is_empty();
+                let has_name = !raw_name.trim().is_empty();
+                if has_code && !has_name {
+                    return Err(format!(
+                        "کد سطح {level} وارد شده اما عنوان آن خالی است."
+                    ));
+                }
+                if has_name && !has_code {
+                    return Err(format!(
+                        "عنوان سطح {level} وارد شده اما کد آن خالی است."
+                    ));
                 }
             }
             let mut parent_code = String::new();
@@ -1456,13 +1537,19 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
             Ok((row_created, row_skipped))
         })();
         if let Err(error) = row_result {
-            errors.push(format!("ردیف {}: {}", db::to_fa_digits(excel_row), error));
-            if errors.len() >= 200 {
-                errors
-                    .push("ادامه خطاها برای جلوگیری از مصرف بیش از حد حافظه ثبت نشد.".to_string());
-                break;
+            error_count += 1;
+            if errors.len() < MAX_IMPORT_ERRORS {
+                errors.push(format!("ردیف {}: {}", db::to_fa_digits(excel_row), error));
             }
         }
+    }
+
+    if error_count > errors.len() {
+        errors.push(format!(
+            "{} خطای دیگر ثبت نشد؛ مجموع خطاها {} مورد است.",
+            db::to_fa_digits(error_count - errors.len()),
+            db::to_fa_digits(error_count)
+        ));
     }
 
     Ok(Some(AccountImportResult {

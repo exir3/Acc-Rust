@@ -44,6 +44,15 @@ pub const MAX_PAGE_SIZE: i64 = 2000;
 /// and it leaves room for sums of `MAX_LINES` lines inside an `i64`.
 pub const MAX_AMOUNT: i64 = 999_999_999_999_999;
 
+/// SQL expression for the new `updated_at` of a voucher. It is strictly
+/// greater than the current value even when two writes happen in the same
+/// millisecond, so an optimistic-lock token can never repeat.
+const TOUCHED_AT: &str = "CASE
+        WHEN strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime') <= updated_at
+        THEN strftime('%Y-%m-%d %H:%M:%f', updated_at, '+0.001 seconds')
+        ELSE strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
+    END";
+
 /// Voucher types that close the books. They are real vouchers (the trial
 /// balance and ledgers show them) but must not hide the period's income and
 /// expenses from the income statement.
@@ -55,6 +64,10 @@ const CLOSING_FINAL: &str = VOUCHER_TYPES[2];
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoucherLineInput {
+    /// Stable row id of a saved line, when the client is editing that line.
+    /// A new row has no id and must pass the normal active/postable checks.
+    #[serde(default)]
+    pub id: Option<i64>,
     #[serde(default)]
     pub account_code: String,
     #[serde(default)]
@@ -1261,9 +1274,11 @@ impl Database {
                     removed_voucher_count += 1;
                 }
                 tx.execute(
-                    "UPDATE vouchers
-                        SET description = ?1, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
-                      WHERE id = ?2",
+                    &format!(
+                        "UPDATE vouchers
+                            SET description = ?1, updated_at = {TOUCHED_AT}
+                          WHERE id = ?2"
+                    ),
                     params![group.description, group.keep_id],
                 )
                 .map_err(db::db_error)?;
@@ -1284,7 +1299,11 @@ impl Database {
             }
             for (voucher_id, change) in &plan.number_changes {
                 tx.execute(
-                    "UPDATE vouchers SET number = ?1, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime') WHERE id = ?2",
+                    &format!(
+                        "UPDATE vouchers
+                            SET number = ?1, updated_at = {TOUCHED_AT}
+                          WHERE id = ?2"
+                    ),
                     params![change.new_number, voucher_id],
                 )
                 .map_err(db::db_error)?;
@@ -1518,6 +1537,7 @@ impl Database {
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
                         VoucherLineInput {
+                            id: None,
                             account_code: row.get(2)?,
                             description: row.get(3)?,
                             debit: row.get(4)?,
@@ -1679,12 +1699,12 @@ impl Database {
                     }
                 }
                 tx.execute(
-                    "UPDATE vouchers SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime') WHERE id = ?1",
+                    &format!("UPDATE vouchers SET updated_at = {TOUCHED_AT} WHERE id = ?1"),
                     params![source_id],
                 ).map_err(db::db_error)?;
             }
             tx.execute(
-                    "UPDATE vouchers SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime') WHERE id = ?1",
+                &format!("UPDATE vouchers SET updated_at = {TOUCHED_AT} WHERE id = ?1"),
                 params![target_id],
             ).map_err(db::db_error)?;
 
@@ -1758,6 +1778,7 @@ impl Database {
                 return Err("در یک ردیف فقط یکی از مبالغ بدهکار یا بستانکار ثبت می‌شود.".to_string());
             }
             lines.push(VoucherLineInput {
+                id: line.id,
                 account_code,
                 description: line_description,
                 debit: line.debit,
@@ -1799,50 +1820,47 @@ impl Database {
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db::db_error)?;
 
-            // A legacy level-4 account may remain on an already-saved voucher,
-            // but it must never be selectable on a new voucher or copied into
-            // another voucher. This grandfathering preserves historical edits
-            // without keeping the retired level available for new postings.
-            let grandfathered_legacy_codes: HashSet<String> = if id > 0 {
-                let mut statement = tx.prepare(
-                    "SELECT DISTINCT a.code
-                       FROM voucher_lines line
-                       JOIN accounts a ON a.code = line.account_code
-                      WHERE line.voucher_id = ?1 AND a.level > ?2"
-                ).map_err(db::db_error)?;
-                let codes = statement
-                    .query_map(params![id, db::MAX_ACCOUNT_LEVEL], |row| row.get(0))
-                    .map_err(db::db_error)?
-                    .collect::<rusqlite::Result<HashSet<_>>>()
-                    .map_err(db::db_error)?;
-                codes
-            } else {
-                HashSet::new()
-            };
-            // An account that is already on the open voucher may have been
-            // deactivated afterwards; keep those saved lines editable while
-            // refusing it for any newly added line.
-            let saved_codes: HashSet<String> = if id > 0 {
+            // A legacy level-4 account, or an account deactivated after the
+            // voucher was saved, stays editable only on the exact saved row it
+            // belongs to. A newly added row or a row whose account changed must
+            // pass every normal check.
+            let saved_lines: BTreeMap<i64, String> = if id > 0 {
                 let mut statement = tx
-                    .prepare("SELECT DISTINCT account_code FROM voucher_lines WHERE voucher_id = ?1")
+                    .prepare("SELECT id, account_code FROM voucher_lines WHERE voucher_id = ?1")
                     .map_err(db::db_error)?;
-                let codes = statement
-                    .query_map(params![id], |row| row.get(0))
+                let rows = statement
+                    .query_map(params![id], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                    })
                     .map_err(db::db_error)?
-                    .collect::<rusqlite::Result<HashSet<_>>>()
+                    .collect::<rusqlite::Result<BTreeMap<_, _>>>()
                     .map_err(db::db_error)?;
-                codes
+                rows
             } else {
-                HashSet::new()
+                BTreeMap::new()
             };
-            for line in &lines {
+            for (index, line) in lines.iter().enumerate() {
+                let saved_line = match line.id {
+                    Some(line_id) => {
+                        let saved_code = saved_lines.get(&line_id).ok_or_else(|| {
+                            format!(
+                                "ردیف {} به این سند تعلق ندارد؛ سند را دوباره بارگذاری کنید.",
+                                db::to_fa_digits(index + 1)
+                            )
+                        })?;
+                        // Editing the account turns it into a new posting for
+                        // that account; the old row's exception no longer applies.
+                        (saved_code == &line.account_code).then_some(saved_code)
+                    }
+                    None => None,
+                };
                 if let Err(error) = assert_postable_leaf(&tx, &line.account_code) {
-                    if !grandfathered_legacy_codes.contains(&line.account_code) {
+                    if saved_line.is_none() {
                         return Err(error);
                     }
                     assert_existing_legacy_account(&tx, &line.account_code)?;
                 }
-                if !saved_codes.contains(&line.account_code) {
+                if saved_line.is_none() {
                     assert_active_account(&tx, &line.account_code)?;
                 }
             }
@@ -1906,18 +1924,22 @@ impl Database {
             let voucher_id = if id > 0 {
                 let updated = if let Some(expected) = expected_updated_at.as_deref() {
                     tx.execute(
-                        "UPDATE vouchers
-                            SET number = ?1, date = ?2, type = ?3, description = ?4,
-                                updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
-                          WHERE id = ?5 AND updated_at = ?6",
+                        &format!(
+                            "UPDATE vouchers
+                                SET number = ?1, date = ?2, type = ?3, description = ?4,
+                                    updated_at = {TOUCHED_AT}
+                              WHERE id = ?5 AND updated_at = ?6"
+                        ),
                         params![number, date, voucher_type, description, id, expected],
                     )
                 } else {
                     tx.execute(
-                        "UPDATE vouchers
-                            SET number = ?1, date = ?2, type = ?3, description = ?4,
-                                updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', 'localtime')
-                          WHERE id = ?5",
+                        &format!(
+                            "UPDATE vouchers
+                                SET number = ?1, date = ?2, type = ?3, description = ?4,
+                                    updated_at = {TOUCHED_AT}
+                              WHERE id = ?5"
+                        ),
                         params![number, date, voucher_type, description, id],
                     )
                 }
@@ -2137,6 +2159,7 @@ impl Database {
                     ));
                 }
                 lines.push(VoucherLineInput {
+                    id: line.id,
                     account_code,
                     description: line_description,
                     debit: line.debit,
@@ -2274,6 +2297,7 @@ impl Database {
                     assert_postable_leaf(&tx, &line.account_code)?;
                     assert_active_account(&tx, &line.account_code)?;
                 }
+                assert_voucher_type_matches_lines(&tx, &voucher_type, &lines)?;
                 let mut stored_number = number;
                 if used_numbers.contains(&number) {
                     if !renumber_conflicts {
@@ -2971,7 +2995,7 @@ impl Database {
     }
 
     pub fn get_balance_sheet(&self, as_of: &str) -> Result<BalanceSheetReport, String> {
-        let as_of = normalize_filter_date(as_of, "تاریخ ترازنامه")?;
+        let as_of = normalize_date(as_of, "تاریخ ترازنامه")?;
         self.with_conn(|conn| {
             // A final closing voucher without a later opening voucher zeroes
             // every balance-sheet account, so the statement is prepared from
@@ -3700,6 +3724,7 @@ mod tests {
 
     fn line(account_code: &str, debit: i64, credit: i64) -> VoucherLineInput {
         VoucherLineInput {
+            id: None,
             account_code: account_code.to_string(),
             description: String::new(),
             debit,
@@ -4117,6 +4142,7 @@ mod tests {
             voucher_type: old.voucher_type.clone(),
             description: old.description.clone(),
             lines: old.lines.iter().map(|line| VoucherLineInput {
+                id: Some(line.id),
                 account_code: line.account_code.clone(),
                 description: line.description.clone(),
                 debit: line.debit,
@@ -4837,7 +4863,33 @@ mod tests {
         db.set_account_active(cash.id, false).unwrap();
         let mut edited = cash_sale("1405/01/05", 500_000);
         edited.id = Some(saved.id);
+        // The stable id of each saved row is what preserves the exception; a
+        // line without an id is treated as a new posting.
+        for line in &mut edited.lines {
+            line.id = saved
+                .lines
+                .iter()
+                .find(|saved_line| saved_line.account_code == line.account_code)
+                .map(|saved_line| saved_line.id);
+        }
         db.save_voucher(edited).unwrap();
+
+        // Adding another row with the same inactive account must still fail.
+        // Re-read the voucher because saving replaced its line ids.
+        let saved = db.get_voucher(saved.number).unwrap().unwrap();
+        let mut added = cash_sale("1405/01/05", 500_000);
+        added.id = Some(saved.id);
+        for line in &mut added.lines {
+            line.id = saved
+                .lines
+                .iter()
+                .find(|saved_line| saved_line.account_code == line.account_code)
+                .map(|saved_line| saved_line.id);
+        }
+        added.lines.push(line(&cash.code, 1_000, 0));
+        added.lines.push(line("410101", 0, 1_000));
+        let error = db.save_voucher(added).unwrap_err();
+        assert!(error.contains("غیرفعال"), "{error}");
     }
 
     #[test]
