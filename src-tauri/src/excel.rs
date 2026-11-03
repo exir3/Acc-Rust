@@ -10,7 +10,7 @@ use crate::vouchers::{VoucherInput, VoucherLineInput, MAX_VOUCHER_NUMBER};
 use calamine::{open_workbook_auto, Data, Reader};
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet, XlsxError};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 const MAX_IMPORT_LINES: usize = 1000;
@@ -20,6 +20,7 @@ const MAX_BULK_IMPORT_ROWS: usize = 300_000;
 const MAX_BULK_IMPORT_COLUMNS: usize = 40;
 const MAX_VOUCHER_IMPORT_ROWS: usize = 20_000;
 const MAX_ACCOUNT_IMPORT_ROWS: usize = 10_000;
+const MAX_NUMERIC_ACCOUNT_CODE: i64 = 999_999_999_999_999;
 const MAX_SHEET_COLUMNS: usize = 50;
 const MAX_EXCEL_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_XLSX_ENTRY_BYTES: u64 = 128 * 1024 * 1024;
@@ -104,6 +105,7 @@ fn ensure_sheet_dimensions(
 #[derive(Debug, Clone)]
 pub struct BulkVoucherImport {
     pub file_name: String,
+    pub sheet_name: String,
     pub vouchers: Vec<VoucherInput>,
     pub accounts: Vec<ImportedAccount>,
 }
@@ -116,12 +118,14 @@ pub struct ImportedAccount {
     pub group_code: String,
     pub level: i64,
     pub nature: String,
+    pub nature_is_explicit: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BulkVoucherPreview {
     pub file_name: String,
+    pub sheet_name: String,
     pub voucher_count: usize,
     pub line_count: usize,
     pub account_count: usize,
@@ -133,13 +137,19 @@ pub struct BulkVoucherPreview {
 struct BulkImportColumns {
     voucher_number: Option<usize>,
     voucher_date: Option<usize>,
+    group_code: Option<usize>,
     general_code: Option<usize>,
     general_name: Option<usize>,
+    general_nature: Option<usize>,
     subsidiary_code: Option<usize>,
     subsidiary_name: Option<usize>,
+    subsidiary_nature: Option<usize>,
     detail1_code: Option<usize>,
     detail1_name: Option<usize>,
-    description: Option<usize>,
+    detail1_nature: Option<usize>,
+    voucher_type: Option<usize>,
+    voucher_description: Option<usize>,
+    line_description: Option<usize>,
     debit: Option<usize>,
     credit: Option<usize>,
 }
@@ -190,12 +200,25 @@ fn parse_account_code_cell(value: &str, label: &str) -> Result<String, String> {
 }
 
 fn parse_account_code_data_cell(cell: &Data, label: &str) -> Result<String, String> {
-    if matches!(cell, Data::Int(_) | Data::Float(_)) {
-        return Err(format!(
-            "{label} باید در اکسل به‌صورت متن ذخیره شود تا صفرهای ابتدایی کد حفظ شوند."
-        ));
+    match cell {
+        // Numeric cells are common in accounting workbooks. Accept only exact,
+        // non-negative integers within Excel's 15-digit precision limit.
+        // Codes with leading zeroes or more than 15 digits must be text cells.
+        Data::Int(value) if (0..=MAX_NUMERIC_ACCOUNT_CODE).contains(value) => {
+            parse_account_code_cell(&value.to_string(), label)
+        }
+        Data::Float(value)
+            if value.is_finite()
+                && value.fract() == 0.0
+                && (0.0..=MAX_NUMERIC_ACCOUNT_CODE as f64).contains(value) =>
+        {
+            parse_account_code_cell(&format!("{value:.0}"), label)
+        }
+        Data::Int(_) | Data::Float(_) => Err(format!(
+            "{label} باید عدد صحیح و حداکثر ۱۵ رقمی باشد؛ برای حفظ صفرهای ابتدایی یا کدهای طولانی‌تر، سلول را به‌صورت متن ذخیره کنید."
+        )),
+        _ => parse_account_code_cell(&cell_text(cell), label),
     }
-    parse_account_code_cell(&cell_text(cell), label)
 }
 
 fn cell_text(cell: &Data) -> String {
@@ -213,6 +236,123 @@ fn cell_text(cell: &Data) -> String {
         Data::Bool(value) => value.to_string(),
         other => other.to_string().trim().to_string(),
     }
+}
+
+/// Converts a Gregorian date into the Jalali format used by the database.
+fn gregorian_to_jalali_date(year: u32, month: u32, day: u32) -> Result<String, String> {
+    let jalali = jalali_calendar::JalaliDate::from_gregorian(year as i32, month, day)
+        .map_err(|_| "تاریخ میلادی فایل اکسل معتبر یا قابل تبدیل نیست.".to_string())?;
+    let value = format!("{:04}/{:02}/{:02}", jalali.year(), jalali.month(), jalali.day());
+    crate::vouchers::validate_voucher_date(&value)
+}
+
+/// Reads date values from Excel without assuming that every date is stored as
+/// a preformatted Jalali text cell. Calamine exposes styled Excel dates as
+/// `DateTime`; some exports instead provide ISO strings or serial numbers.
+fn parse_bulk_voucher_date(cell: &Data) -> Result<String, String> {
+    match cell {
+        Data::DateTime(value) => {
+            if !value.is_datetime() {
+                return Err("سلول تاریخ به‌صورت مدت‌زمان ذخیره شده است، نه تاریخ.".to_string());
+            }
+            let (year, month, day, _, _, _, _) = value.to_ymd_hms_milli();
+            gregorian_to_jalali_date(year as u32, month as u32, day as u32)
+        }
+        Data::DateTimeIso(value) => parse_bulk_voucher_date_text(value),
+        Data::Int(value) => parse_bulk_voucher_date_number(*value as f64),
+        Data::Float(value) => parse_bulk_voucher_date_number(*value),
+        _ => parse_bulk_voucher_date_text(&cell_text(cell)),
+    }
+}
+
+fn parse_bulk_voucher_date_number(value: f64) -> Result<String, String> {
+    if !value.is_finite() {
+        return Err("تاریخ عددی اکسل معتبر نیست.".to_string());
+    }
+    let rounded = value.round();
+    if (value - rounded).abs() <= 1e-9 && rounded >= 10_000_000.0 && rounded <= 31_779_999.0 {
+        return parse_bulk_voucher_date_text(&format!("{rounded:.0}"));
+    }
+    // Numeric cells without a date number format are ambiguous. Excel serials
+    // in the normal modern-date range are supported using the 1900 date system.
+    if (20_000.0..=2_958_465.999_999).contains(&value) {
+        let excel_date = calamine::ExcelDateTime::new(
+            value,
+            calamine::ExcelDateTimeType::DateTime,
+            false,
+        );
+        let (year, month, day, _, _, _, _) = excel_date.to_ymd_hms_milli();
+        return gregorian_to_jalali_date(year as u32, month as u32, day as u32);
+    }
+    Err("تاریخ عددی اکسل باید یک تاریخ شمسی ۸ رقمی یا شماره سریال معتبر تاریخ باشد.".to_string())
+}
+
+fn parse_bulk_voucher_date_text(input: &str) -> Result<String, String> {
+    let normalized = db::normalize_digits(input.trim());
+    let date_part = normalized
+        .trim()
+        .split(|ch| ch == 'T' || ch == ' ')
+        .next()
+        .unwrap_or("");
+    let date_part = date_part.replace('-', "/");
+
+    if date_part.chars().all(|ch| ch.is_ascii_digit()) && date_part.len() == 8 {
+        let year = date_part[0..4]
+            .parse::<u32>()
+            .map_err(|_| "سال تاریخ اکسل معتبر نیست.".to_string())?;
+        let month = date_part[4..6]
+            .parse::<u32>()
+            .map_err(|_| "ماه تاریخ اکسل معتبر نیست.".to_string())?;
+        let day = date_part[6..8]
+            .parse::<u32>()
+            .map_err(|_| "روز تاریخ اکسل معتبر نیست.".to_string())?;
+        return if year >= 1600 {
+            gregorian_to_jalali_date(year, month, day)
+        } else {
+            crate::vouchers::validate_voucher_date(&format!("{year:04}/{month:02}/{day:02}"))
+        };
+    }
+
+    let parts: Vec<&str> = date_part.split('/').collect();
+    if parts.len() == 3 {
+        let year = parts[0]
+            .parse::<u32>()
+            .map_err(|_| "سال تاریخ اکسل معتبر نیست.".to_string())?;
+        let month = parts[1]
+            .parse::<u32>()
+            .map_err(|_| "ماه تاریخ اکسل معتبر نیست.".to_string())?;
+        let day = parts[2]
+            .parse::<u32>()
+            .map_err(|_| "روز تاریخ اکسل معتبر نیست.".to_string())?;
+        if year >= 1600 {
+            return gregorian_to_jalali_date(year, month, day);
+        }
+    }
+    crate::vouchers::validate_voucher_date(&date_part)
+}
+
+fn normalize_imported_voucher_type(input: &str) -> Result<String, String> {
+    let value = normalize_header(input);
+    for voucher_type in crate::vouchers::VOUCHER_TYPES {
+        if value == normalize_header(voucher_type) {
+            return Ok(voucher_type.to_string());
+        }
+    }
+    let aliases = [
+        (&["عادی", "سندعادی"][..], crate::vouchers::VOUCHER_TYPES[0]),
+        (&["افتتاحیه", "سندافتتاحیه"][..], crate::vouchers::VOUCHER_TYPES[1]),
+        (&["اختتامیه", "سنداختتامیه"][..], crate::vouchers::VOUCHER_TYPES[2]),
+        (
+            &["بستن حسابهای موقت", "بستن حساب‌های موقت", "سند بستن حسابهای موقت"][..],
+            crate::vouchers::VOUCHER_TYPES[3],
+        ),
+    ];
+    for (names, canonical) in aliases {
+        if names.iter().any(|name| normalize_header(name) == value) {
+            return Ok(canonical.to_string());
+        }
+    }
+    Err(format!("نوع سند «{}» در فایل اکسل شناخته‌شده نیست.", input.trim()))
 }
 
 fn is_total_row(row: &[Data]) -> bool {
@@ -645,21 +785,81 @@ fn find_bulk_columns(range: &calamine::Range<Data>) -> Option<(usize, BulkImport
             })
         };
         let columns = BulkImportColumns {
-            voucher_number: find(&["سند", "شماره سند", "شماره‌سند"]),
-            voucher_date: find(&["تاریخ", "تاریخ سند"]),
-            general_code: find(&["کد کل", "کدکل"]),
-            general_name: find(&["عنوان کل", "نام کل"]),
-            subsidiary_code: find(&["کد معین", "کدمعین"]),
-            subsidiary_name: find(&["عنوان معین", "نام معین"]),
-            detail1_code: find(&["کد تفصیلی ۱", "کد تفصیلی 1", "کد تفصیلی", "کدتفصیلی۱", "کدتفصیلی1"]),
-            detail1_name: find(&["عنوان تفصیلی ۱", "عنوان تفصیلی 1", "نام تفصیلی ۱", "نام تفصیلی 1", "عنوان تفصیلی", "نام تفصیلی"]),
-            description: find(&["شرح", "توضیحات"]),
+            voucher_number: find(&["شماره سند", "شماره‌سند", "سند"]),
+            voucher_date: find(&["تاریخ سند", "تاریخ"]),
+            voucher_type: find(&["نوع سند"]),
+            voucher_description: find(&["شرح سند", "توضیحات سند"]),
+            group_code: find(&["کد گروه", "کدگروه"]),
+            general_code: find(&["کد کل", "کدکل", "کد حساب کل", "کد حسابِ کل"]),
+            general_name: find(&["عنوان کل", "نام کل", "عنوان حساب کل", "نام حساب کل"]),
+            general_nature: find(&["ماهیت کل", "ماهیت حساب کل"]),
+            subsidiary_code: find(&["کد معین", "کدمعین", "کد حساب معین", "کد حسابِ معین"]),
+            subsidiary_name: find(&["عنوان معین", "نام معین", "عنوان حساب معین", "نام حساب معین"]),
+            subsidiary_nature: find(&["ماهیت معین", "ماهیت حساب معین"]),
+            detail1_code: find(&[
+                "کد تفصیلی ۱",
+                "کد تفصیلی 1",
+                "کد تفصیلی",
+                "کد حساب تفصیلی ۱",
+                "کد حساب تفصیلی 1",
+                "کد حساب تفصیلی",
+                "کد حساب تفضیل",
+                "کد تفضیل ۱",
+                "کد تفضیل 1",
+                "کد تفضیل",
+                "کد تفضيل",
+                "کد تفضیلی ۱",
+                "کد تفضیلی 1",
+                "کد تفضیلی",
+                "کدتفصیلی۱",
+                "کدتفصیلی1",
+            ]),
+            detail1_name: find(&[
+                "عنوان تفصیلی ۱",
+                "عنوان تفصیلی 1",
+                "نام تفصیلی ۱",
+                "نام تفصیلی 1",
+                "عنوان تفصیلی",
+                "نام تفصیلی",
+                "عنوان حساب تفصیلی ۱",
+                "عنوان حساب تفصیلی 1",
+                "نام حساب تفصیلی",
+                "عنوان حساب تفضیل",
+                "نام حساب تفضیل",
+                "عنوان تفضیل ۱",
+                "عنوان تفضیل 1",
+                "عنوان تفضیل",
+                "عنوان تفضيل",
+                "نام تفضیل ۱",
+                "نام تفضیل 1",
+                "نام تفضیل",
+                "عنوان تفضیلی ۱",
+                "عنوان تفضیلی 1",
+                "نام تفضیلی ۱",
+                "نام تفضیلی 1",
+            ]),
+            detail1_nature: find(&[
+                "ماهیت تفصیلی ۱",
+                "ماهیت تفصیلی 1",
+                "ماهیت تفصیلی",
+                "ماهیت حساب تفصیلی",
+                "ماهیت تفضیل",
+                "ماهیت تفضيل",
+                "ماهیت تفضیلی ۱",
+                "ماهیت تفضیلی 1",
+                "ماهیت تفضیلی",
+            ]),
+            line_description: find(&["شرح ردیف", "توضیحات ردیف", "شرح", "توضیحات"]),
             debit: find(&["بدهکار"]),
             credit: find(&["بستانکار", "ستانکار"]),
         };
         if columns.voucher_number.is_some()
             && columns.voucher_date.is_some()
             && columns.general_code.is_some()
+            && columns.general_name.is_some()
+            && columns.subsidiary_code.is_some()
+            && columns.subsidiary_name.is_some()
+            && (columns.detail1_code.is_none() || columns.detail1_name.is_some())
             && columns.debit.is_some()
             && columns.credit.is_some()
         {
@@ -670,6 +870,10 @@ fn find_bulk_columns(range: &calamine::Range<Data>) -> Option<(usize, BulkImport
 }
 
 fn imported_group_code(general_code: &str) -> Result<&'static str, String> {
+    // This mapping follows the application's built-in chart of accounts.
+    // The previous mapping treated only 50xx as cost of sales and did not
+    // recognize 6xxx/7xxx/8xxx at all, despite those prefixes existing in the
+    // seeded chart (for example 5101, 6101, 7101 and 8101).
     let group = match general_code.chars().next() {
         Some('1') if general_code.starts_with("15") || general_code.starts_with("16") => "2",
         Some('1') if general_code.starts_with("18") => "3",
@@ -680,8 +884,11 @@ fn imported_group_code(general_code: &str) -> Result<&'static str, String> {
         Some('4') => "7",
         Some('5') if general_code.starts_with("525") => "10",
         Some('5') if general_code.starts_with("535") => "11",
-        Some('5') if general_code.starts_with("50") => "9",
+        Some('5') if general_code.starts_with("50") || general_code.starts_with("51") => "9",
         Some('5') => "8",
+        Some('6') => "8",
+        Some('7') => "10",
+        Some('8') => "11",
         _ => {
             return Err(format!(
                 "پیشوند حساب کل «{}» با هیچ گروه حسابداری شناخته‌شده‌ای تطبیق ندارد؛ ابتدا حساب و گروه آن را در برنامه تعریف کنید.",
@@ -692,11 +899,27 @@ fn imported_group_code(general_code: &str) -> Result<&'static str, String> {
     Ok(group)
 }
 
-fn imported_nature(group_code: &str) -> &'static str {
+fn imported_nature(group_code: &str, level: i64) -> &'static str {
     match group_code {
         "4" | "5" | "6" | "7" => "creditor",
-        "10" | "11" => "dual",
+        // The built-in group 10/11 parent accounts are dual, but their child
+        // accounts may be income or expense. Do not guess their nature.
+        "10" | "11" if level == 1 => "dual",
+        "10" | "11" => "unknown",
         _ => "debtor",
+    }
+}
+
+fn imported_account_nature(
+    raw: &str,
+    group_code: &str,
+    level: i64,
+) -> Result<(String, bool), String> {
+    let fallback = imported_nature(group_code, level);
+    if raw.trim().is_empty() {
+        Ok((fallback.to_string(), false))
+    } else {
+        Ok((account_nature(raw, fallback)?, true))
     }
 }
 
@@ -707,25 +930,29 @@ fn add_imported_account(
     parent_code: String,
     group_code: &str,
     level: i64,
+    nature: String,
+    nature_is_explicit: bool,
 ) -> Result<(), String> {
     if code.is_empty() {
         return Err("کد حساب در فایل اکسل خالی است.".to_string());
     }
-    if name.is_empty() {
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.chars().count() > 255 {
         return Err(format!(
-            "عنوان حساب با کد «{}» در فایل اکسل خالی است.",
+            "عنوان حساب {} بیشتر از ۲۵۵ کاراکتر است.",
             db::to_fa_digits(&code)
         ));
     }
     let account = ImportedAccount {
         code: code.clone(),
-        name,
+        name: name.clone(),
         parent_code,
         group_code: group_code.to_string(),
         level,
-        nature: imported_nature(group_code).to_string(),
+        nature,
+        nature_is_explicit,
     };
-    if let Some(existing) = accounts.get(&code) {
+    if let Some(existing) = accounts.get_mut(&code) {
         if existing.parent_code != account.parent_code
             || existing.level != account.level
             || existing.group_code != account.group_code
@@ -735,13 +962,39 @@ fn add_imported_account(
                 db::to_fa_digits(code)
             ));
         }
+        // Excel often merges repeated account-title cells vertically. A blank
+        // repeated title inherits the first value; a different title is an error.
+        if !name.is_empty() && existing.name != name {
+            return Err(format!(
+                "کد حساب {} در فایل اکسل با دو عنوان متفاوت تکرار شده است.",
+                db::to_fa_digits(code)
+            ));
+        }
+        if account.nature_is_explicit {
+            if existing.nature_is_explicit && existing.nature != account.nature {
+                return Err(format!(
+                    "ماهیت حساب {} در ردیف‌های اکسل یکسان نیست.",
+                    db::to_fa_digits(code)
+                ));
+            }
+            existing.nature = account.nature;
+            existing.nature_is_explicit = true;
+        }
     } else {
+        if name.is_empty() {
+            return Err(format!(
+                "عنوان حساب با کد «{}» در فایل اکسل خالی است.",
+                db::to_fa_digits(&code)
+            ));
+        }
         accounts.insert(code, account);
     }
     Ok(())
 }
 
-/// Selects and parses a multi-voucher workbook using the WebApp column layout.
+/// Selects and parses the first worksheet containing the bulk-voucher layout.
+/// Cover sheets and other unrelated tabs are skipped instead of making the
+/// import depend on the workbook's tab order.
 pub fn import_vouchers() -> Result<Option<BulkVoucherImport>, String> {
     let Some(path) = rfd::FileDialog::new()
         .set_title("ورود دسته‌جمعی اسناد از اکسل")
@@ -758,15 +1011,44 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
     ensure_excel_file_size(path)?;
     let mut workbook =
         open_workbook_auto(path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
-    let range = match workbook.worksheet_range_at(0) {
-        Some(Ok(range)) => range,
-        Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
-        None => return Err("فایل اکسل هیچ کاربرگی ندارد.".to_string()),
-    };
-    ensure_sheet_dimensions(&range, MAX_BULK_IMPORT_ROWS, MAX_BULK_IMPORT_COLUMNS)?;
+    let sheet_names = workbook.sheet_names().to_vec();
+    if sheet_names.is_empty() {
+        return Err("فایل اکسل هیچ کاربرگی ندارد.".to_string());
+    }
 
-    let Some((header_row, columns)) = find_bulk_columns(&range) else {
-        return Err("عنوان ستون‌های فایل پیدا نشد. ستون‌های «سند»، «تاریخ»، «کد کل»، «بدهکار» و «بستانکار» الزامی هستند.".to_string());
+    let mut empty_matching_sheet = None;
+    for sheet_name in sheet_names {
+        let range = workbook
+            .worksheet_range(&sheet_name)
+            .map_err(|error| format!("خواندن کاربرگ «{sheet_name}» ناموفق بود: {error}"))?;
+        if find_bulk_columns(&range).is_none() {
+            continue;
+        }
+        match parse_bulk_voucher_sheet(path, &sheet_name, &range) {
+            Ok(import) => return Ok(import),
+            Err(error) if error == "در فایل اکسل هیچ ردیف سندی پیدا نشد." => {
+                // Skip an empty template tab, but never skip a malformed data
+                // tab and silently import a different worksheet instead.
+                empty_matching_sheet = Some(format!("کاربرگ «{sheet_name}» خالی است."));
+            }
+            Err(error) => return Err(format!("کاربرگ «{sheet_name}»: {error}")),
+        }
+    }
+
+    if let Some(error) = empty_matching_sheet {
+        return Err(format!("{error} در سایر کاربرگ‌ها نیز داده قابل ورود پیدا نشد."));
+    }
+    Err("در هیچ‌یک از کاربرگ‌های فایل، ستون‌های لازم برای ورود دسته‌جمعی اسناد پیدا نشد. ستون‌های شماره سند، تاریخ، کد و عنوان کل، کد و عنوان معین، بدهکار و بستانکار الزامی هستند. در صورت وجود ستون کد تفصیلی ۱، عنوان تفصیلی ۱ نیز باید وجود داشته باشد.".to_string())
+}
+
+fn parse_bulk_voucher_sheet(
+    path: &Path,
+    sheet_name: &str,
+    range: &calamine::Range<Data>,
+) -> Result<BulkVoucherImport, String> {
+    ensure_sheet_dimensions(range, MAX_BULK_IMPORT_ROWS, MAX_BULK_IMPORT_COLUMNS)?;
+    let Some((header_row, columns)) = find_bulk_columns(range) else {
+        return Err("عنوان ستون‌های لازم در این کاربرگ پیدا نشد.".to_string());
     };
     let read = |row: &[Data], index: Option<usize>| -> Data {
         index
@@ -776,11 +1058,19 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
     };
 
     let mut vouchers = BTreeMap::<i64, VoucherInput>::new();
+    let mut voucher_order = Vec::<i64>::new();
+    let mut closed_voucher_numbers = std::collections::HashSet::<i64>::new();
     let mut accounts = BTreeMap::<String, ImportedAccount>::new();
+    let mut voucher_types = HashMap::<i64, Option<String>>::new();
+    let mut voucher_descriptions = HashMap::<i64, Option<String>>::new();
+    let mut last_voucher_number = None::<i64>;
+
+    let first_excel_row = range.start().map(|(row, _)| row as usize).unwrap_or(0);
     for (offset, row) in range.rows().skip(header_row + 1).enumerate() {
-        let excel_row = header_row + offset + 2;
+        // Range rows are relative to its used area, which may not start at A1.
+        let excel_row = first_excel_row + header_row + offset + 2;
         let raw_number = cell_text(&read(row, columns.voucher_number));
-        if raw_number.is_empty() {
+        let number = if raw_number.is_empty() {
             if is_total_row(row) {
                 continue;
             }
@@ -788,56 +1078,83 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
                 columns.voucher_date,
                 columns.general_code,
                 columns.general_name,
+                columns.general_nature,
                 columns.subsidiary_code,
                 columns.subsidiary_name,
+                columns.subsidiary_nature,
                 columns.detail1_code,
                 columns.detail1_name,
-                columns.description,
+                columns.detail1_nature,
+                columns.voucher_type,
+                columns.voucher_description,
+                columns.group_code,
+                columns.line_description,
                 columns.debit,
                 columns.credit,
             ];
             if !has_import_values(row, &value_columns) {
                 continue;
             }
-            return Err(format!(
-                "شماره سند ردیف {} اکسل الزامی است.",
-                db::to_fa_digits(excel_row)
-            ));
-        }
-        let number = cell_amount(&read(row, columns.voucher_number)).map_err(|error| {
-            format!(
-                "شماره سند ردیف {} اکسل: {error}",
-                db::to_fa_digits(excel_row)
-            )
-        })?;
-        if number <= 0 || number > MAX_VOUCHER_NUMBER {
-            return Err(format!(
-                "شماره سند ردیف {} اکسل باید بین ۱ و {} باشد.",
-                db::to_fa_digits(excel_row),
-                db::to_fa_digits(MAX_VOUCHER_NUMBER)
-            ));
-        }
+            last_voucher_number.ok_or_else(|| {
+                format!(
+                    "شماره سند ردیف {} اکسل خالی است و سند قبلی برای ادامه وجود ندارد.",
+                    db::to_fa_digits(excel_row)
+                )
+            })?
+        } else {
+            let parsed = cell_amount(&read(row, columns.voucher_number)).map_err(|error| {
+                format!(
+                    "شماره سند ردیف {} اکسل: {error}",
+                    db::to_fa_digits(excel_row)
+                )
+            })?;
+            if parsed <= 0 || parsed > MAX_VOUCHER_NUMBER {
+                return Err(format!(
+                    "شماره سند ردیف {} اکسل باید بین ۱ و {} باشد.",
+                    db::to_fa_digits(excel_row),
+                    db::to_fa_digits(MAX_VOUCHER_NUMBER)
+                ));
+            }
+            if let Some(previous) = last_voucher_number {
+                if previous != parsed {
+                    closed_voucher_numbers.insert(previous);
+                }
+            }
+            if closed_voucher_numbers.contains(&parsed) {
+                return Err(format!(
+                    "شماره سند {} پس از شروع سند دیگری دوباره در فایل تکرار شده است؛ ردیف‌های هر سند باید پشت سر هم باشند.",
+                    db::to_fa_digits(parsed)
+                ));
+            }
+            last_voucher_number = Some(parsed);
+            parsed
+        };
 
-        let raw_date = db::normalize_digits(&cell_text(&read(row, columns.voucher_date)))
-            .trim()
-            .replace('-', "/");
-        let date = crate::vouchers::validate_voucher_date(&raw_date)
-            .map_err(|error| format!("تاریخ ردیف {} اکسل: {error}", db::to_fa_digits(excel_row)))?;
+        let date_cell = read(row, columns.voucher_date);
+        let date = if cell_text(&date_cell).is_empty() {
+            vouchers.get(&number).map(|voucher| voucher.date.clone()).ok_or_else(|| {
+                format!(
+                    "تاریخ سند {} در ردیف {} اکسل خالی است و تاریخ ردیف قبلی برای این سند وجود ندارد.",
+                    db::to_fa_digits(number),
+                    db::to_fa_digits(excel_row)
+                )
+            })?
+        } else {
+            parse_bulk_voucher_date(&date_cell).map_err(|error| {
+                format!("تاریخ ردیف {} اکسل: {error}", db::to_fa_digits(excel_row))
+            })?
+        };
+
         let general_code = parse_account_code_data_cell(
             &read(row, columns.general_code),
             &format!("کد کل ردیف {} اکسل", db::to_fa_digits(excel_row)),
         )?;
         let general_name = cell_text(&read(row, columns.general_name));
         let subsidiary_cell = read(row, columns.subsidiary_code);
-        let raw_subsidiary = cell_text(&subsidiary_cell);
-        let subsidiary_code = if raw_subsidiary.is_empty() {
-            String::new()
-        } else {
-            parse_account_code_data_cell(
-                &subsidiary_cell,
-                &format!("کد معین ردیف {} اکسل", db::to_fa_digits(excel_row)),
-            )?
-        };
+        let subsidiary_code = parse_account_code_data_cell(
+            &subsidiary_cell,
+            &format!("کد معین ردیف {} اکسل", db::to_fa_digits(excel_row)),
+        )?;
         let subsidiary_name = cell_text(&read(row, columns.subsidiary_name));
         let detail1_cell = read(row, columns.detail1_code);
         let raw_detail1_code = cell_text(&detail1_cell);
@@ -850,10 +1167,14 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
             )?
         };
         let detail1_name = cell_text(&read(row, columns.detail1_name));
-        if subsidiary_code.is_empty() && !subsidiary_name.trim().is_empty() {
+        if !subsidiary_code.starts_with(&general_code)
+            || subsidiary_code.len() <= general_code.len()
+        {
             return Err(format!(
-                "عنوان معین در ردیف {} اکسل وارد شده اما کد آن خالی است.",
-                db::to_fa_digits(excel_row)
+                "کد معین {} در ردیف {} اکسل باید زیرمجموعه حساب کل {} باشد.",
+                db::to_fa_digits(&subsidiary_code),
+                db::to_fa_digits(excel_row),
+                db::to_fa_digits(&general_code)
             ));
         }
         if detail1_code.is_empty() && !detail1_name.trim().is_empty() {
@@ -862,48 +1183,101 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
                 db::to_fa_digits(excel_row)
             ));
         }
-        if !detail1_code.is_empty() && subsidiary_code.is_empty() {
+        if !detail1_code.is_empty()
+            && (!detail1_code.starts_with(&subsidiary_code)
+                || detail1_code.len() <= subsidiary_code.len())
+        {
             return Err(format!(
-                "برای تعریف تفصیلی ۱ در ردیف {} اکسل، ابتدا کد معین الزامی است.",
-                db::to_fa_digits(excel_row)
+                "کد تفصیلی ۱ {} در ردیف {} اکسل باید زیرمجموعه حساب معین {} باشد.",
+                db::to_fa_digits(&detail1_code),
+                db::to_fa_digits(excel_row),
+                db::to_fa_digits(&subsidiary_code)
             ));
         }
-        let group_code = imported_group_code(&general_code)?;
+
+        let raw_group_code = cell_text(&read(row, columns.group_code));
+        let group_code = if raw_group_code.trim().is_empty() {
+            // A vertically merged group-code cell is populated only on the
+            // first row. Reuse the group already assigned to this general
+            // account before falling back to the built-in prefix mapping.
+            if let Some(existing) = accounts.get(&general_code) {
+                existing.group_code.clone()
+            } else {
+                imported_group_code(&general_code)?.to_string()
+            }
+        } else {
+            let parsed = parse_code(&raw_group_code, "کد گروه")?;
+            if parsed.len() > 4 {
+                return Err("کد گروه در فایل اکسل نمی‌تواند بیشتر از ۴ رقم باشد.".to_string());
+            }
+            parsed
+        };
+        let (general_nature, general_nature_is_explicit) = imported_account_nature(
+            &cell_text(&read(row, columns.general_nature)),
+            &group_code,
+            1,
+        )?;
+        let (subsidiary_nature, subsidiary_nature_is_explicit) = imported_account_nature(
+            &cell_text(&read(row, columns.subsidiary_nature)),
+            &group_code,
+            2,
+        )?;
         add_imported_account(
             &mut accounts,
             general_code.clone(),
             general_name,
             String::new(),
-            group_code,
+            &group_code,
             1,
+            general_nature,
+            general_nature_is_explicit,
         )?;
+        add_imported_account(
+            &mut accounts,
+            subsidiary_code.clone(),
+            subsidiary_name,
+            general_code.clone(),
+            &group_code,
+            2,
+            subsidiary_nature,
+            subsidiary_nature_is_explicit,
+        )?;
+        if accounts.len() > MAX_ACCOUNT_IMPORT_ROWS {
+            return Err(format!(
+                "تعداد حساب‌های یکتای فایل بیش از حد مجاز است (حداکثر {} حساب).",
+                db::to_fa_digits(MAX_ACCOUNT_IMPORT_ROWS)
+            ));
+        }
 
-        let mut account_code = if subsidiary_code.is_empty() {
-            general_code.clone()
-        } else {
-            add_imported_account(
-                &mut accounts,
-                subsidiary_code.clone(),
-                subsidiary_name,
-                general_code.clone(),
-                group_code,
-                2,
+        let account_code = if !detail1_code.is_empty() {
+            let (detail1_nature, detail1_nature_is_explicit) = imported_account_nature(
+                &cell_text(&read(row, columns.detail1_nature)),
+                &group_code,
+                3,
             )?;
-            subsidiary_code.clone()
-        };
-        if !detail1_code.is_empty() {
             add_imported_account(
                 &mut accounts,
                 detail1_code.clone(),
                 detail1_name,
                 subsidiary_code,
-                group_code,
+                &group_code,
                 3,
+                detail1_nature,
+                detail1_nature_is_explicit,
             )?;
-            account_code = detail1_code;
+            detail1_code
+        } else {
+            subsidiary_code
+        };
+        if accounts.len() > MAX_ACCOUNT_IMPORT_ROWS {
+            return Err(format!(
+                "تعداد حساب‌های یکتای فایل بیش از حد مجاز است (حداکثر {} حساب).",
+                db::to_fa_digits(MAX_ACCOUNT_IMPORT_ROWS)
+            ));
         }
-        let description = cell_text(&read(row, columns.description));
-        if description.chars().count() > MAX_LINE_DESCRIPTION {
+
+        let line_description = cell_text(&read(row, columns.line_description));
+        if line_description.chars().count() > MAX_LINE_DESCRIPTION {
             return Err(format!(
                 "شرح ردیف {} اکسل بیشتر از {} کاراکتر است.",
                 db::to_fa_digits(excel_row),
@@ -938,6 +1312,30 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
             ));
         }
 
+        let imported_type = columns
+            .voucher_type
+            .map(|index| cell_text(&read(row, Some(index))))
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| normalize_imported_voucher_type(&value))
+            .transpose()?;
+        let imported_description = columns
+            .voucher_description
+            .map(|index| cell_text(&read(row, Some(index))))
+            .filter(|value| !value.trim().is_empty());
+        if let Some(description) = imported_description.as_ref() {
+            if description.chars().count() > crate::vouchers::MAX_DESCRIPTION {
+                return Err(format!(
+                    "شرح سند {} در ردیف {} اکسل بیشتر از {} کاراکتر است.",
+                    db::to_fa_digits(number),
+                    db::to_fa_digits(excel_row),
+                    db::to_fa_digits(crate::vouchers::MAX_DESCRIPTION)
+                ));
+            }
+        }
+
+        if !vouchers.contains_key(&number) {
+            voucher_order.push(number);
+        }
         let voucher = vouchers.entry(number).or_insert_with(|| VoucherInput {
             id: None,
             number: Some(number),
@@ -952,10 +1350,41 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
                 db::to_fa_digits(number)
             ));
         }
+
+        if let Some(voucher_type) = imported_type {
+            let recorded_type = voucher_types.entry(number).or_default();
+            if recorded_type
+                .as_ref()
+                .is_some_and(|existing| existing != &voucher_type)
+            {
+                return Err(format!(
+                    "نوع سند {} در ردیف‌های اکسل یکسان نیست.",
+                    db::to_fa_digits(number)
+                ));
+            }
+            *recorded_type = Some(voucher_type.clone());
+            voucher.voucher_type = voucher_type;
+        }
+
+        if let Some(description) = imported_description {
+            let recorded_description = voucher_descriptions.entry(number).or_default();
+            if recorded_description
+                .as_ref()
+                .is_some_and(|existing| existing != &description)
+            {
+                return Err(format!(
+                    "شرح سند {} در ردیف‌های اکسل یکسان نیست.",
+                    db::to_fa_digits(number)
+                ));
+            }
+            *recorded_description = Some(description.clone());
+            voucher.description = description;
+        }
+
         voucher.lines.push(VoucherLineInput {
             id: None,
             account_code,
-            description,
+            description: line_description,
             debit,
             credit,
         });
@@ -1004,7 +1433,11 @@ fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
             .and_then(|name| name.to_str())
             .unwrap_or("اکسل")
             .to_string(),
-        vouchers: vouchers.into_values().collect(),
+        sheet_name: sheet_name.to_string(),
+        vouchers: voucher_order
+            .into_iter()
+            .filter_map(|number| vouchers.remove(&number))
+            .collect(),
         accounts: accounts.into_values().collect(),
     })
 }
@@ -1046,8 +1479,10 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
     };
 
     let mut lines: Vec<VoucherLineInput> = Vec::new();
+    let first_excel_row = range.start().map(|(row, _)| row as usize).unwrap_or(0);
     for (offset, row) in range.rows().skip(header_row + 1).enumerate() {
-        let excel_row = header_row + offset + 2;
+        // Range rows are relative to its used area, which may not start at A1.
+        let excel_row = first_excel_row + header_row + offset + 2;
         let account_code_cell = read(row, columns.account_code);
         let raw_account_code = cell_text(&account_code_cell);
         if raw_account_code.is_empty() {
@@ -1404,8 +1839,10 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
     let mut errors = Vec::new();
     let mut error_count = 0usize;
 
+    let first_excel_row = range.start().map(|(row, _)| row as usize).unwrap_or(0);
     for (offset, row) in range.rows().skip(header_row + 1).enumerate() {
-        let excel_row = header_row + offset + 2;
+        // Range rows are relative to its used area, which may not start at A1.
+        let excel_row = first_excel_row + header_row + offset + 2;
         let raw_group_code = read(row, columns.group_code);
         let legacy_nature = read(row, columns.legacy_nature);
         let account_code_cells = [
@@ -1610,17 +2047,24 @@ mod tests {
     }
 
     #[test]
-    fn bulk_voucher_headers_include_optional_detail1_columns() {
-        let mut range = calamine::Range::new((0, 0), (0, 9));
+    fn bulk_voucher_headers_include_optional_metadata_and_detail1_columns() {
+        let mut range = calamine::Range::new((0, 0), (0, 16));
         for (column, value) in [
             "شماره سند",
             "تاریخ سند",
+            "نوع سند",
+            "شرح سند",
+            "کد گروه",
             "کد کل",
             "عنوان کل",
+            "ماهیت کل",
             "کد معین",
             "عنوان معین",
+            "ماهیت معین",
             "کد تفصیلی ۱",
             "عنوان تفصیلی ۱",
+            "ماهیت تفصیلی ۱",
+            "شرح ردیف",
             "بدهکار",
             "بستانکار",
         ]
@@ -1631,12 +2075,344 @@ mod tests {
         }
         let (row, columns) = find_bulk_columns(&range).expect("bulk voucher headers");
         assert_eq!(row, 0);
-        assert_eq!(columns.general_code, Some(2));
-        assert_eq!(columns.subsidiary_code, Some(4));
+        assert_eq!(columns.voucher_type, Some(2));
+        assert_eq!(columns.voucher_description, Some(3));
+        assert_eq!(columns.group_code, Some(4));
+        assert_eq!(columns.general_code, Some(5));
+        assert_eq!(columns.general_nature, Some(7));
+        assert_eq!(columns.subsidiary_code, Some(8));
+        assert_eq!(columns.subsidiary_nature, Some(10));
+        assert_eq!(columns.detail1_code, Some(11));
+        assert_eq!(columns.detail1_name, Some(12));
+        assert_eq!(columns.detail1_nature, Some(13));
+        assert_eq!(columns.line_description, Some(14));
+        assert_eq!(columns.debit, Some(15));
+        assert_eq!(columns.credit, Some(16));
+    }
+
+    #[test]
+    fn bulk_import_recognizes_tafzil_column_spellings() {
+        let mut range = calamine::Range::new((0, 0), (0, 9));
+        for (column, value) in [
+            "شماره سند",
+            "تاریخ",
+            "کد کل",
+            "عنوان کل",
+            "کد معین",
+            "عنوان معین",
+            "کد تفضیل",
+            "عنوان تفضیل",
+            "بدهکار",
+            "بستانکار",
+        ]
+        .iter()
+        .enumerate()
+        {
+            range.set_value((0, column as u32), text(value));
+        }
+        let (_, columns) = find_bulk_columns(&range).expect("bulk import headers");
         assert_eq!(columns.detail1_code, Some(6));
         assert_eq!(columns.detail1_name, Some(7));
-        assert_eq!(columns.debit, Some(8));
-        assert_eq!(columns.credit, Some(9));
+    }
+
+    #[test]
+    fn bulk_import_requires_a_subsidiary_code_column() {
+        let mut range = calamine::Range::new((0, 0), (0, 6));
+        for (column, value) in [
+            "شماره سند",
+            "تاریخ سند",
+            "کد کل",
+            "عنوان کل",
+            "عنوان معین",
+            "بدهکار",
+            "بستانکار",
+        ]
+        .iter()
+        .enumerate()
+        {
+            range.set_value((0, column as u32), text(value));
+        }
+        assert!(find_bulk_columns(&range).is_none());
+    }
+
+    #[test]
+    fn bulk_import_requires_account_title_columns() {
+        let mut range = calamine::Range::new((0, 0), (0, 5));
+        for (column, value) in ["شماره سند", "تاریخ سند", "کد کل", "کد معین", "بدهکار", "بستانکار"]
+            .iter()
+            .enumerate()
+        {
+            range.set_value((0, column as u32), text(value));
+        }
+        assert!(find_bulk_columns(&range).is_none());
+    }
+
+    #[test]
+    fn repeated_account_codes_allow_merged_blank_titles_but_reject_conflicts() {
+        let mut accounts = BTreeMap::new();
+        add_imported_account(
+            &mut accounts,
+            "1101".to_string(),
+            "حساب آزمایشی".to_string(),
+            String::new(),
+            "1",
+            1,
+            "debtor".to_string(),
+            false,
+        )
+        .unwrap();
+        add_imported_account(
+            &mut accounts,
+            "1101".to_string(),
+            String::new(),
+            String::new(),
+            "1",
+            1,
+            "debtor".to_string(),
+            false,
+        )
+        .unwrap();
+        assert!(add_imported_account(
+            &mut accounts,
+            "1101".to_string(),
+            "عنوان متفاوت".to_string(),
+            String::new(),
+            "1",
+            1,
+            "debtor".to_string(),
+            false,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn bulk_import_accepts_an_explicit_group_code_for_custom_account_codes() {
+        let headers = [
+            "شماره سند",
+            "تاریخ سند",
+            "کد گروه",
+            "کد کل",
+            "عنوان کل",
+            "کد معین",
+            "عنوان معین",
+            "ماهیت معین",
+            "بدهکار",
+            "بستانکار",
+        ];
+        let mut range = calamine::Range::new((0, 0), (3, 9));
+        for (column, value) in headers.iter().enumerate() {
+            range.set_value((0, column as u32), text(value));
+        }
+        let first_row = [
+            text("1"),
+            text("1405/01/01"),
+            text("10"),
+            text("9901"),
+            text("سایر درآمدها و هزینه‌های سفارشی"),
+            text("990101"),
+            text("هزینه عملیاتی سفارشی"),
+            text("بدهکار"),
+            Data::Int(100),
+            Data::Empty,
+        ];
+        let merged_group_row = [
+            text("1"),
+            text("1405/01/01"),
+            Data::Empty,
+            text("9901"),
+            Data::Empty,
+            text("990102"),
+            text("هزینه عملیاتی دوم"),
+            text("بدهکار"),
+            Data::Int(50),
+            Data::Empty,
+        ];
+        let second_row = [
+            text("1"),
+            text("1405/01/01"),
+            text("7"),
+            text("4101"),
+            text("فروش و درآمدها"),
+            text("410101"),
+            text("فروش محصولات"),
+            text("بستانکار"),
+            Data::Empty,
+            Data::Int(150),
+        ];
+        for (column, value) in first_row.into_iter().enumerate() {
+            range.set_value((1, column as u32), value);
+        }
+        for (column, value) in merged_group_row.into_iter().enumerate() {
+            range.set_value((2, column as u32), value);
+        }
+        for (column, value) in second_row.into_iter().enumerate() {
+            range.set_value((3, column as u32), value);
+        }
+
+        let import = parse_bulk_voucher_sheet(Path::new("custom.xlsx"), "اسناد", &range).unwrap();
+        let custom_parent = import.accounts.iter().find(|account| account.code == "9901").unwrap();
+        let custom_child = import.accounts.iter().find(|account| account.code == "990101").unwrap();
+        assert_eq!(custom_parent.group_code, "10");
+        assert_eq!(custom_child.group_code, "10");
+        assert_eq!(custom_child.nature, "debtor");
+        assert!(custom_child.nature_is_explicit);
+        let merged_group_child = import.accounts.iter().find(|account| account.code == "990102").unwrap();
+        assert_eq!(merged_group_child.group_code, "10");
+        assert_eq!(import.vouchers.len(), 1);
+        assert_eq!(import.vouchers[0].lines.len(), 3);
+        assert!(imported_group_code("9901").is_err());
+    }
+
+    #[test]
+    fn bulk_import_accepts_safe_numeric_account_codes_but_rejects_unsafe_numbers() {
+        assert_eq!(
+            parse_account_code_data_cell(&Data::Int(1101), "کد حساب").unwrap(),
+            "1101"
+        );
+        assert_eq!(
+            parse_account_code_data_cell(&Data::Float(1102.0), "کد حساب").unwrap(),
+            "1102"
+        );
+        assert!(parse_account_code_data_cell(&Data::Float(1102.5), "کد حساب").is_err());
+        assert_eq!(
+            parse_account_code_data_cell(&text("001101"), "کد حساب").unwrap(),
+            "001101"
+        );
+        assert!(parse_account_code_data_cell(
+            &Data::Int(1_000_000_000_000_000),
+            "کد حساب"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn bulk_import_group_mapping_matches_the_seeded_chart() {
+        for (code, group) in [
+            ("1101", "1"),
+            ("1501", "2"),
+            ("1801", "3"),
+            ("2101", "4"),
+            ("2301", "5"),
+            ("3101", "6"),
+            ("4101", "7"),
+            ("5101", "9"),
+            ("6101", "8"),
+            ("7101", "10"),
+            ("8101", "11"),
+            ("5251", "10"),
+            ("5351", "11"),
+        ] {
+            assert_eq!(imported_group_code(code).unwrap(), group, "{code}");
+        }
+        assert_eq!(imported_nature("10", 1), "dual");
+        assert_eq!(imported_nature("11", 1), "dual");
+        assert_eq!(imported_nature("10", 2), "unknown");
+        assert_eq!(
+            imported_account_nature("بستانکار", "10", 2).unwrap(),
+            ("creditor".to_string(), true)
+        );
+        assert!(imported_account_nature("ماهیت اشتباه", "10", 2).is_err());
+    }
+
+    #[test]
+    fn bulk_import_preserves_excel_voucher_order() {
+        let mut range = calamine::Range::new((0, 0), (4, 7));
+        for (column, value) in [
+            "شماره سند",
+            "تاریخ سند",
+            "کد کل",
+            "عنوان کل",
+            "کد معین",
+            "عنوان معین",
+            "بدهکار",
+            "بستانکار",
+        ]
+        .iter()
+        .enumerate()
+        {
+            range.set_value((0, column as u32), text(value));
+        }
+
+        let rows = [
+            ["2", "1405/01/01", "1101", "صندوق", "110101", "صندوق اصلی", "100", ""],
+            ["", "", "4101", "درآمد", "410101", "درآمد فروش", "", "100"],
+            ["1", "1405/01/02", "1101", "صندوق", "110101", "صندوق اصلی", "200", ""],
+            ["", "", "4101", "درآمد", "410101", "درآمد فروش", "", "200"],
+        ];
+        for (row_index, row) in rows.iter().enumerate() {
+            for (column, value) in row.iter().enumerate() {
+                range.set_value(((row_index + 1) as u32, column as u32), text(value));
+            }
+        }
+
+        let import = parse_bulk_voucher_sheet(Path::new("sample.xlsx"), "اسناد", &range).unwrap();
+        assert_eq!(
+            import.vouchers.iter().map(|voucher| voucher.number.unwrap()).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+    }
+
+    #[test]
+    fn bulk_import_rejects_non_contiguous_voucher_number_blocks() {
+        let mut range = calamine::Range::new((0, 0), (3, 7));
+        for (column, value) in [
+            "شماره سند",
+            "تاریخ سند",
+            "کد کل",
+            "عنوان کل",
+            "کد معین",
+            "عنوان معین",
+            "بدهکار",
+            "بستانکار",
+        ]
+        .iter()
+        .enumerate()
+        {
+            range.set_value((0, column as u32), text(value));
+        }
+        let rows = [
+            ["2", "1405/01/01", "1101", "صندوق", "110101", "صندوق اصلی", "100", ""],
+            ["1", "1405/01/02", "4101", "درآمد", "410101", "درآمد فروش", "", "100"],
+            ["2", "1405/01/01", "4101", "درآمد", "410101", "درآمد فروش", "", "100"],
+        ];
+        for (row_index, row) in rows.iter().enumerate() {
+            for (column, value) in row.iter().enumerate() {
+                range.set_value(((row_index + 1) as u32, column as u32), text(value));
+            }
+        }
+        let error = parse_bulk_voucher_sheet(Path::new("sample.xlsx"), "اسناد", &range).unwrap_err();
+        assert!(error.contains("پشت سر هم"));
+    }
+
+    #[test]
+    fn bulk_import_dates_support_jalali_strings_excel_serials_and_gregorian_iso() {
+        assert_eq!(parse_bulk_voucher_date(&text("۱۴۰۵/۰۱/۰۵")).unwrap(), "1405/01/05");
+        assert_eq!(parse_bulk_voucher_date(&text("14050105")).unwrap(), "1405/01/05");
+        assert_eq!(parse_bulk_voucher_date(&text("2024-03-20")).unwrap(), "1403/01/01");
+        assert_eq!(parse_bulk_voucher_date(&text("1405/01/05 08:30:00")).unwrap(), "1405/01/05");
+        assert_eq!(parse_bulk_voucher_date(&Data::Int(45371)).unwrap(), "1403/01/01");
+        assert_eq!(
+            parse_bulk_voucher_date(&Data::DateTime(calamine::ExcelDateTime::new(
+                45371.0,
+                calamine::ExcelDateTimeType::DateTime,
+                false,
+            )))
+            .unwrap(),
+            "1403/01/01"
+        );
+        assert_eq!(
+            parse_bulk_voucher_date(&Data::DateTimeIso("2024-03-20T00:00:00".to_string())).unwrap(),
+            "1403/01/01"
+        );
+        assert!(parse_bulk_voucher_date(&text("۱۴۰۴/۱۲/۳۰")).is_err());
+    }
+
+    #[test]
+    fn bulk_import_normalizes_voucher_type_aliases() {
+        assert_eq!(normalize_imported_voucher_type("افتتاحیه").unwrap(), crate::vouchers::VOUCHER_TYPES[1]);
+        assert_eq!(normalize_imported_voucher_type("سند حسابداری اختتامیه").unwrap(), crate::vouchers::VOUCHER_TYPES[2]);
+        assert_eq!(normalize_imported_voucher_type("بستن حساب‌های موقت").unwrap(), crate::vouchers::VOUCHER_TYPES[3]);
+        assert!(normalize_imported_voucher_type("نوع نامعتبر").is_err());
     }
 
     #[test]

@@ -6,7 +6,7 @@
 use crate::db::{self, normalize_digits, Database};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize, Serializer};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 
@@ -1992,14 +1992,26 @@ impl Database {
         import: &crate::excel::BulkVoucherImport,
     ) -> Result<crate::excel::BulkVoucherPreview, String> {
         let file_name = import.file_name.clone();
-        let account_rows: Vec<(String, String)> = import
-            .accounts
+        let sheet_name = import.sheet_name.clone();
+        let account_rows = import.accounts.clone();
+        let account_codes: HashSet<String> = account_rows
             .iter()
-            .map(|account| (account.code.clone(), account.group_code.clone()))
+            .map(|account| db::normalize_code(&account.code))
             .collect();
-        let account_codes: Vec<String> = account_rows
+        let imported_parent_children: HashMap<String, String> = account_rows
             .iter()
-            .map(|(code, _)| code.clone())
+            .filter_map(|account| {
+                let parent = db::normalize_code(&account.parent_code);
+                (!parent.is_empty()).then(|| {
+                    (parent, db::normalize_code(&account.code))
+                })
+            })
+            .collect();
+        let referenced_codes: HashSet<String> = import
+            .vouchers
+            .iter()
+            .flat_map(|voucher| voucher.lines.iter())
+            .map(|line| db::normalize_code(&line.account_code))
             .collect();
         let numbers: Vec<i64> = import
             .vouchers
@@ -2013,14 +2025,14 @@ impl Database {
             .map(|voucher| voucher.lines.len())
             .sum();
         let account_count = account_codes.len();
+
         self.with_conn(move |conn| {
-            // A group referenced by the workbook may have been deleted since the
-            // default chart was seeded. Report it during preview instead of
-            // failing halfway through the import.
+            // Validate all groups and existing account structures during preview,
+            // not only after the user presses the final import button.
             let mut missing_groups: std::collections::BTreeMap<String, Vec<String>> =
                 std::collections::BTreeMap::new();
-            for (code, group_code) in &account_rows {
-                let group_code = db::normalize_code(group_code);
+            for account in &account_rows {
+                let group_code = db::normalize_code(&account.group_code);
                 let exists = conn
                     .query_row(
                         "SELECT 1 FROM account_groups WHERE code = ?1",
@@ -2034,7 +2046,7 @@ impl Database {
                     missing_groups
                         .entry(group_code)
                         .or_default()
-                        .push(code.clone());
+                        .push(account.code.clone());
                 }
             }
             if !missing_groups.is_empty() {
@@ -2062,20 +2074,140 @@ impl Database {
             }
 
             let mut new_account_count = 0;
-            for code in account_codes {
+            for account in &account_rows {
+                let code = db::normalize_code(&account.code);
+                let group_code = db::normalize_code(&account.group_code);
+                let parent_code = db::normalize_code(&account.parent_code);
+                let existing = conn
+                    .query_row(
+                        "SELECT level, group_code, COALESCE(parent_code, ''), nature
+                           FROM accounts WHERE code = ?1",
+                        params![code],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(db::db_error)?;
+
+                if let Some((level, existing_group, existing_parent, existing_nature)) = existing {
+                    if level != account.level
+                        || existing_group != group_code
+                        || existing_parent != parent_code
+                    {
+                        return Err(format!(
+                            "حساب {} از قبل با گروه، سطح یا حساب بالاتر متفاوت ثبت شده است.",
+                            db::to_fa_digits(&code)
+                        ));
+                    }
+                    if account.nature_is_explicit && existing_nature != account.nature {
+                        return Err(format!(
+                            "ماهیت حساب {} با مقدار واردشده در فایل اکسل متفاوت است.",
+                            db::to_fa_digits(&code)
+                        ));
+                    }
+                } else {
+                    if !matches!(account.nature.as_str(), "debtor" | "creditor" | "dual") {
+                        return Err(format!(
+                            "ماهیت حساب جدید {} مشخص نیست؛ برای گروه‌های سایر درآمدها و هزینه‌ها، ستون ماهیت مربوط به حساب را با مقدار بدهکار، بستانکار یا دوگانه تکمیل کنید.",
+                            db::to_fa_digits(&code)
+                        ));
+                    }
+                    new_account_count += 1;
+                    if account.level > 1 && !parent_code.is_empty() {
+                        let parent = conn
+                            .query_row(
+                                "SELECT level, group_code, is_active FROM accounts WHERE code = ?1",
+                                params![parent_code],
+                                |row| {
+                                    Ok((
+                                        row.get::<_, i64>(0)?,
+                                        row.get::<_, String>(1)?,
+                                        row.get::<_, i64>(2)?,
+                                    ))
+                                },
+                            )
+                            .optional()
+                            .map_err(db::db_error)?;
+                        if let Some((parent_level, parent_group, parent_is_active)) = parent {
+                            if parent_level != account.level - 1 || parent_group != group_code {
+                                return Err(format!(
+                                    "گروه یا سطح حساب بالاتر {} با حساب {} سازگار نیست.",
+                                    db::to_fa_digits(&parent_code),
+                                    db::to_fa_digits(&code)
+                                ));
+                            }
+                            if parent_is_active == 0 {
+                                return Err(format!(
+                                    "حساب بالاتر {} غیرفعال است؛ ابتدا آن را فعال کنید.",
+                                    db::to_fa_digits(&parent_code)
+                                ));
+                            }
+                            let parent_has_lines = conn
+                                .query_row(
+                                    "SELECT EXISTS(SELECT 1 FROM voucher_lines WHERE account_code = ?1)",
+                                    params![parent_code],
+                                    |row| row.get::<_, bool>(0),
+                                )
+                                .map_err(db::db_error)?;
+                            if parent_has_lines {
+                                return Err(format!(
+                                    "حساب بالاتر {} در اسناد استفاده شده است؛ برای آن نمی‌توان زیرحساب جدید ساخت.",
+                                    db::to_fa_digits(&parent_code)
+                                ));
+                            }
+                        } else if !account_codes.contains(&parent_code) {
+                            return Err(format!(
+                                "حساب بالاتر {} برای حساب {} در فایل یا پایگاه داده پیدا نشد.",
+                                db::to_fa_digits(&parent_code),
+                                db::to_fa_digits(&code)
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // A newly imported parent becomes non-postable when its child is
+            // created. Catch a workbook that tries to post to both levels now,
+            // rather than failing only after the user confirms the import.
+            for code in &referenced_codes {
+                if let Some(child_code) = imported_parent_children.get(code) {
+                    return Err(format!(
+                        "حساب {} در فایل اکسل زیرحساب {} دارد و پس از ورود قابل ثبت در سند نخواهد بود؛ ردیف‌های سند باید از حساب تفصیلی استفاده کنند.",
+                        db::to_fa_digits(code),
+                        db::to_fa_digits(child_code)
+                    ));
+                }
+            }
+
+            // Every voucher line must resolve either to an existing account or
+            // to an account that this workbook is going to create.
+            for code in &referenced_codes {
                 let exists = conn
                     .query_row(
                         "SELECT 1 FROM accounts WHERE code = ?1",
-                        params![db::normalize_code(&code)],
+                        params![code],
                         |_| Ok(()),
                     )
                     .optional()
                     .map_err(db::db_error)?
                     .is_some();
-                if !exists {
-                    new_account_count += 1;
+                if exists {
+                    assert_postable_leaf(conn, code)?;
+                    assert_active_account(conn, code)?;
+                } else if !account_codes.contains(code) {
+                    return Err(format!(
+                        "حساب ردیف سند با کد {} در فایل یا پایگاه داده پیدا نشد.",
+                        db::to_fa_digits(code)
+                    ));
                 }
             }
+
             let mut number_conflict_count = 0;
             for number in numbers {
                 let exists = conn
@@ -2093,6 +2225,7 @@ impl Database {
             }
             Ok(crate::excel::BulkVoucherPreview {
                 file_name,
+                sheet_name,
                 voucher_count,
                 line_count,
                 account_count,
@@ -2212,7 +2345,7 @@ impl Database {
                 }
                 let existing = tx
                     .query_row(
-                        "SELECT level, group_code, COALESCE(parent_code, '')
+                        "SELECT level, group_code, COALESCE(parent_code, ''), nature
                            FROM accounts WHERE code = ?1",
                         params![code],
                         |row| {
@@ -2220,12 +2353,13 @@ impl Database {
                                 row.get::<_, i64>(0)?,
                                 row.get::<_, String>(1)?,
                                 row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
                             ))
                         },
                     )
                     .optional()
                     .map_err(db::db_error)?;
-                if let Some((level, existing_group, existing_parent)) = existing {
+                if let Some((level, existing_group, existing_parent, existing_nature)) = existing {
                     if level != account.level
                         || existing_group != group_code
                         || existing_parent != parent_code
@@ -2235,7 +2369,19 @@ impl Database {
                             db::to_fa_digits(&code)
                         ));
                     }
+                    if account.nature_is_explicit && existing_nature != account.nature {
+                        return Err(format!(
+                            "ماهیت حساب {} با مقدار واردشده در فایل اکسل متفاوت است.",
+                            db::to_fa_digits(&code)
+                        ));
+                    }
                     continue;
+                }
+                if !matches!(account.nature.as_str(), "debtor" | "creditor" | "dual") {
+                    return Err(format!(
+                        "ماهیت حساب جدید {} مشخص نیست؛ برای گروه‌های سایر درآمدها و هزینه‌ها، ستون ماهیت مربوط به حساب را تکمیل کنید.",
+                        db::to_fa_digits(&code)
+                    ));
                 }
                 let group_exists = tx
                     .query_row("SELECT 1 FROM account_groups WHERE code = ?1", params![group_code], |_| Ok(()))
@@ -2257,15 +2403,28 @@ impl Database {
                     }
                     let parent = tx
                         .query_row(
-                            "SELECT name, level, group_code FROM accounts WHERE code = ?1",
+                            "SELECT name, level, group_code, is_active FROM accounts WHERE code = ?1",
                             params![parent_code],
-                            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+                            |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, i64>(1)?,
+                                    row.get::<_, String>(2)?,
+                                    row.get::<_, i64>(3)?,
+                                ))
+                            },
                         )
                         .optional()
                         .map_err(db::db_error)?
                         .ok_or_else(|| format!("حساب بالاتر {} برای {} پیدا نشد.", db::to_fa_digits(&parent_code), db::to_fa_digits(&code)))?;
                     if parent.1 != account.level - 1 || parent.2 != group_code {
                         return Err(format!("گروه یا سطح حساب بالاتر {} با حساب {} سازگار نیست.", db::to_fa_digits(&parent_code), db::to_fa_digits(&code)));
+                    }
+                    if parent.3 == 0 {
+                        return Err(format!(
+                            "حساب بالاتر {} غیرفعال است؛ ابتدا آن را فعال کنید.",
+                            db::to_fa_digits(&parent_code)
+                        ));
                     }
                     let parent_has_lines = tx
                         .query_row(
@@ -4187,6 +4346,7 @@ mod tests {
                     group_code: "1".to_string(),
                     level: 1,
                     nature: "debtor".to_string(),
+                    nature_is_explicit: false,
                 },
                 crate::excel::ImportedAccount {
                     code: subsidiary_code.to_string(),
@@ -4195,12 +4355,14 @@ mod tests {
                     group_code: "1".to_string(),
                     level: 2,
                     nature: "debtor".to_string(),
+                    nature_is_explicit: false,
                 },
             ]
         };
         let make_import = |number, general_code: &str, subsidiary_code: &str, lines| {
             crate::excel::BulkVoucherImport {
                 file_name: "آزمایشی.xlsx".to_string(),
+                sheet_name: "اسناد".to_string(),
                 accounts: source_accounts(general_code, subsidiary_code),
                 vouchers: vec![VoucherInput {
                     id: None,
@@ -4251,6 +4413,7 @@ mod tests {
         let db = db::memory_database();
         let import = crate::excel::BulkVoucherImport {
             file_name: "detail1.xlsx".to_string(),
+            sheet_name: "اسناد".to_string(),
             accounts: vec![
                 crate::excel::ImportedAccount {
                     code: "991".to_string(),
@@ -4259,6 +4422,7 @@ mod tests {
                     group_code: "1".to_string(),
                     level: 1,
                     nature: "debtor".to_string(),
+                    nature_is_explicit: false,
                 },
                 crate::excel::ImportedAccount {
                     code: "99101".to_string(),
@@ -4267,6 +4431,7 @@ mod tests {
                     group_code: "1".to_string(),
                     level: 2,
                     nature: "debtor".to_string(),
+                    nature_is_explicit: false,
                 },
                 crate::excel::ImportedAccount {
                     code: "9910101".to_string(),
@@ -4275,6 +4440,7 @@ mod tests {
                     group_code: "1".to_string(),
                     level: 3,
                     nature: "debtor".to_string(),
+                    nature_is_explicit: false,
                 },
             ],
             vouchers: vec![VoucherInput {
@@ -4299,6 +4465,152 @@ mod tests {
     }
 
     #[test]
+    fn bulk_import_rejects_inactive_existing_parent_accounts() {
+        let db = db::memory_database();
+        db.with_conn(|conn| {
+            conn.execute("UPDATE accounts SET is_active = 0 WHERE code = '1101'", [])
+                .map_err(db::db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let import = crate::excel::BulkVoucherImport {
+            file_name: "inactive-parent.xlsx".to_string(),
+            sheet_name: "اسناد".to_string(),
+            accounts: vec![
+                crate::excel::ImportedAccount {
+                    code: "1101".to_string(),
+                    name: "صندوق".to_string(),
+                    parent_code: String::new(),
+                    group_code: "1".to_string(),
+                    level: 1,
+                    nature: "debtor".to_string(),
+                    nature_is_explicit: false,
+                },
+                crate::excel::ImportedAccount {
+                    code: "110199".to_string(),
+                    name: "صندوق جدید".to_string(),
+                    parent_code: "1101".to_string(),
+                    group_code: "1".to_string(),
+                    level: 2,
+                    nature: "debtor".to_string(),
+                    nature_is_explicit: false,
+                },
+            ],
+            vouchers: vec![VoucherInput {
+                id: None,
+                number: Some(1),
+                date: "1405/01/01".to_string(),
+                voucher_type: VOUCHER_TYPES[0].to_string(),
+                description: String::new(),
+                lines: vec![line("110199", 100, 0), line("410101", 0, 100)],
+            }],
+        };
+
+        let preview_error = db.preview_bulk_import(&import).unwrap_err();
+        assert!(preview_error.contains("غیرفعال"));
+        let error = db.import_vouchers(import, false).unwrap_err();
+        assert!(error.contains("غیرفعال"));
+        assert!(db.get_voucher(1).unwrap().is_none());
+        assert!(!db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .iter()
+            .any(|account| account.code == "110199"));
+    }
+
+    #[test]
+    fn bulk_import_preview_rejects_posted_account_with_imported_child() {
+        let db = db::memory_database();
+        let import = crate::excel::BulkVoucherImport {
+            file_name: "mixed-level.xlsx".to_string(),
+            sheet_name: "اسناد".to_string(),
+            accounts: vec![
+                crate::excel::ImportedAccount {
+                    code: "991".to_string(),
+                    name: "گروه آزمایشی کل".to_string(),
+                    parent_code: String::new(),
+                    group_code: "1".to_string(),
+                    level: 1,
+                    nature: "debtor".to_string(),
+                    nature_is_explicit: false,
+                },
+                crate::excel::ImportedAccount {
+                    code: "99101".to_string(),
+                    name: "حساب معین آزمایشی".to_string(),
+                    parent_code: "991".to_string(),
+                    group_code: "1".to_string(),
+                    level: 2,
+                    nature: "debtor".to_string(),
+                    nature_is_explicit: false,
+                },
+                crate::excel::ImportedAccount {
+                    code: "9910101".to_string(),
+                    name: "تفصیلی آزمایشی".to_string(),
+                    parent_code: "99101".to_string(),
+                    group_code: "1".to_string(),
+                    level: 3,
+                    nature: "debtor".to_string(),
+                    nature_is_explicit: false,
+                },
+            ],
+            vouchers: vec![VoucherInput {
+                id: None,
+                number: Some(1),
+                date: "1405/01/01".to_string(),
+                voucher_type: VOUCHER_TYPES[0].to_string(),
+                description: String::new(),
+                lines: vec![line("99101", 100, 0), line("410101", 0, 100)],
+            }],
+        };
+
+        let error = db.preview_bulk_import(&import).unwrap_err();
+        assert!(error.contains("زیرحساب"));
+        assert!(error.contains("99101"));
+    }
+
+    #[test]
+    fn bulk_import_preview_requires_nature_for_new_other_group_children() {
+        let db = db::memory_database();
+        let import = crate::excel::BulkVoucherImport {
+            file_name: "other-group.xlsx".to_string(),
+            sheet_name: "اسناد".to_string(),
+            accounts: vec![
+                crate::excel::ImportedAccount {
+                    code: "7201".to_string(),
+                    name: "سایر درآمدها و هزینه‌های عملیاتی جدید".to_string(),
+                    parent_code: String::new(),
+                    group_code: "10".to_string(),
+                    level: 1,
+                    nature: "dual".to_string(),
+                    nature_is_explicit: false,
+                },
+                crate::excel::ImportedAccount {
+                    code: "720101".to_string(),
+                    name: "حساب فرعی جدید".to_string(),
+                    parent_code: "7201".to_string(),
+                    group_code: "10".to_string(),
+                    level: 2,
+                    nature: "unknown".to_string(),
+                    nature_is_explicit: false,
+                },
+            ],
+            vouchers: vec![VoucherInput {
+                id: None,
+                number: Some(1),
+                date: "1405/01/01".to_string(),
+                voucher_type: VOUCHER_TYPES[0].to_string(),
+                description: String::new(),
+                lines: vec![line("720101", 100, 0), line("410101", 0, 100)],
+            }],
+        };
+
+        let error = db.preview_bulk_import(&import).unwrap_err();
+        assert!(error.contains("ماهیت"));
+    }
+
+    #[test]
     fn bulk_import_rejects_legacy_postable_parent_accounts() {
         let db = db::memory_database();
         db.with_conn(|conn| {
@@ -4313,6 +4625,7 @@ mod tests {
 
         let import = crate::excel::BulkVoucherImport {
             file_name: "legacy.xlsx".to_string(),
+            sheet_name: "اسناد".to_string(),
             accounts: Vec::new(),
             vouchers: vec![VoucherInput {
                 id: None,
