@@ -133,8 +133,8 @@ pub(crate) fn parse_code(value: &str, label: &str) -> Result<String, String> {
 
 pub(crate) fn parse_account_code_cell(value: &str, label: &str) -> Result<String, String> {
     let code = parse_code(value, label)?;
-    if code.chars().count() > 20 {
-        return Err(format!("{label} نمی‌تواند بیشتر از ۲۰ رقم باشد."));
+    if code.chars().count() > 50 {
+        return Err(format!("{label} نمی‌تواند بیشتر از ۵۰ رقم باشد."));
     }
     Ok(code)
 }

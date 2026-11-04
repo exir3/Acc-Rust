@@ -24,8 +24,8 @@ pub(crate) fn validate_account_code(input: &str) -> Result<String, String> {
     if code.is_empty() {
         return Err("کد حساب الزامی است.".to_string());
     }
-    if code.chars().count() > 20 {
-        return Err("کد حساب نمی‌تواند بیشتر از ۲۰ رقم باشد.".to_string());
+    if code.chars().count() > 50 {
+        return Err("کد حساب نمی‌تواند بیشتر از ۵۰ رقم باشد.".to_string());
     }
     if !code.chars().all(|c| c.is_ascii_digit()) {
         return Err("کد حساب باید فقط شامل ارقام باشد.".to_string());

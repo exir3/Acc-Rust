@@ -32,7 +32,7 @@ function openAccountDialog(account) {
       <form id="acctForm" class="acct-form" autocomplete="off">
         <div class="field">
           <label for="acctCode">کد حساب <span class="req">*</span></label>
-          <input id="acctCode" class="input mono" type="text" inputmode="numeric" maxlength="20" value="${esc(toFa(suggestedCode))}" ${isEdit ? 'readonly' : ''} placeholder="کد پیشنهادی بر اساس حساب بالاتر" />
+          <input id="acctCode" class="input mono" type="text" inputmode="numeric" maxlength="50" value="${esc(toFa(suggestedCode))}" ${isEdit ? 'readonly' : ''} placeholder="کد پیشنهادی بر اساس حساب بالاتر" />
         </div>
         <div class="field wide">
           <label for="acctName">نام حساب <span class="req">*</span></label>

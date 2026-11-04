@@ -411,8 +411,6 @@ fn validate_backup_connection_with_options(
            JOIN accounts p ON p.code = a.parent_code
           WHERE a.level <> p.level + 1
              OR a.group_code <> p.group_code
-             OR a.code NOT LIKE p.code || '%'
-             OR length(a.code) <= length(p.code)
           LIMIT 1",
     )? {
         return Err(format!(
@@ -473,7 +471,7 @@ fn validate_backup_connection_with_options(
     if let Some(line) = backup_first_text(
         conn,
         "SELECT CAST(id AS TEXT) FROM voucher_lines
-          WHERE account_code = '' OR length(account_code) > 20
+          WHERE account_code = '' OR length(account_code) > 50
              OR account_code GLOB '*[^0-9]*'
           LIMIT 1",
     )? {

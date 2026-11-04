@@ -651,6 +651,60 @@ mod tests {
     }
 
     #[test]
+    fn changing_parent_group_updates_all_descendants() {
+        let db = test_database();
+        let all_accounts = db.list_accounts().unwrap().accounts;
+        let root = all_accounts
+            .iter()
+            .find(|account| {
+                account.level == 1
+                    && account.group_code == "1"
+                    && all_accounts.iter().any(|child| child.parent_code == account.code)
+            })
+            .unwrap()
+            .clone();
+        let target_group = db
+            .create_account_group("90", "گروه مقصد آزمون", &root.group_type, "")
+            .unwrap();
+
+        db.update_account(
+            root.id,
+            &root.name,
+            &target_group.code,
+            &root.nature,
+            "",
+            root.is_postable,
+        )
+        .unwrap();
+
+        let accounts = db.list_accounts().unwrap().accounts;
+        let mut branch = vec![root.code.clone()];
+        let mut cursor = 0;
+        while cursor < branch.len() {
+            let parent = branch[cursor].clone();
+            for child in accounts.iter().filter(|a| a.parent_code == parent) {
+                branch.push(child.code.clone());
+            }
+            cursor += 1;
+        }
+        assert!(branch.len() > 1);
+        for code in branch {
+            let account = accounts.iter().find(|a| a.code == code).unwrap();
+            assert_eq!(account.group_code, target_group.code);
+        }
+    }
+
+    #[test]
+    fn account_codes_support_webapp_maximum_length_of_fifty_digits() {
+        let db = test_database();
+        let code = "9".repeat(50);
+        let created = db
+            .create_account(&code, "حساب با کد پنجاه رقمی", 1, "1", "debtor", "", false)
+            .unwrap();
+        assert_eq!(created.code, code);
+    }
+
+    #[test]
     fn renaming_parent_refreshes_denormalized_child_parent_names() {
         let db = test_database();
         let accounts = db.list_accounts().unwrap().accounts;
@@ -697,17 +751,20 @@ mod tests {
         assert!(db
             .create_account("120104", "والد اشتباه", 3, "1", "debtor", "1101", true)
             .is_err());
-        assert!(db
+        // WebApp validates the explicit parent relationship; it does not
+        // require child codes to repeat the parent's digits.
+        let differently_prefixed = db
             .create_account(
-                "130101",
-                "کد با والد ناسازگار",
+                "990101",
+                "کد مستقل از پیشوند والد",
                 2,
                 "1",
                 "debtor",
                 "1201",
-                true
+                true,
             )
-            .is_err());
+            .unwrap();
+        assert_eq!(differently_prefixed.parent_code, "1201");
     }
 
     #[test]

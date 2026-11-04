@@ -286,7 +286,7 @@ body.ag-page {
 
 .ag-fields {
   display: grid;
-  grid-template-columns: 120px minmax(220px, 1fr) 170px;
+  grid-template-columns: 120px minmax(220px, 1fr) 170px minmax(180px, .9fr);
   gap: 12px;
   align-items: end;
 }
@@ -920,7 +920,7 @@ body.ag-page {
 }
 
 .ag-fields {
-  grid-template-columns: 90px minmax(220px, 1fr) 150px;
+  grid-template-columns: 90px minmax(220px, 1fr) 150px minmax(190px, 1fr);
   gap: 12px;
 }
 
@@ -1040,7 +1040,7 @@ body.ag-page {
   }
 
   .ag-fields {
-    grid-template-columns: 90px minmax(140px, 1fr) 130px;
+    grid-template-columns: 90px minmax(140px, 1fr) 130px minmax(160px, 1fr);
     gap: 8px;
   }
 }

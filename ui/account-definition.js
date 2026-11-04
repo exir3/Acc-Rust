@@ -37,7 +37,7 @@
         '<div class="adp2-grid-wrap"><table class="adp2-grid"><thead><tr><th>ردیف</th><th>کد حساب</th><th>نام حساب</th><th>سطح</th><th>گروه حساب</th><th>ماهیت</th><th>حساب بالاتر</th><th>ثبت سند</th><th>وضعیت</th></tr></thead><tbody data-rows><tr><td colspan="9">در حال بارگذاری…</td></tr></tbody></table></div>' +
         '<section class="adp2-editor" data-editor hidden><div class="adp2-editor-head"><b data-editor-title>مشخصات حساب</b><span data-editor-hint></span></div>' +
           '<form data-form class="adp2-form" autocomplete="off">' +
-            '<label>کد حساب<input data-code dir="ltr" inputmode="numeric" maxlength="20" required aria-describedby="adpFormError"></label>' +
+            '<label>کد حساب<input data-code dir="ltr" inputmode="numeric" maxlength="50" required aria-describedby="adpFormError"></label>' +
             '<label class="adp2-wide">نام حساب<input data-name maxlength="255" required></label>' +
             '<label>سطح حساب<select data-edit-level><option value="1">کل</option><option value="2">معین</option><option value="3">تفصیلی ۱</option></select></label>' +
             '<label>گروه حساب<select data-edit-group required></select></label>' +
@@ -79,7 +79,7 @@
       const prefix=n===1?'':p, used=new Set(state.accounts.map(a=>String(a.code)));
       const suffixes=siblings.map(a=>nums(String(a.code).slice(prefix.length))).filter(Boolean).map(BigInt);
       let width=Math.max(n===1?4:2,...siblings.map(a=>String(a.code).length-prefix.length));
-      const maxWidth=20-prefix.length;
+      const maxWidth=50-prefix.length;
       let value=suffixes.length?suffixes.reduce((maximum,suffix)=>suffix>maximum?suffix:maximum,0n)+1n
         :(n===1?10n**BigInt(width-1):1n);
       while(width<=maxWidth){

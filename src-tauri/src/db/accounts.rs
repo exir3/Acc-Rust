@@ -40,7 +40,6 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
 
     let (parent_code, parent_name) = resolve_parent(
         conn,
-        &account.code,
         account.level,
         &account.parent_code,
         &account.group_code,
@@ -442,12 +441,6 @@ impl Database {
                 )
                 .map_err(db_error)?;
 
-            if children > 0 && old_group != group_code {
-                return Err(
-                    "این حساب دارای زیرحساب است؛ ابتدا گروه زیرحساب‌ها را هماهنگ کنید."
-                        .to_string(),
-                );
-            }
             let has_history = account_subtree_has_lines(&tx, &code)?;
             if has_history && (old_group != group_code || old_parent_code != parent_code) {
                 return Err(
@@ -461,7 +454,6 @@ impl Database {
             // different inactive parent is rejected, matching the WebApp.
             let (parent_code, parent_name) = resolve_parent(
                 &tx,
-                &code,
                 level,
                 &parent_code,
                 &group_code,
@@ -519,6 +511,25 @@ impl Database {
                 params![name, code],
             )
             .map_err(db_error)?;
+
+            // Match WebApp: changing a parent account's group also changes
+            // every descendant in the same hierarchy, in this transaction.
+            if old_group != group_code {
+                tx.execute(
+                    "WITH RECURSIVE descendants(code) AS (
+                        SELECT code FROM accounts WHERE parent_code = ?1
+                        UNION ALL
+                        SELECT child.code
+                          FROM accounts child
+                          JOIN descendants parent ON child.parent_code = parent.code
+                    )
+                    UPDATE accounts
+                       SET group_code = ?2, updated_at = datetime('now', 'localtime')
+                     WHERE code IN (SELECT code FROM descendants)",
+                    params![code, group_code],
+                )
+                .map_err(db_error)?;
+            }
 
             if old_parent_code != new_parent_code {
                 if !old_parent_code.is_empty() {
@@ -849,7 +860,6 @@ fn account_subtree_has_lines(conn: &Connection, code: &str) -> Result<bool, Stri
 
 fn resolve_parent(
     conn: &Connection,
-    code: &str,
     level: i64,
     parent_code: &str,
     group_code: &str,
@@ -888,10 +898,6 @@ fn resolve_parent(
     if parent.3 == 0 && !allow_inactive_parent {
         return Err("حساب بالاتر غیرفعال است؛ ابتدا آن را فعال کنید.".to_string());
     }
-    if !code.starts_with(parent_code) || code.len() <= parent_code.len() {
-        return Err("کد حساب باید با کد حساب بالاتر آغاز شود.".to_string());
-    }
-
     Ok((Some(parent_code.to_string()), parent.0))
 }
 

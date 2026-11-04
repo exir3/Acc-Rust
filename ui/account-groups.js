@@ -39,7 +39,7 @@ const state = {
   groups: [],
   selectedId: null,
   mode: 'view', // view | new | edit
-  form: { code: '', name: '', type: TYPES[0] },
+  form: { code: '', name: '', type: TYPES[0], defaultSection: '' },
   initialCode: '',
   loading: true,
   saving: false,
@@ -112,8 +112,9 @@ function setFormFromGroup(group) {
       code: toFaDigits(group.code),
       name: group.name,
       type: group.type || TYPES[0],
+      defaultSection: SECTIONS.includes(group.defaultSection) ? group.defaultSection : '',
     }
-    : { code: '', name: '', type: TYPES[0] };
+    : { code: '', name: '', type: TYPES[0], defaultSection: '' };
 }
 
 function isTypingTarget(target) {
@@ -219,6 +220,7 @@ function renderForm() {
   const codeInput = $('#agCode');
   const nameInput = $('#agName');
   const typeSelect = $('#agType');
+  const sectionSelect = $('#agDefaultSection');
 
   if (codeInput) {
     codeInput.value = state.form.code;
@@ -232,6 +234,10 @@ function renderForm() {
   if (typeSelect) {
     typeSelect.value = state.form.type;
     typeSelect.disabled = !editing || state.saving || state.deleting;
+  }
+  if (sectionSelect) {
+    sectionSelect.value = state.form.defaultSection || '';
+    sectionSelect.disabled = !editing || state.saving || state.deleting;
   }
   let hint = 'برای ویرایش، دکمه اصلاح را بزنید.';
   if (state.mode === 'new') {
@@ -399,6 +405,7 @@ function startNew() {
     code: toFaDigits((maxCode + 1n).toString()),
     name: '',
     type: TYPES[0],
+    defaultSection: '',
   };
   state.initialCode = onlyDigits(state.form.code);
   clearError();
@@ -442,11 +449,13 @@ function isDirty() {
   if (state.mode === 'new') {
     return normalizeName(state.form.name) !== ''
       || onlyDigits(state.form.code) !== state.initialCode
-      || state.form.type !== TYPES[0];
+      || state.form.type !== TYPES[0]
+      || state.form.defaultSection !== '';
   }
   if (state.mode === 'edit' && group) {
     return normalizeName(state.form.name) !== group.name
-      || state.form.type !== group.type;
+      || state.form.type !== group.type
+      || (state.form.defaultSection || '') !== (group.defaultSection || '');
   }
   return false;
 }
@@ -495,7 +504,9 @@ async function save() {
     showError('گروه حساب انتخاب‌شده یافت نشد.', 'validation');
     return;
   }
-  const defaultSection = wasNew ? '' : editingGroup.defaultSection || '';
+  const defaultSection = SECTIONS.includes(state.form.defaultSection)
+    ? state.form.defaultSection
+    : '';
 
   state.saving = true;
   clearError();
@@ -798,6 +809,10 @@ function bindEvents() {
 
   $('#agType').addEventListener('change', (event) => {
     state.form.type = event.target.value;
+  });
+
+  $('#agDefaultSection').addEventListener('change', (event) => {
+    state.form.defaultSection = event.target.value;
   });
 
   $('#agGridBody').addEventListener('click', (event) => {
