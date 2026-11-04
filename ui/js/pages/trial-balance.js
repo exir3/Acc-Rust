@@ -252,6 +252,10 @@ function renderTrialBalance(report) {
 
   const balanced = amountBigInt(report.closingDebit) === amountBigInt(report.closingCredit)
     && amountBigInt(report.periodDebit) === amountBigInt(report.periodCredit);
+  const hasCodeFilter = Boolean(state.filters.trial.accountFrom || state.filters.trial.accountTo);
+  const statusLabel = hasCodeFilter ? 'وضعیت محدوده' : 'وضعیت تراز';
+  const statusText = hasCodeFilter ? 'جمع محدودهٔ انتخاب‌شده' : balanced ? 'متوازن' : 'مغایرت';
+  const statusTone = hasCodeFilter ? '' : ` data-tone="${balanced ? 'ok' : 'danger'}"`;
 
   return `
   ${trialFilterTrigger()}
@@ -259,7 +263,7 @@ function renderTrialBalance(report) {
     <div class="kpi"><span>تعداد ردیف گزارش</span><strong>${toFa(report.rows.length)}</strong></div>
     <div class="kpi"><span>گردش بدهکار دوره</span><strong>${money(report.periodDebit)}</strong></div>
     <div class="kpi"><span>گردش بستانکار دوره</span><strong>${money(report.periodCredit)}</strong></div>
-    <div class="kpi" data-tone="${balanced ? 'ok' : 'danger'}"><span>وضعیت تراز</span><strong>${balanced ? 'متوازن' : 'مغایرت'}</strong></div>
+    <div class="kpi"${statusTone}><span>${statusLabel}</span><strong>${statusText}</strong></div>
   </div>
   <div class="card">
     ${report.rows.length ? `

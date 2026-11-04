@@ -25,6 +25,7 @@ fn roll_up_trial_amounts(
     accounts: &[TrialAccountRaw],
     index_by_code: &std::collections::HashMap<String, usize>,
     children: &std::collections::HashMap<String, Vec<String>>,
+    included: Option<&std::collections::HashSet<String>>,
     memo: &mut std::collections::HashMap<String, (i64, i64, i64, i64)>,
 ) -> Result<(i64, i64, i64, i64), String> {
     if let Some(amounts) = memo.get(code) {
@@ -34,15 +35,20 @@ fn roll_up_trial_amounts(
         return Ok((0, 0, 0, 0));
     };
     let account = &accounts[index];
-    let mut total = (
-        account.opening_debit,
-        account.opening_credit,
-        account.period_debit,
-        account.period_credit,
-    );
+    let mut total = if included.map_or(true, |codes| codes.contains(code)) {
+        (
+            account.opening_debit,
+            account.opening_credit,
+            account.period_debit,
+            account.period_credit,
+        )
+    } else {
+        (0, 0, 0, 0)
+    };
     if let Some(child_codes) = children.get(code) {
         for child in child_codes {
-            let amounts = roll_up_trial_amounts(child, accounts, index_by_code, children, memo)?;
+            let amounts =
+                roll_up_trial_amounts(child, accounts, index_by_code, children, included, memo)?;
             total.0 = checked_add(total.0, amounts.0, "جمع تراز آزمایشی")?;
             total.1 = checked_add(total.1, amounts.1, "جمع تراز آزمایشی")?;
             total.2 = checked_add(total.2, amounts.2, "جمع تراز آزمایشی")?;
@@ -53,31 +59,60 @@ fn roll_up_trial_amounts(
     Ok(total)
 }
 
-/// Account codes are compared level by level (two digits per level), so
-/// "2" sorts after "10" and a range like "11".."11" covers its whole subtree.
-fn trial_code_segments(code: &str) -> Vec<u32> {
-    let digits = normalize_code_filter(code);
-    digits
-        .as_bytes()
-        .chunks(2)
-        .map(|chunk| {
-            std::str::from_utf8(chunk)
-                .ok()
-                .and_then(|text| text.parse::<u32>().ok())
-                .unwrap_or(0)
-        })
-        .collect()
+fn trial_code_path(
+    code: &str,
+    accounts: &[TrialAccountRaw],
+    index_by_code: &std::collections::HashMap<String, usize>,
+) -> Option<Vec<String>> {
+    let mut path = Vec::new();
+    let mut current = code;
+    let mut guard = std::collections::HashSet::new();
+    while !current.is_empty() && guard.insert(current.to_string()) {
+        path.push(current.to_string());
+        current = accounts
+            .get(*index_by_code.get(current)?)
+            .map(|account| account.parent_code.as_str())?;
+    }
+    path.reverse();
+    Some(path)
 }
 
-fn compare_trial_segments(left: &[u32], right: &[u32]) -> std::cmp::Ordering {
-    let length = left.len().min(right.len());
-    for index in 0..length {
-        match left[index].cmp(&right[index]) {
-            std::cmp::Ordering::Equal => continue,
-            other => return other,
-        }
+fn compare_trial_codes(
+    left: &str,
+    right: &str,
+    accounts: &[TrialAccountRaw],
+    index_by_code: &std::collections::HashMap<String, usize>,
+) -> std::cmp::Ordering {
+    match (
+        trial_code_path(left, accounts, index_by_code),
+        trial_code_path(right, accounts, index_by_code),
+    ) {
+        (Some(left_path), Some(right_path)) => left_path.cmp(&right_path),
+        _ => left.cmp(right),
     }
-    std::cmp::Ordering::Equal
+}
+
+fn is_same_or_descendant(
+    account: &TrialAccountRaw,
+    ancestor_code: &str,
+    accounts: &[TrialAccountRaw],
+    index_by_code: &std::collections::HashMap<String, usize>,
+) -> bool {
+    if account.code == ancestor_code {
+        return true;
+    }
+    let mut parent = account.parent_code.as_str();
+    let mut guard = std::collections::HashSet::new();
+    while !parent.is_empty() && guard.insert(parent.to_string()) {
+        if parent == ancestor_code {
+            return true;
+        }
+        parent = index_by_code
+            .get(parent)
+            .map(|&index| accounts[index].parent_code.as_str())
+            .unwrap_or("");
+    }
+    false
 }
 
 fn normalize_code_filter(input: &str) -> String {
@@ -199,6 +234,51 @@ impl Database {
                 );
             }
 
+            let mut selected_by_code = vec![!has_code_range; accounts.len()];
+            let mut included_in_report = vec![!has_code_range; accounts.len()];
+            if has_code_range {
+                for (index, account) in accounts.iter().enumerate() {
+                    let in_range = (code_from.is_empty()
+                        || compare_trial_codes(
+                            &account.code,
+                            &code_from,
+                            &accounts,
+                            &index_by_code,
+                        ) != std::cmp::Ordering::Less
+                        || is_same_or_descendant(account, &code_from, &accounts, &index_by_code))
+                        && (code_to.is_empty()
+                            || compare_trial_codes(
+                                &account.code,
+                                &code_to,
+                                &accounts,
+                                &index_by_code,
+                            ) != std::cmp::Ordering::Greater
+                            || is_same_or_descendant(account, &code_to, &accounts, &index_by_code));
+                    if !in_range {
+                        continue;
+                    }
+                    selected_by_code[index] = true;
+                    included_in_report[index] = true;
+
+                    let mut parent = account.parent_code.as_str();
+                    let mut guard = std::collections::HashSet::new();
+                    while !parent.is_empty() && guard.insert(parent.to_string()) {
+                        let Some(&parent_index) = index_by_code.get(parent) else {
+                            break;
+                        };
+                        included_in_report[parent_index] = true;
+                        parent = accounts[parent_index].parent_code.as_str();
+                    }
+                }
+            }
+            let selected_codes: std::collections::HashSet<String> = accounts
+                .iter()
+                .enumerate()
+                .filter_map(|(index, account)| {
+                    selected_by_code[index].then_some(account.code.clone())
+                })
+                .collect();
+
             // Roll every child's amounts into its parent so a level-1 row shows
             // the whole branch, just like the WebApp balance report.
             let mut rolled = std::collections::HashMap::new();
@@ -208,6 +288,11 @@ impl Database {
                     &accounts,
                     &index_by_code,
                     &children,
+                    if has_code_range {
+                        Some(&selected_codes)
+                    } else {
+                        None
+                    },
                     &mut rolled,
                 )?;
                 rolled.insert(account.code.clone(), amounts);
@@ -245,23 +330,11 @@ impl Database {
                 if !relevant[index] {
                     continue;
                 }
-                if !has_code_range && !multi_level && account.level != 1 {
+                if has_code_range && !included_in_report[index] {
                     continue;
                 }
-                if has_code_range {
-                    let segments = trial_code_segments(&account.code);
-                    if !code_from.is_empty()
-                        && compare_trial_segments(&segments, &trial_code_segments(&code_from))
-                            == std::cmp::Ordering::Less
-                    {
-                        continue;
-                    }
-                    if !code_to.is_empty()
-                        && compare_trial_segments(&segments, &trial_code_segments(&code_to))
-                            == std::cmp::Ordering::Greater
-                    {
-                        continue;
-                    }
+                if !has_code_range && !multi_level && account.level != 1 {
+                    continue;
                 }
 
                 let (od, oc, pd, pc) = rolled.get(&account.code).copied().unwrap_or((0, 0, 0, 0));

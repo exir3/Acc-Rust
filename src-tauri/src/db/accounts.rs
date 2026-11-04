@@ -358,6 +358,40 @@ impl Database {
         parent_code: &str,
         is_postable: bool,
     ) -> Result<Account, String> {
+        self.update_account_inner(id, name, group_code, nature, parent_code, is_postable, None)
+    }
+
+    pub fn update_account_with_active(
+        &self,
+        id: i64,
+        name: &str,
+        group_code: &str,
+        nature: &str,
+        parent_code: &str,
+        is_postable: bool,
+        is_active: bool,
+    ) -> Result<Account, String> {
+        self.update_account_inner(
+            id,
+            name,
+            group_code,
+            nature,
+            parent_code,
+            is_postable,
+            Some(is_active),
+        )
+    }
+
+    fn update_account_inner(
+        &self,
+        id: i64,
+        name: &str,
+        group_code: &str,
+        nature: &str,
+        parent_code: &str,
+        is_postable: bool,
+        is_active: Option<bool>,
+    ) -> Result<Account, String> {
         if id <= 0 {
             return Err("شناسه حساب نامعتبر است.".to_string());
         }
@@ -454,6 +488,7 @@ impl Database {
                 "UPDATE accounts
                     SET name = ?1, group_code = ?2, nature = ?3,
                         parent_code = ?4, parent_name = ?5, is_postable = ?6,
+                        is_active = COALESCE(?10, is_active),
                         postable_before_children = CASE
                             WHEN ?8 = 1 THEN COALESCE(postable_before_children, ?9)
                             ELSE NULL
@@ -469,7 +504,8 @@ impl Database {
                     i64::from(postable),
                     id,
                     i64::from(children > 0),
-                    i64::from(is_postable)
+                    i64::from(is_postable),
+                    is_active.map(i64::from)
                 ],
             )
             .map_err(db_error)?;

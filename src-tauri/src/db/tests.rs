@@ -509,6 +509,20 @@ mod tests {
         assert!(!updated.is_postable);
         assert!(updated.is_active);
 
+        let updated = db
+            .update_account_with_active(
+                created.id,
+                "حساب آزمایشی ۳",
+                "1",
+                "debtor",
+                "110101",
+                false,
+                false,
+            )
+            .unwrap();
+        assert_eq!(updated.name, "حساب آزمایشی ۳");
+        assert!(!updated.is_active);
+
         db.delete_account(created.id).unwrap();
         let restored_parent = db
             .list_accounts()

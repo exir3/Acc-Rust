@@ -932,14 +932,6 @@ body.ag-page {
   gap: 5px;
 }
 
-.ag-field-section {
-  grid-column: 1 / -1;
-}
-
-.ag-field-section .ag-select-wrap {
-  max-width: 420px;
-}
-
 .ag-field label {
   color: #374151;
   font-size: 12px;

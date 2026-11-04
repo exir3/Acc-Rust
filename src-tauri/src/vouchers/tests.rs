@@ -1321,6 +1321,63 @@ fn trial_balance_rolls_up_level_one_and_filters_code_range() {
 }
 
 #[test]
+fn trial_balance_exact_code_filter_excludes_sibling_activity() {
+    let db = db::memory_database();
+    db.save_voucher(voucher(
+        "1405/01/10",
+        vec![line("110201001", 100_000, 0), line("410101", 0, 100_000)],
+    ))
+    .unwrap();
+    db.save_voucher(voucher(
+        "1405/01/11",
+        vec![line("110201002", 50_000, 0), line("410101", 0, 50_000)],
+    ))
+    .unwrap();
+
+    let report = db
+        .get_trial_balance_filtered(
+            "1405/01/01",
+            "1405/01/31",
+            "110201001",
+            "110201001",
+            false,
+            true,
+        )
+        .unwrap();
+
+    assert!(report
+        .rows
+        .iter()
+        .any(|row| row.account_code == "110201001"));
+    assert!(!report
+        .rows
+        .iter()
+        .any(|row| row.account_code == "110201002"));
+    assert_eq!(report.period_debit, 100_000);
+    assert_eq!(report.period_credit, 0);
+}
+
+#[test]
+fn trial_balance_code_filter_does_not_alias_uneven_code_lengths() {
+    let db = db::memory_database();
+    db.create_account("11021", "حساب نامنظم", 2, "1", "debtor", "1102", true)
+        .unwrap();
+    db.save_voucher(voucher(
+        "1405/01/10",
+        vec![line("11021", 75_000, 0), line("410101", 0, 75_000)],
+    ))
+    .unwrap();
+
+    let report = db
+        .get_trial_balance_filtered("1405/01/01", "1405/01/31", "110201", "110201", false, true)
+        .unwrap();
+
+    assert!(!report.rows.iter().any(|row| row.account_code == "11021"));
+    assert_eq!(report.period_debit, 0);
+    assert_eq!(report.period_credit, 0);
+}
+
+#[test]
 fn voucher_save_rejects_inactive_accounts_but_keeps_saved_lines_editable() {
     let db = db::memory_database();
     let inactive = db

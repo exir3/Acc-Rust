@@ -195,19 +195,19 @@ function bindVoucherSearch() {
 
     if (ev.key === 'Enter') {
       ev.preventDefault();
-      if (searchResults.length) {
-        chooseVoucherSearchResult();
-        return;
-      }
       const term = input.value.trim();
       if (!term) return;
       if (isVoucherNumberTerm(term)) {
         hideVoucherSearchResults();
         input.value = '';
         openNumber(digitsOnly(term));
-      } else {
-        runVoucherSearch(term);
+        return;
       }
+      if (searchResults.length) {
+        chooseVoucherSearchResult();
+        return;
+      }
+      runVoucherSearch(term);
       return;
     }
 

@@ -148,19 +148,21 @@ pub(crate) fn update_account(
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    let mut account = state.database.update_account(
-        id,
-        &name,
-        &group_code,
-        &nature,
-        &parent_code,
-        is_postable,
-    )?;
-    if let Some(is_active) = is_active {
-        if account.is_active != is_active {
-            account = state.database.set_account_active(id, is_active)?;
-        }
-    }
+    let account = if let Some(is_active) = is_active {
+        state.database.update_account_with_active(
+            id,
+            &name,
+            &group_code,
+            &nature,
+            &parent_code,
+            is_postable,
+            is_active,
+        )?
+    } else {
+        state
+            .database
+            .update_account(id, &name, &group_code, &nature, &parent_code, is_postable)?
+    };
     notify_accounts_changed(&app);
     Ok(account)
 }

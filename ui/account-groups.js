@@ -39,7 +39,7 @@ const state = {
   groups: [],
   selectedId: null,
   mode: 'view', // view | new | edit
-  form: { code: '', name: '', type: TYPES[0], defaultSection: '' },
+  form: { code: '', name: '', type: TYPES[0] },
   initialCode: '',
   loading: true,
   saving: false,
@@ -112,9 +112,8 @@ function setFormFromGroup(group) {
       code: toFaDigits(group.code),
       name: group.name,
       type: group.type || TYPES[0],
-      defaultSection: group.defaultSection || '',
     }
-    : { code: '', name: '', type: TYPES[0], defaultSection: '' };
+    : { code: '', name: '', type: TYPES[0] };
 }
 
 function isTypingTarget(target) {
@@ -220,7 +219,6 @@ function renderForm() {
   const codeInput = $('#agCode');
   const nameInput = $('#agName');
   const typeSelect = $('#agType');
-  const sectionSelect = $('#agSection');
 
   if (codeInput) {
     codeInput.value = state.form.code;
@@ -235,11 +233,6 @@ function renderForm() {
     typeSelect.value = state.form.type;
     typeSelect.disabled = !editing || state.saving || state.deleting;
   }
-  if (sectionSelect) {
-    sectionSelect.value = state.form.defaultSection || '';
-    sectionSelect.disabled = !editing || state.saving || state.deleting;
-  }
-
   let hint = 'برای ویرایش، دکمه اصلاح را بزنید.';
   if (state.mode === 'new') {
     hint = 'کد بعدی پیشنهاد شده است؛ می‌توانید آن را تغییر دهید.';
@@ -406,7 +399,6 @@ function startNew() {
     code: toFaDigits((maxCode + 1n).toString()),
     name: '',
     type: TYPES[0],
-    defaultSection: '',
   };
   state.initialCode = onlyDigits(state.form.code);
   clearError();
@@ -450,13 +442,11 @@ function isDirty() {
   if (state.mode === 'new') {
     return normalizeName(state.form.name) !== ''
       || onlyDigits(state.form.code) !== state.initialCode
-      || state.form.type !== TYPES[0]
-      || state.form.defaultSection !== '';
+      || state.form.type !== TYPES[0];
   }
   if (state.mode === 'edit' && group) {
     return normalizeName(state.form.name) !== group.name
-      || state.form.type !== group.type
-      || state.form.defaultSection !== group.defaultSection;
+      || state.form.type !== group.type;
   }
   return false;
 }
@@ -470,7 +460,6 @@ async function save() {
   const code = onlyDigits(state.form.code);
   const name = normalizeName(state.form.name);
   const type = state.form.type;
-  const defaultSection = state.form.defaultSection || '';
 
   if (!code || !name) {
     showError('لطفاً کد و نام گروه را وارد کنید.', 'validation');
@@ -492,10 +481,6 @@ async function save() {
     showError('نوع حساب انتخاب‌شده معتبر نیست.', 'validation');
     return;
   }
-  if (defaultSection && !SECTIONS.includes(defaultSection)) {
-    showError('بخش پیش‌فرض صورت مالی انتخاب‌شده معتبر نیست.', 'validation');
-    return;
-  }
   if (wasNew && state.groups.some((group) => group.code === code)) {
     showError('کد گروه تکراری است.', 'validation');
     return;
@@ -510,6 +495,7 @@ async function save() {
     showError('گروه حساب انتخاب‌شده یافت نشد.', 'validation');
     return;
   }
+  const defaultSection = wasNew ? '' : editingGroup.defaultSection || '';
 
   state.saving = true;
   clearError();
@@ -812,10 +798,6 @@ function bindEvents() {
 
   $('#agType').addEventListener('change', (event) => {
     state.form.type = event.target.value;
-  });
-
-  $('#agSection').addEventListener('change', (event) => {
-    state.form.defaultSection = event.target.value;
   });
 
   $('#agGridBody').addEventListener('click', (event) => {
