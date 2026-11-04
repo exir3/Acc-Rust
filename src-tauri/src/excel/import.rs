@@ -423,7 +423,7 @@ pub(crate) fn parse_bulk_voucher_sheet(
                 )
             })?
         } else {
-            let parsed = cell_amount(&read(row, columns.voucher_number)).map_err(|error| {
+            let parsed = cell_voucher_number(&read(row, columns.voucher_number)).map_err(|error| {
                 format!(
                     "شماره سند ردیف {} اکسل: {error}",
                     db::to_fa_digits(excel_row)
@@ -507,8 +507,8 @@ pub(crate) fn parse_bulk_voucher_sheet(
             }
         } else {
             let parsed = parse_code(&raw_group_code, "کد گروه")?;
-            if parsed.len() > 4 {
-                return Err("کد گروه در فایل اکسل نمی‌تواند بیشتر از ۴ رقم باشد.".to_string());
+            if parsed.len() > 50 {
+                return Err("کد گروه در فایل اکسل نمی‌تواند بیشتر از ۵۰ رقم باشد.".to_string());
             }
             parsed
         };

@@ -327,7 +327,7 @@ impl Database {
                 let parent_code = db::normalize_code(&account.parent_code);
                 let group_code = db::normalize_code(&account.group_code);
                 if code.is_empty()
-                    || code.len() > 20
+                    || code.len() > 50
                     || !code.chars().all(|ch| ch.is_ascii_digit())
                     || name.is_empty()
                     || name.chars().count() > 255

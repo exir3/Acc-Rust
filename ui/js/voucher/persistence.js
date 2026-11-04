@@ -100,8 +100,10 @@ function collectDraft() {
     const accountCode = digitsOnly(row.querySelector('.vf-code-input')?.value || '');
     const detail1Code = digitsOnly(row.querySelector('.vf-detail1-input')?.value || '');
     const description = (row.querySelector('.vf-desc-input')?.value || '').trim();
-    const debit = Number(parseAmount(row.querySelector('.vf-debit-input')?.value || ''));
-    const credit = Number(parseAmount(row.querySelector('.vf-credit-input')?.value || ''));
+    const debitValue = parseAmountInput(row.querySelector('.vf-debit-input')?.value || '');
+    const creditValue = parseAmountInput(row.querySelector('.vf-credit-input')?.value || '');
+    const debit = debitValue === null ? Number.NaN : Number(debitValue);
+    const credit = creditValue === null ? Number.NaN : Number(creditValue);
     if (!accountCode && !detail1Code && !description && !debit && !credit) continue;
     const lineId = Number(row.dataset.lineId || 0);
     lines.push({ id: lineId > 0 ? lineId : null, accountCode, detail1Code: detail1Code || null, description, debit, credit });
@@ -159,7 +161,7 @@ function validateDraft(draft) {
     if (!savedAccountMatches && account.isActive === false) {
       return `حساب «${account.name}» غیرفعال است و برای ردیف جدید سند قابل انتخاب نیست.`;
     }
-    if (![1, 2].includes(Number(account.level)) || !account.isPostable) {
+    if (!savedAccountMatches && (![1, 2].includes(Number(account.level)) || !account.isPostable)) {
       return `حساب پایه «${account.name}» باید از سطح کل یا معینِ قابل ثبت باشد.`;
     }
     if (line.detail1Code) {
@@ -301,8 +303,9 @@ function warnDraftChangedDuringLoad() {
 
 async function openNumber(number, options = {}) {
   if (state.busy || !invoke) return;
-  const target = Number(number);
-  if (!Number.isFinite(target) || target <= 0) {
+  const numberText = toAsciiDigits(String(number ?? '')).trim();
+  const target = /^\d+$/.test(numberText) ? Number(numberText) : Number.NaN;
+  if (!Number.isSafeInteger(target) || target <= 0 || target > MAX_VOUCHER_NUMBER) {
     toast('شماره سند معتبر نیست.', 'error');
     resetNumberInput();
     return;
@@ -490,7 +493,7 @@ async function copyVoucher() {
     date: draft.date || state.settings.today || '',
     voucherType: draft.voucherType,
     description: draft.description,
-    lines: draft.lines.map((line) => ({ ...line })),
+    lines: draft.lines.map(({ id, ...line }) => ({ ...line, id: null })),
   };
 
   state.voucher = null;

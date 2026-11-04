@@ -13,6 +13,13 @@ function formatAmount(value) {
 
 const parseAmount = (value) => BigInt(digitsOnly(value) || '0');
 
+function parseAmountInput(value) {
+  const normalized = toAsciiDigits(String(value ?? '')).trim();
+  if (!normalized) return 0n;
+  if (!/^(?:\d+|\d{1,3}(?:,\d{3})+)$/.test(normalized)) return null;
+  return BigInt(normalized.replace(/,/g, ''));
+}
+
 // Fallbacks mirror the backend. `loadSettings` replaces them with the values
 // returned by `get_settings`, so a limit change needs no front-end edit.
 let MAX_AMOUNT = 999_999_999_999_999n;

@@ -25,6 +25,19 @@
     return String(error ?? 'خطای نامشخص');
   };
   const pad2 = (value) => String(value).padStart(2, '0');
+  const isValidJalaliDate = (value) => {
+    const text = toEn(value).trim().replace(/-/g, '/');
+    const parts = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(text);
+    if (!parts) return false;
+    const year = Number(parts[1]), month = Number(parts[2]), day = Number(parts[3]);
+    if (year < 1 || year > 3177 || month < 1 || month > 12) return false;
+    const countLeapDays = (number) => Math.trunc(number / 33) * 8
+      + Math.trunc((((number % 33) + 3) / 4));
+    const shifted = year + 1595;
+    const leap = countLeapDays(shifted + 1) - countLeapDays(shifted) === 1;
+    const maxDay = month <= 6 ? 31 : month <= 11 ? 30 : leap ? 30 : 29;
+    return day >= 1 && day <= maxDay;
+  };
 
   const shiftMonth = (year, month, delta) => {
     const index = year * 12 + (month - 1) + delta;
@@ -260,7 +273,8 @@
       const pattern = /^\d{4}\/\d{1,2}\/\d{1,2}$/;
       const from = toEn(state.form.fromDate).trim();
       const to = toEn(state.form.toDate).trim();
-      if (!pattern.test(from) || !pattern.test(to)) {
+        if (!pattern.test(from) || !pattern.test(to)
+          || !isValidJalaliDate(from) || !isValidJalaliDate(to)) {
         return 'قالب تاریخ معتبر نیست؛ نمونه: ۱۴۰۵/۰۱/۰۱.';
       }
       const normalized = (value) => {

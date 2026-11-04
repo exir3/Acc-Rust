@@ -390,7 +390,7 @@ fn validate_backup_connection_with_options(
     if let Some(code) = backup_first_text(
         conn,
         "SELECT code FROM accounts
-          WHERE code = '' OR length(code) > 20 OR code GLOB '*[^0-9]*' OR trim(code, '0') = ''
+          WHERE code = '' OR length(code) > 50 OR code GLOB '*[^0-9]*' OR trim(code, '0') = ''
           LIMIT 1",
     )? {
         return Err(format!("کد حساب «{code}» در فایل پشتیبان معتبر نیست."));

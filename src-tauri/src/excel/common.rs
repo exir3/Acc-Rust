@@ -1,6 +1,7 @@
 //! Shared Excel limits, file checks and cell parsers.
 
 use crate::db;
+use crate::vouchers::MAX_VOUCHER_NUMBER;
 use calamine::Data;
 use rust_xlsxwriter::{Format, Worksheet, XlsxError};
 use std::path::Path;
@@ -403,6 +404,28 @@ pub(crate) fn cell_amount(cell: &Data) -> Result<i64, String> {
             }
             parse_text_amount(&text)
         }
+    }
+}
+
+pub(crate) fn cell_voucher_number(cell: &Data) -> Result<i64, String> {
+    match cell {
+        Data::Float(value)
+            if value.is_finite()
+                && (value - value.round()).abs() <= 1e-9
+                && value.round().abs() <= MAX_VOUCHER_NUMBER as f64 =>
+        {
+            Ok(value.round() as i64)
+        }
+        Data::Float(value)
+            if !value.is_finite() || value.round().abs() > MAX_VOUCHER_NUMBER as f64 =>
+        {
+            Err(format!(
+                "شماره سند باید بین صفر و {} باشد.",
+                db::to_fa_digits(MAX_VOUCHER_NUMBER)
+            ))
+        }
+        Data::Float(_) => Err("شماره سند باید عدد صحیح باشد.".to_string()),
+        _ => cell_amount(cell),
     }
 }
 

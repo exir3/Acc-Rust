@@ -48,7 +48,7 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
 
     // Level 1/2 accounts remain valid posting bases even when children exist.
     // The optional level-3 detail is stored in a separate voucher column.
-    let postable = account.level <= 2;
+    let postable = account.level == 1 || (account.level == 2 && account.is_postable);
     conn.execute(
         "INSERT INTO accounts
             (code, name, level, group_code, nature, parent_code, parent_name, is_postable, is_active)

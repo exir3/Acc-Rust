@@ -326,6 +326,12 @@ async function submitVoucherTransfer() {
     return;
   }
   state.busy = false;
+  const selectionUnchanged = () => lineIds.length === state.transfer.selectedIds.size
+    && lineIds.every((id) => state.transfer.selectedIds.has(id));
+  if (!selectionUnchanged()) {
+    toast('انتخاب ردیف‌ها حین بررسی تغییر کرد؛ عملیات متوقف شد.', 'warning');
+    return;
+  }
 
   const targetLabel = targetVoucher
     ? `سند مقصد: شماره ${vfFa(targetVoucher.number)} · تاریخ ${vfFa(targetVoucher.date)} · ${targetVoucher.type}`
@@ -348,6 +354,10 @@ async function submitVoucherTransfer() {
       toast('شماره سند مقصد حین تأیید تغییر کرد؛ عملیات متوقف شد.', 'warning');
       return;
     }
+  }
+  if (!selectionUnchanged()) {
+    toast('انتخاب ردیف‌ها حین تأیید تغییر کرد؛ عملیات متوقف شد.', 'warning');
+    return;
   }
   const operationMode = state.transfer.mode;
   state.busy = true; setStatus('info', 'در حال کپی یا انتقال ردیف‌ها…');
@@ -413,17 +423,22 @@ function renderExcelPreview(imported) {
   if (!tbody || !summary) return;
   const items = imported.map((line, index) => {
     const code = digitsOnly(line.accountCode || ''), account = accountForCode(code);
+    const detail1Code = digitsOnly(line.detail1Code || ''), detail = accountForCode(detail1Code);
     const debit = Number(line.debit || 0), credit = Number(line.credit || 0), errors = [];
     if (!code) errors.push('کد حساب خالی');
     else if (!account) errors.push('حساب یافت نشد');
     else if (!account.isPostable) errors.push('حساب قابل ثبت نیست');
+    if (detail1Code && (!detail || Number(account?.level) !== 2 || Number(detail.level) !== 3
+        || digitsOnly(detail.parentCode) !== code || String(detail.groupCode) !== String(account.groupCode)))
+      errors.push('تفصیلی باید فرزند مستقیم همان حساب معین باشد');
     if ([...String(line.description || '')].length > MAX_LINE_DESCRIPTION) errors.push(`شرح بیش از ${vfFa(MAX_LINE_DESCRIPTION)} نویسه`);
     if (!Number.isSafeInteger(debit) || !Number.isSafeInteger(credit) ||
         debit < 0 || credit < 0 || debit > Number(MAX_AMOUNT) || credit > Number(MAX_AMOUNT))
       errors.push('مبلغ نامعتبر');
     else if ((debit === 0) === (credit === 0))
       errors.push('دقیقاً یکی از بدهکار/بستانکار باید مثبت باشد');
-    return { index, line: { accountCode: code, description: String(line.description || ''), debit, credit }, account, errors };
+    return { index, line: { accountCode: code, detail1Code: detail1Code || null,
+      description: String(line.description || ''), debit, credit }, account, detail, errors };
   });
   const validLines = items.filter((item) => !item.errors.length).map((item) => item.line);
   state.excelPreview = { lines: validLines, total: items.length, invalid: items.length - validLines.length };
@@ -431,7 +446,8 @@ function renderExcelPreview(imported) {
   items.forEach((item) => {
     const row = document.createElement('tr'); if (item.errors.length) row.classList.add('invalid');
     const values = [vfFa(item.index + 1), vfFa(item.line.accountCode),
-      item.account ? item.account.name : '—', item.line.description,
+      item.account ? item.account.name : '—', vfFa(item.line.detail1Code || ''),
+      item.detail ? item.detail.name : '—', item.line.description,
       vfFa(formatAmount(item.line.debit)), vfFa(formatAmount(item.line.credit)),
       item.errors.length ? item.errors.join('، ') : 'معتبر'];
     values.forEach((value, index) => {

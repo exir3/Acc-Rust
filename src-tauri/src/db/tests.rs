@@ -10,7 +10,7 @@ use crate::vouchers::{
 };
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 mod tests {
@@ -780,6 +780,35 @@ mod tests {
             .create_account(&code, "حساب با کد پنجاه رقمی", 1, "1", "debtor", "", false)
             .unwrap();
         assert_eq!(created.code, code);
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-long-account-code-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let backup_path = dir.join("backup.sqlite3");
+        db.backup_to(&backup_path).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn account_creation_honors_postable_setting_for_level_two() {
+        let db = test_database();
+        let created = db
+            .create_account("995", "کل موقت", 1, "1", "debtor", "", false)
+            .unwrap();
+        assert!(created.is_postable);
+
+        let subsidiary = db
+            .create_account("99501", "معین غیرقابل ثبت", 2, "1", "debtor", "995", false)
+            .unwrap();
+        assert!(!subsidiary.is_postable);
+
+        let postable = db
+            .create_account("99502", "معین قابل ثبت", 2, "1", "debtor", "995", true)
+            .unwrap();
+        assert!(postable.is_postable);
     }
 
     #[test]
@@ -846,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_schema_v2_to_v5_without_losing_account_rows() {
+    fn migrates_schema_v2_to_current_without_losing_account_rows() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         apply_base_schema(&conn).unwrap();
@@ -878,7 +907,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, "5");
+        assert_eq!(version, "6");
         assert_eq!(column_count, 1);
         assert_eq!(account_code, "110101");
     }

@@ -446,6 +446,15 @@ mod tests {
     }
 
     #[test]
+    fn voucher_number_cells_use_the_voucher_limit_not_the_amount_limit() {
+        let value = 1_000_000_000_000_000i64;
+        assert_eq!(cell_voucher_number(&Data::Int(value)).unwrap(), value);
+        assert_eq!(cell_voucher_number(&Data::Float(value as f64)).unwrap(), value);
+        assert_eq!(cell_voucher_number(&text("۱٬۰۰۰٬۰۰۰٬۰۰۰٬۰۰۰٬۰۰۰")).unwrap(), value);
+        assert!(cell_voucher_number(&Data::Float(9_007_199_254_740_992.0)).is_err());
+    }
+
+    #[test]
     fn account_codes_must_be_text_to_preserve_leading_zeroes() {
         assert_eq!(
             parse_account_code_data_cell(&text("001101"), "کد حساب").unwrap(),
