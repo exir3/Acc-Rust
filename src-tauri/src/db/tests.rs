@@ -423,8 +423,10 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("hesabdari-legacy-{stamp}"));
         let data_dir = root.join("app-data");
+        let previous_data_dir = root.join("previous-app-data");
         let old_dir = root.join(LEGACY_IDENTIFIER);
         std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&previous_data_dir).unwrap();
         std::fs::create_dir_all(&old_dir).unwrap();
         let destination = data_dir.join(DB_FILE_NAME);
 
@@ -438,13 +440,15 @@ mod tests {
         write(&old_dir.join(LEGACY_DB_FILE_NAME), "قدیمی");
         std::thread::sleep(Duration::from_millis(30));
         write(&data_dir.join(LEGACY_DB_FILE_NAME), "جدید");
+        std::thread::sleep(Duration::from_millis(30));
+        write(&previous_data_dir.join(DB_FILE_NAME), "دیتابیس فعلی");
 
-        migrate_legacy_database(&data_dir, &destination).unwrap();
+        migrate_legacy_database(&data_dir, &destination, Some(&previous_data_dir)).unwrap();
         let copied = Connection::open(&destination).unwrap();
         let value: String = copied
             .query_row("SELECT value FROM sample", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(value, "جدید");
+        assert_eq!(value, "دیتابیس فعلی");
 
         drop(copied);
         let _ = std::fs::remove_dir_all(&root);
@@ -875,7 +879,7 @@ mod tests {
 
             // The source connection stays open with its data in the WAL, which
             // is exactly the situation a plain file copy would get wrong.
-            migrate_legacy_database(&dir, &destination).unwrap();
+            migrate_legacy_database(&dir, &destination, None).unwrap();
         }
 
         let copied = Connection::open(&destination).unwrap();

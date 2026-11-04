@@ -76,18 +76,24 @@ impl Database {
 }
 
 pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
-    let data_dir = app
+    let executable_dir = std::env::current_exe()
+        .map_err(|e| format!("مسیر فایل اجرایی برنامه در دسترس نیست: {e}"))?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "پوشه فایل اجرایی برنامه پیدا نشد.".to_string())?;
+    let data_dir = executable_dir.join("database");
+    let legacy_data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| format!("مسیر داده برنامه در دسترس نیست: {e}"))?;
+        .ok();
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("ساخت پوشه پایگاه داده ناموفق بود: {e}"))?;
 
     let path = data_dir.join(DB_FILE_NAME);
 
-    // Bring along data from the previous application versions so an existing
-    // chart of accounts does not disappear after the rename.
-    migrate_legacy_database(&data_dir, &path)?;
+    // Keep existing installations' data when moving from AppData to the
+    // application directory, including databases from the previous identifier.
+    migrate_legacy_database(&data_dir, &path, legacy_data_dir.as_deref())?;
 
     let mut connection =
         Connection::open(&path).map_err(|e| format!("باز کردن پایگاه داده ناموفق بود: {e}"))?;
@@ -112,12 +118,23 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
 /// old file may still have most of its data in a `-wal` sidecar, so copying
 /// only the main file would silently lose it. `VACUUM INTO` writes a single
 /// consistent file that includes everything the source connection can see.
-pub(crate) fn migrate_legacy_database(data_dir: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) fn migrate_legacy_database(
+    data_dir: &Path,
+    destination: &Path,
+    legacy_data_dir: Option<&Path>,
+) -> Result<(), String> {
     if destination.exists() {
         return Ok(());
     }
 
     let mut candidates = vec![data_dir.join(LEGACY_DB_FILE_NAME)];
+    if let Some(legacy_data_dir) = legacy_data_dir {
+        candidates.push(legacy_data_dir.join(DB_FILE_NAME));
+        candidates.push(legacy_data_dir.join(LEGACY_DB_FILE_NAME));
+        if let Some(parent) = legacy_data_dir.parent() {
+            candidates.push(parent.join(LEGACY_IDENTIFIER).join(LEGACY_DB_FILE_NAME));
+        }
+    }
     if let Some(parent) = data_dir.parent() {
         candidates.push(parent.join(LEGACY_IDENTIFIER).join(LEGACY_DB_FILE_NAME));
     }

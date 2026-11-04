@@ -14,14 +14,18 @@ pub(crate) fn backup_database(
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     require_window(&window, &["main"])?;
-    let Some(path) = rfd::FileDialog::new()
-        .set_title("ذخیره پشتیبان پایگاه داده")
-        .set_file_name("hesabdari-backup.sqlite3")
-        .add_filter("SQLite database", &["sqlite3", "db"])
-        .save_file()
-    else {
-        return Ok(None);
-    };
+    let database_path = std::path::PathBuf::from(state.database.path_string());
+    let backup_dir = database_path
+        .parent()
+        .ok_or_else(|| "مسیر پوشه پایگاه داده پیدا نشد.".to_string())?
+        .join("backups");
+    std::fs::create_dir_all(&backup_dir)
+        .map_err(|error| format!("ساخت پوشه پشتیبان ناموفق بود: {error}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("زمان سیستم معتبر نیست: {error}"))?
+        .as_nanos();
+    let path = backup_dir.join(format!("hesabdari-backup-{stamp}.sqlite3"));
     state.database.backup_to(&path)?;
     Ok(Some(path.to_string_lossy().to_string()))
 }
