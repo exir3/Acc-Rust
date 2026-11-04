@@ -30,7 +30,10 @@ pub use model::{
     ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES, MAX_ACCOUNT_LEVEL,
 };
 
-pub(crate) use common::{db_error, normalize_code, to_fa_digits};
+pub(crate) use common::{
+    db_error, normalize_code, to_fa_digits, OTHER_NON_OPERATING_GROUP_CODE,
+    OTHER_OPERATING_GROUP_CODE,
+};
 #[cfg(test)]
 pub(crate) use schema::{
     apply_base_schema, apply_schema_migrations, seed_default_accounts, seed_default_groups,

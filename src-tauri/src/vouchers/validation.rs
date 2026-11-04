@@ -7,7 +7,7 @@ use crate::db::{self, normalize_digits, Database};
 use crate::vouchers::accounting::{classify, AccountClass};
 use crate::vouchers::model::{VoucherLineInput, CLOSING_FINAL, CLOSING_TEMPORARY, VOUCHER_TYPES};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /* ── Validation helpers ─────────────────────────────────────── */
 
@@ -108,67 +108,111 @@ pub(crate) fn validate_voucher_type(input: &str) -> Result<String, String> {
     }
 }
 
-pub(crate) fn assert_postable_leaf(
+#[derive(Debug)]
+struct VoucherAccountRecord {
+    name: String,
+    level: i64,
+    group_code: String,
+    parent_code: String,
+    is_postable: i64,
+    is_active: i64,
+}
+
+fn load_voucher_accounts(
     conn: &Connection,
+    codes: &[String],
+) -> Result<HashMap<String, VoucherAccountRecord>, String> {
+    if codes.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", codes.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "WITH RECURSIVE needed(code) AS (
+             SELECT code FROM accounts WHERE code IN ({placeholders})
+             UNION
+             SELECT accounts.parent_code
+               FROM accounts
+               JOIN needed ON accounts.code = needed.code
+              WHERE accounts.parent_code IS NOT NULL AND accounts.parent_code <> ''
+         )
+         SELECT code, name, level, group_code, COALESCE(parent_code, ''),
+                is_postable, is_active
+           FROM accounts
+          WHERE code IN (SELECT code FROM needed)"
+    );
+    let mut statement = conn.prepare(&sql).map_err(db::db_error)?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(codes.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                VoucherAccountRecord {
+                    name: row.get(1)?,
+                    level: row.get(2)?,
+                    group_code: row.get(3)?,
+                    parent_code: row.get(4)?,
+                    is_postable: row.get(5)?,
+                    is_active: row.get(6)?,
+                },
+            ))
+        })
+        .map_err(db::db_error)?
+        .collect::<rusqlite::Result<HashMap<_, _>>>()
+        .map_err(db::db_error)?;
+    Ok(rows)
+}
+
+fn assert_postable_leaf(
+    accounts: &HashMap<String, VoucherAccountRecord>,
     account_code: &str,
 ) -> Result<String, String> {
-    let account = conn
-        .query_row(
-            "SELECT name, level, is_postable FROM accounts WHERE code = ?1",
-            params![account_code],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
-        )
-        .optional()
-        .map_err(db::db_error)?
+    let account = accounts
+        .get(account_code)
         .ok_or_else(|| format!("حساب با کد {} یافت نشد.", db::to_fa_digits(account_code)))?;
-    if !(1..=2).contains(&account.1) || account.2 == 0 {
+    if !(1..=2).contains(&account.level) || account.is_postable == 0 {
         return Err(format!(
             "حساب «{}» قابل ثبت نیست؛ حساب پایه باید از سطح کل یا معین و فعالِ ثبت باشد. تفصیلی سطح ۳ باید در ستون جداگانه انتخاب شود.",
-            account.0
+            account.name
         ));
     }
-    Ok(account.0)
+    Ok(account.name.clone())
 }
 
 /// Checks the complete parent chain (existence, level, group, activity and cycles).
-pub(crate) fn assert_active_account(conn: &Connection, account_code: &str) -> Result<(), String> {
+fn assert_active_account(
+    accounts: &HashMap<String, VoucherAccountRecord>,
+    account_code: &str,
+) -> Result<(), String> {
     let mut current = account_code.to_string();
     let mut seen = HashSet::new();
     loop {
         if !seen.insert(current.clone()) {
             return Err("چرخه‌ای در سلسله‌مراتب حساب‌ها شناسایی شد.".to_string());
         }
-        let row = conn
-            .query_row(
-                "SELECT name, level, group_code, COALESCE(parent_code,''), is_active FROM accounts WHERE code = ?1",
-                params![current],
-                |r| Ok((r.get::<_,String>(0)?, r.get::<_,i64>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?, r.get::<_,i64>(4)?)),
-            )
-            .optional()
-            .map_err(db::db_error)?
+        let row = accounts
+            .get(&current)
             .ok_or_else(|| format!("حساب {} یا یکی از والدهای آن یافت نشد.", db::to_fa_digits(&current)))?;
-        if row.4 == 0 {
-            return Err(format!("حساب «{}» یا یکی از حساب‌های بالاتر آن غیرفعال است.", row.0));
+        if row.is_active == 0 {
+            return Err(format!("حساب «{}» یا یکی از حساب‌های بالاتر آن غیرفعال است.", row.name));
         }
-        if row.3.is_empty() {
-            if row.1 != 1 {
-                return Err(format!("حساب «{}» والد معتبر ندارد.", row.0));
+        if row.parent_code.is_empty() {
+            if row.level != 1 {
+                return Err(format!("حساب «{}» والد معتبر ندارد.", row.name));
             }
             break;
         }
-        let parent = conn
-            .query_row(
-                "SELECT level, group_code FROM accounts WHERE code = ?1",
-                params![row.3],
-                |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?)),
-            )
-            .optional()
-            .map_err(db::db_error)?
-            .ok_or_else(|| format!("حساب بالاتر {} یافت نشد.", db::to_fa_digits(&row.3)))?;
-        if parent.0 != row.1 - 1 || parent.1 != row.2 {
-            return Err(format!("سطح یا گروه حساب بالاتر «{}» با ساختار حساب سازگار نیست.", db::to_fa_digits(&row.3)));
+        let parent = accounts.get(&row.parent_code).ok_or_else(|| {
+            format!("حساب بالاتر {} یافت نشد.", db::to_fa_digits(&row.parent_code))
+        })?;
+        if parent.level != row.level - 1 || parent.group_code != row.group_code {
+            return Err(format!(
+                "سطح یا گروه حساب بالاتر «{}» با ساختار حساب سازگار نیست.",
+                db::to_fa_digits(&row.parent_code)
+            ));
         }
-        current = row.3;
+        current = row.parent_code.clone();
     }
     Ok(())
 }
@@ -179,41 +223,37 @@ pub(crate) fn normalize_voucher_line_accounts(
     conn: &Connection,
     lines: &mut [VoucherLineInput],
 ) -> Result<(), String> {
+    let mut codes = Vec::with_capacity(lines.len() * 2);
     for (index, line) in lines.iter_mut().enumerate() {
         line.account_code = db::normalize_code(&line.account_code);
         let explicit_detail = line.detail1_code.as_deref().map(db::normalize_code).unwrap_or_default();
         if line.account_code.is_empty() {
             return Err(format!("کد حساب ردیف {} الزامی است.", db::to_fa_digits(index + 1)));
         }
-        let account = conn
-            .query_row(
-                "SELECT level, COALESCE(parent_code,''), group_code FROM accounts WHERE code = ?1",
-                params![line.account_code],
-                |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?)),
-            )
-            .optional()
-            .map_err(db::db_error)?
+        codes.push(line.account_code.clone());
+        if !explicit_detail.is_empty() {
+            codes.push(explicit_detail);
+        }
+    }
+    let accounts = load_voucher_accounts(conn, &codes)?;
+
+    for (index, line) in lines.iter_mut().enumerate() {
+        let explicit_detail = line.detail1_code.as_deref().map(db::normalize_code).unwrap_or_default();
+        let account = accounts
+            .get(&line.account_code)
             .ok_or_else(|| format!("حساب ردیف {} با کد {} یافت نشد.", db::to_fa_digits(index + 1), db::to_fa_digits(&line.account_code)))?;
-        if account.0 == 3 {
+        if account.level == 3 {
             if !explicit_detail.is_empty() {
                 return Err(format!("ردیف {} هم حساب سطح ۳ و هم تفصیلی جداگانه دارد؛ حساب پایه را انتخاب کنید.", db::to_fa_digits(index + 1)));
             }
-            let parent = conn
-                .query_row(
-                    "SELECT level, group_code FROM accounts WHERE code = ?1",
-                    params![account.1],
-                    |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?)),
-                )
-                .optional()
-                .map_err(db::db_error)?;
-            let Some((parent_level, parent_group)) = parent else {
+            let Some(parent) = accounts.get(&account.parent_code) else {
                 return Err(format!("تفصیلی ردیف {} والد معتبر ندارد.", db::to_fa_digits(index + 1)));
             };
-            if parent_level != 2 || parent_group != account.2 {
+            if parent.level != 2 || parent.group_code != account.group_code {
                 return Err(format!("تفصیلی ردیف {} باید فرزند مستقیم یک حساب معین از همان گروه باشد.", db::to_fa_digits(index + 1)));
             }
             line.detail1_code = Some(line.account_code.clone());
-            line.account_code = account.1;
+            line.account_code = account.parent_code.clone();
         } else {
             if !explicit_detail.is_empty() {
                 line.detail1_code = Some(explicit_detail);
@@ -226,39 +266,32 @@ pub(crate) fn normalize_voucher_line_accounts(
 }
 
 fn validate_base_detail_pair(
-    conn: &Connection,
+    accounts: &HashMap<String, VoucherAccountRecord>,
     base_code: &str,
     detail_code: Option<&str>,
 ) -> Result<(), String> {
-    assert_postable_leaf(conn, base_code)?;
-    assert_active_account(conn, base_code)?;
-    let base = conn
-        .query_row(
-            "SELECT level, group_code FROM accounts WHERE code = ?1",
-            params![base_code],
-            |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?)),
-        )
-        .map_err(db::db_error)?;
+    assert_postable_leaf(accounts, base_code)?;
+    assert_active_account(accounts, base_code)?;
+    let base = accounts
+        .get(base_code)
+        .ok_or_else(|| format!("حساب با کد {} یافت نشد.", db::to_fa_digits(base_code)))?;
     if let Some(detail) = detail_code.filter(|value| !value.is_empty()) {
-        if base.0 != 2 {
+        if base.level != 2 {
             return Err("انتخاب تفصیلی سطح ۱ فقط برای حساب معین مجاز است؛ حساب کل نمی‌تواند تفصیلی داشته باشد.".to_string());
         }
-        let detail_row = conn
-            .query_row(
-                "SELECT level, group_code, COALESCE(parent_code,''), is_active FROM accounts WHERE code = ?1",
-                params![detail],
-                |r| Ok((r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,i64>(3)?)),
-            )
-            .optional()
-            .map_err(db::db_error)?
+        let detail_row = accounts
+            .get(detail)
             .ok_or_else(|| format!("حساب تفصیلی {} یافت نشد.", db::to_fa_digits(detail)))?;
-        if detail_row.0 != 3 || detail_row.2 != base_code || detail_row.1 != base.1 {
+        if detail_row.level != 3
+            || detail_row.parent_code != base_code
+            || detail_row.group_code != base.group_code
+        {
             return Err(format!("تفصیلی {} باید از سطح ۳ و فرزند مستقیم معین {} از همان گروه باشد.", db::to_fa_digits(detail), db::to_fa_digits(base_code)));
         }
-        if detail_row.3 == 0 {
+        if detail_row.is_active == 0 {
             return Err(format!("حساب تفصیلی {} غیرفعال است.", db::to_fa_digits(detail)));
         }
-        assert_active_account(conn, detail)?;
+        assert_active_account(accounts, detail)?;
     }
     Ok(())
 }
@@ -271,6 +304,20 @@ pub(crate) fn validate_voucher_line_accounts(
     voucher_id: Option<i64>,
     lines: &[VoucherLineInput],
 ) -> Result<(), String> {
+    let codes = lines
+        .iter()
+        .flat_map(|line| {
+            std::iter::once(db::normalize_code(&line.account_code)).chain(
+                line.detail1_code
+                    .as_deref()
+                    .map(db::normalize_code)
+                    .filter(|code| !code.is_empty()),
+            )
+        })
+        .filter(|code| !code.is_empty())
+        .collect::<Vec<_>>();
+    let accounts = load_voucher_accounts(conn, &codes)?;
+
     let saved_lines: BTreeMap<i64, (String, Option<String>)> = if let Some(id) = voucher_id.filter(|id| *id > 0) {
         let mut statement = conn.prepare("SELECT id, account_code, NULLIF(detail1_code,'') FROM voucher_lines WHERE voucher_id = ?1").map_err(db::db_error)?;
         let rows = statement.query_map(params![id], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
@@ -294,7 +341,7 @@ pub(crate) fn validate_voucher_line_accounts(
             None => None,
         };
         if saved_line.is_none() {
-            validate_base_detail_pair(conn, &base, detail.as_deref()).map_err(|error| format!("ردیف {}: {error}", db::to_fa_digits(index + 1)))?;
+            validate_base_detail_pair(&accounts, &base, detail.as_deref()).map_err(|error| format!("ردیف {}: {error}", db::to_fa_digits(index + 1)))?;
         }
     }
     Ok(())
@@ -337,7 +384,7 @@ fn account_class_for_type_rule(
     conn: &Connection,
     account_code: &str,
 ) -> Result<AccountClass, String> {
-    let (group_code, group_type, nature) = conn
+    let account = conn
         .query_row(
             "SELECT g.code, g.type, a.nature
                FROM accounts a
@@ -352,15 +399,24 @@ fn account_class_for_type_rule(
                 ))
             },
         )
-        .map_err(db::db_error)?;
-    if group_code == "10" || group_code == "11" {
-        return Ok(if nature == "creditor" {
+        .optional()
+        .map_err(db::db_error)?
+        .ok_or_else(|| {
+            format!(
+                "حساب {} برای تعیین نوع سند یافت نشد.",
+                db::to_fa_digits(account_code)
+            )
+        })?;
+    if account.0 == db::OTHER_OPERATING_GROUP_CODE
+        || account.0 == db::OTHER_NON_OPERATING_GROUP_CODE
+    {
+        return Ok(if account.2 == "creditor" {
             AccountClass::Income
         } else {
             AccountClass::Expense
         });
     }
-    Ok(classify(&group_type, account_code))
+    Ok(classify(&account.1, account_code))
 }
 
 pub fn format_amount(value: i64) -> String {

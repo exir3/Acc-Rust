@@ -81,19 +81,18 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "پوشه فایل اجرایی برنامه پیدا نشد.".to_string())?;
-    let data_dir = executable_dir.join("database");
-    let legacy_data_dir = app
+    let data_dir = app
         .path()
         .app_data_dir()
-        .ok();
+        .map_err(|error| format!("مسیر داده‌های برنامه در دسترس نیست: {error}"))?;
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("ساخت پوشه پایگاه داده ناموفق بود: {e}"))?;
 
     let path = data_dir.join(DB_FILE_NAME);
 
-    // Keep existing installations' data when moving from AppData to the
-    // application directory, including databases from the previous identifier.
-    migrate_legacy_database(&data_dir, &path, legacy_data_dir.as_deref())?;
+    // Preserve databases created beside older executable builds while moving
+    // the active database to the writable per-user application data directory.
+    migrate_legacy_database(&data_dir, &path, Some(&data_dir), Some(&executable_dir))?;
 
     let mut connection =
         Connection::open(&path).map_err(|e| format!("باز کردن پایگاه داده ناموفق بود: {e}"))?;
@@ -122,6 +121,7 @@ pub(crate) fn migrate_legacy_database(
     data_dir: &Path,
     destination: &Path,
     legacy_data_dir: Option<&Path>,
+    legacy_executable_dir: Option<&Path>,
 ) -> Result<(), String> {
     if destination.exists() {
         return Ok(());
@@ -134,6 +134,14 @@ pub(crate) fn migrate_legacy_database(
         if let Some(parent) = legacy_data_dir.parent() {
             candidates.push(parent.join(LEGACY_IDENTIFIER).join(LEGACY_DB_FILE_NAME));
         }
+    }
+    if let Some(legacy_executable_dir) = legacy_executable_dir {
+        candidates.push(legacy_executable_dir.join("database").join(DB_FILE_NAME));
+        candidates.push(
+            legacy_executable_dir
+                .join("database")
+                .join(LEGACY_DB_FILE_NAME),
+        );
     }
     if let Some(parent) = data_dir.parent() {
         candidates.push(parent.join(LEGACY_IDENTIFIER).join(LEGACY_DB_FILE_NAME));

@@ -516,12 +516,47 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         write(&previous_data_dir.join(DB_FILE_NAME), "دیتابیس فعلی");
 
-        migrate_legacy_database(&data_dir, &destination, Some(&previous_data_dir)).unwrap();
+        migrate_legacy_database(&data_dir, &destination, Some(&previous_data_dir), None).unwrap();
         let copied = Connection::open(&destination).unwrap();
         let value: String = copied
             .query_row("SELECT value FROM sample", [], |row| row.get(0))
             .unwrap();
         assert_eq!(value, "دیتابیس فعلی");
+
+        drop(copied);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn legacy_migration_preserves_database_from_executable_directory() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("hesabdari-executable-db-{stamp}"));
+        let data_dir = root.join("app-data");
+        let executable_dir = root.join("release");
+        let executable_database = executable_dir.join("database").join(DB_FILE_NAME);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(executable_database.parent().unwrap()).unwrap();
+
+        let source = Connection::open(&executable_database).unwrap();
+        source
+            .execute_batch("CREATE TABLE sample (value TEXT NOT NULL);")
+            .unwrap();
+        source
+            .execute("INSERT INTO sample (value) VALUES ('اطلاعات قبلی')", [])
+            .unwrap();
+        drop(source);
+
+        let destination = data_dir.join(DB_FILE_NAME);
+        migrate_legacy_database(&data_dir, &destination, None, Some(&executable_dir)).unwrap();
+        let copied = Connection::open(&destination).unwrap();
+        let value: String = copied
+            .query_row("SELECT value FROM sample", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "اطلاعات قبلی");
+        assert!(executable_database.exists());
 
         drop(copied);
         let _ = std::fs::remove_dir_all(&root);
@@ -994,7 +1029,7 @@ mod tests {
 
             // The source connection stays open with its data in the WAL, which
             // is exactly the situation a plain file copy would get wrong.
-            migrate_legacy_database(&dir, &destination, None).unwrap();
+            migrate_legacy_database(&dir, &destination, None, None).unwrap();
         }
 
         let copied = Connection::open(&destination).unwrap();

@@ -10,6 +10,7 @@ pub mod report;
 pub mod vouchers;
 
 mod commands;
+mod limits;
 
 use commands::*;
 use tauri::Manager;

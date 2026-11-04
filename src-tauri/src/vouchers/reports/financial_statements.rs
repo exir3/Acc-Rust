@@ -1,6 +1,6 @@
 //! Income statement and balance sheet builders.
 
-use crate::db::Database;
+use crate::db::{self, Database};
 use crate::vouchers::accounting::{
     account_activities, classify_activity, AccountActivity, AccountClass,
 };
@@ -65,7 +65,9 @@ fn build_income_statement(
         if net == 0 {
             continue;
         }
-        if activity.group_code == "10" || activity.group_code == "11" {
+        if activity.group_code == db::OTHER_OPERATING_GROUP_CODE
+            || activity.group_code == db::OTHER_NON_OPERATING_GROUP_CODE
+        {
             let amount = if net < 0 {
                 checked_neg(net, "مبلغ درآمد گروه‌های سایر")?
             } else {
@@ -77,10 +79,10 @@ fn build_income_statement(
                 amount,
             };
             match (activity.group_code.as_str(), net < 0) {
-                ("10", true) => other_operating_revenues.push(row),
-                ("10", false) => other_operating_expenses.push(row),
-                ("11", true) => non_operating_revenues.push(row),
-                ("11", false) => non_operating_expenses.push(row),
+                (db::OTHER_OPERATING_GROUP_CODE, true) => other_operating_revenues.push(row),
+                (db::OTHER_OPERATING_GROUP_CODE, false) => other_operating_expenses.push(row),
+                (db::OTHER_NON_OPERATING_GROUP_CODE, true) => non_operating_revenues.push(row),
+                (db::OTHER_NON_OPERATING_GROUP_CODE, false) => non_operating_expenses.push(row),
                 _ => unreachable!(),
             }
             continue;

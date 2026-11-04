@@ -5,6 +5,9 @@
 
 use serde::{Deserialize, Serialize, Serializer};
 
+pub use crate::limits::MAX_AMOUNT;
+pub(crate) use crate::limits::{MAX_DESCRIPTION, MAX_LINE_DESCRIPTION, MAX_LINES};
+
 pub(crate) fn serialize_exact_amount<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -23,9 +26,6 @@ pub const VOUCHER_TYPES: [&str; 4] = [
     "سند بستن حساب‌های موقت",
 ];
 
-pub(crate) const MAX_DESCRIPTION: usize = 1000;
-pub(crate) const MAX_LINE_DESCRIPTION: usize = 500;
-pub(crate) const MAX_LINES: usize = 1000;
 pub const MAX_VOUCHER_NUMBER: i64 = 9_007_199_254_740_991;
 
 /// Rows returned by the paged lists. A caller that omits `limit` still gets
@@ -33,11 +33,6 @@ pub const MAX_VOUCHER_NUMBER: i64 = 9_007_199_254_740_991;
 pub const DEFAULT_VOUCHER_PAGE_SIZE: i64 = 200;
 pub const DEFAULT_JOURNAL_PAGE_SIZE: i64 = 500;
 pub const MAX_PAGE_SIZE: i64 = 2000;
-
-/// Largest amount accepted on one line (1e15 Rials). It stays below 2^53 so
-/// the UI, which holds numbers as JavaScript doubles, never loses precision,
-/// and it leaves room for sums of `MAX_LINES` lines inside an `i64`.
-pub const MAX_AMOUNT: i64 = 999_999_999_999_999;
 
 /// SQL expression for the new `updated_at` of a voucher. It is strictly
 /// greater than the current value even when two writes happen in the same

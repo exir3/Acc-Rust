@@ -8,6 +8,9 @@ pub(crate) const BULK_DELETE_SNAPSHOT_KEY: &str = "backup_snapshot_kind";
 pub(crate) const BULK_DELETE_SNAPSHOT_VALUE: &str = "bulk-delete-preimage-v1";
 pub(crate) const LEGACY_DB_FILE_NAME: &str = "audit-analyzer.sqlite3";
 pub(crate) const LEGACY_IDENTIFIER: &str = "ir.audit.account-analyzer";
+/// Built-in groups whose account nature determines whether a row is income or expense.
+pub(crate) const OTHER_OPERATING_GROUP_CODE: &str = "10";
+pub(crate) const OTHER_NON_OPERATING_GROUP_CODE: &str = "11";
 
 pub(crate) fn today_jalali() -> String {
     let d = jalali_calendar::JalaliDate::today();
@@ -50,4 +53,3 @@ pub(crate) fn to_fa_digits(value: impl ToString) -> String {
         })
         .collect()
 }
-

@@ -6,8 +6,8 @@ use calamine::Data;
 use rust_xlsxwriter::{Format, Worksheet, XlsxError};
 use std::path::Path;
 
-pub(crate) const MAX_IMPORT_LINES: usize = 1000;
-pub(crate) const MAX_LINE_DESCRIPTION: usize = 500;
+pub(crate) use crate::limits::{MAX_AMOUNT, MAX_LINE_DESCRIPTION};
+pub(crate) use crate::limits::MAX_LINES as MAX_IMPORT_LINES;
 pub(crate) const HEADER_SCAN_ROWS: usize = 30;
 pub(crate) const MAX_BULK_IMPORT_ROWS: usize = 300_000;
 pub(crate) const MAX_BULK_IMPORT_COLUMNS: usize = 40;
@@ -18,7 +18,6 @@ pub(crate) const MAX_SHEET_COLUMNS: usize = 50;
 pub(crate) const MAX_EXCEL_FILE_BYTES: u64 = 32 * 1024 * 1024;
 pub(crate) const MAX_XLSX_ENTRY_BYTES: u64 = 128 * 1024 * 1024;
 pub(crate) const MAX_XLSX_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
-pub(crate) const MAX_AMOUNT: i64 = 999_999_999_999_999;
 pub(crate) const MAX_IMPORT_ERRORS: usize = 200;
 
 /// Rejects an oversized workbook before calamine allocates its used range.
@@ -428,4 +427,3 @@ pub(crate) fn cell_voucher_number(cell: &Data) -> Result<i64, String> {
         _ => cell_amount(cell),
     }
 }
-
