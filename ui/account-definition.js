@@ -75,24 +75,28 @@
       return path;
     };
     const newCode = (n,p) => {
-      const siblings=state.accounts.filter(a=>Number(a.level)===n && (n===1?!a.parentCode:a.parentCode===p));
-      const prefix=n===1?'':p, used=new Set(state.accounts.map(a=>String(a.code)));
-      const suffixes=siblings.map(a=>nums(String(a.code).slice(prefix.length))).filter(Boolean).map(BigInt);
-      let width=Math.max(n===1?4:2,...siblings.map(a=>String(a.code).length-prefix.length));
-      const maxWidth=50-prefix.length;
-      let value=suffixes.length?suffixes.reduce((maximum,suffix)=>suffix>maximum?suffix:maximum,0n)+1n
-        :(n===1?10n**BigInt(width-1):1n);
-      while(width<=maxWidth){
-        const max=10n**BigInt(width)-1n;
-        if(value<=max){
-          while(value<=max){
-            const candidate=prefix+value.toString().padStart(width,'0');
-            if(!used.has(candidate))return candidate;
-            value++;
-          }
+      const baseWidth=({1:3,2:2,3:2})[Number(n)];
+      if(!baseWidth||(Number(n)>1&&!p))return '';
+      const prefix=Number(n)===1?'':String(p);
+      const siblings=state.accounts.filter(a=>Number(a.level)===Number(n)&&(Number(n)===1?!a.parentCode:(a.parentCode===p&&String(a.code).startsWith(prefix))));
+      const widths=siblings.map(a=>String(a.code).length-prefix.length).filter(w=>Number.isInteger(w)&&w>0);
+      const width=Math.max(baseWidth,...widths);
+      if(prefix.length+width>50)return '';
+      const minimum=Number(n)===1?10n**BigInt(width-1):1n;
+      const maximum=10n**BigInt(width)-1n;
+      const pattern=new RegExp('^\\d{'+width+'}$');
+      const suffixes=siblings.map(a=>String(a.code).slice(prefix.length)).filter(s=>pattern.test(s)).map(BigInt);
+      const maximumUsed=suffixes.length?suffixes.reduce((max,value)=>value>max?value:max,minimum-1n):(Number(n)===1?minimum:0n);
+      const next=maximumUsed+1n;
+      const ranges=[[next,maximum],[minimum,next-1n<maximum?next-1n:maximum]];
+      const used=new Set(state.accounts.map(a=>String(a.code)));
+      for(const [start,end] of ranges){
+        let suffix=start,checked=0;
+        while(suffix<=end&&checked<=state.accounts.length){
+          const candidate=prefix+suffix.toString().padStart(width,'0');
+          if(!used.has(candidate))return candidate;
+          suffix++;checked++;
         }
-        width++;
-        value=n===1?10n**BigInt(width-1):1n;
       }
       return '';
     };
@@ -219,7 +223,7 @@
       if(state.busy||state.mode!=='view'||!account)return;
       state.selected=account.code;state.mode='edit';editor.hidden=false;fillGroups(account.groupCode);
       $('[data-editor-title]').textContent='اصلاح حساب';
-      $('[data-editor-hint]').textContent='گروه و حساب بالاتر فقط وقتی قابل تغییرند که حساب در سندی استفاده نشده باشد.';
+      $('[data-editor-hint]').textContent='کد و سطح حساب پس از ثبت ثابت هستند؛ والد باید یک سطح بالاتر و از همان گروه باشد. تفصیلیِ استفاده‌شده در اسناد، والد قابل تغییر ندارد.';
       code.value=fa(account.code);code.readOnly=true;name.value=account.name;
       level.innerHTML='<option value="'+account.level+'">'+levelText(account.level)+'</option>';level.value=String(account.level);
       group.value=account.groupCode;

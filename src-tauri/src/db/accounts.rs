@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use crate::db::common::{db_error, normalize_code, to_fa_digits};
 use crate::db::model::{
     Account, AccountGroup, AccountGroupList, AccountList, BulkAccountDeleteFailure,
-    BulkAccountDeleteResult, Database, NewAccount,
+    BulkAccountDeleteResult, Database, NewAccount, MAX_ACCOUNT_LEVEL,
 };
 use crate::db::validation::{
     validate_account_code, validate_group_code, validate_level, validate_name, validate_nature,
@@ -115,7 +115,10 @@ impl Database {
         let default_section = validate_section(default_section)?;
 
         self.with_conn(|conn| {
-            let duplicate = conn
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db_error)?;
+            let duplicate = tx
                 .query_row(
                     "SELECT id FROM account_groups WHERE code = ?1",
                     params![code],
@@ -127,13 +130,15 @@ impl Database {
                 return Err("این کد گروه قبلاً ثبت شده است.".to_string());
             }
 
-            conn.execute(
+            tx.execute(
                 "INSERT INTO account_groups (code, name, type, default_section)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![code, name, group_type, default_section],
             )
             .map_err(db_error)?;
-            fetch_group(conn, conn.last_insert_rowid())
+            let group = fetch_group(&tx, tx.last_insert_rowid())?;
+            tx.commit().map_err(db_error)?;
+            Ok(group)
         })
     }
 
@@ -157,35 +162,17 @@ impl Database {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(db_error)?;
-            let existing = tx
+            let existing_code = tx
                 .query_row(
-                    "SELECT code, type FROM account_groups WHERE id = ?1",
+                    "SELECT code FROM account_groups WHERE id = ?1",
                     params![id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    |row| row.get::<_, String>(0),
                 )
                 .optional()
                 .map_err(db_error)?;
-            let (existing_code, existing_type) =
-                existing.ok_or_else(|| "گروه حساب یافت نشد.".to_string())?;
+            let existing_code = existing_code.ok_or_else(|| "گروه حساب یافت نشد.".to_string())?;
             if existing_code != code {
                 return Err("تغییر کد گروه حساب مجاز نیست.".to_string());
-            }
-            if existing_type != group_type {
-                let used_lines: i64 = tx
-                    .query_row(
-                        "SELECT COUNT(*)
-                           FROM voucher_lines l
-                           JOIN accounts a ON a.code = l.account_code
-                          WHERE a.group_code = ?1",
-                        params![code],
-                        |row| row.get(0),
-                    )
-                    .map_err(db_error)?;
-                if used_lines > 0 {
-                    return Err(
-                        "نوع این گروه در اسناد ثبت‌شده استفاده شده است؛ تغییر آن می‌تواند گزارش‌های مالی دوره‌های قبل را تغییر دهد.".to_string(),
-                    );
-                }
             }
 
             tx.execute(
@@ -208,7 +195,9 @@ impl Database {
         }
 
         self.with_conn(|conn| {
-            let tx = conn.transaction().map_err(db_error)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db_error)?;
 
             let code = tx
                 .query_row(
@@ -338,7 +327,9 @@ impl Database {
         }
 
         self.with_conn(move |conn| {
-            let tx = conn.transaction().map_err(db_error)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db_error)?;
             let mut created = Vec::with_capacity(normalized.len());
             for account in &normalized {
                 created.push(insert_account(&tx, account)?);
@@ -400,7 +391,9 @@ impl Database {
         let parent_code = normalize_code(parent_code);
 
         self.with_conn(|conn| {
-            let tx = conn.transaction().map_err(db_error)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db_error)?;
             let existing = tx
                 .query_row(
                     "SELECT code, level, group_code, COALESCE(parent_code, '') FROM accounts WHERE id = ?1",
@@ -441,10 +434,11 @@ impl Database {
                 )
                 .map_err(db_error)?;
 
-            let has_history = account_subtree_has_lines(&tx, &code)?;
-            if has_history && (old_group != group_code || old_parent_code != parent_code) {
+            if (old_group != group_code || old_parent_code != parent_code)
+                && account_legacy_subtree_has_lines(&tx, &code)?
+            {
                 return Err(
-                    "این حساب در اسناد ثبت‌شده استفاده شده است؛ تغییر گروه یا والد آن می‌تواند طبقه‌بندی و مانده گزارش‌های تاریخی را تغییر دهد. ابتدا حساب اصلاحی یا ساختار جایگزین تعریف کنید."
+                    "این حساب دارای تفصیلی سطح ۲ قدیمی با سابقه استفاده در اسناد ثبت‌شده است؛ برای حفظ سوابق، تغییر والد آن مجاز نیست."
                         .to_string(),
                 );
             }
@@ -460,6 +454,41 @@ impl Database {
                 old_parent_code == parent_code,
             )?;
             let new_parent_code = parent_code.as_deref().unwrap_or("");
+
+            if level == 3
+                && old_parent_code != new_parent_code
+                && account_has_lines(&tx, &code)?
+            {
+                return Err(
+                    "حساب تفصیلی در اسناد استفاده شده است؛ پیش از تغییر حساب معینِ والد، اسناد مرتبط را اصلاح کنید."
+                        .to_string(),
+                );
+            }
+
+            if !new_parent_code.is_empty() {
+                let creates_cycle: bool = tx
+                    .query_row(
+                        "WITH RECURSIVE ancestors(code, depth) AS (
+                            SELECT parent_code, 1 FROM accounts WHERE code = ?1
+                            UNION ALL
+                            SELECT a.parent_code, ancestors.depth + 1
+                              FROM accounts a
+                              JOIN ancestors ON a.code = ancestors.code
+                             WHERE a.parent_code IS NOT NULL AND ancestors.depth < 50
+                        )
+                        SELECT EXISTS(SELECT 1 FROM ancestors WHERE code = ?2)",
+                        params![new_parent_code, code],
+                        |row| row.get(0),
+                    )
+                    .map_err(db_error)?;
+                if creates_cycle {
+                    return Err(
+                        "والد انتخابی زیرشاخه همین حساب است؛ این عملیات چرخه‌ای در درخت حساب‌ها ایجاد می‌کند."
+                            .to_string(),
+                    );
+                }
+            }
+
             if old_parent_code != new_parent_code
                 && !new_parent_code.is_empty()
                 && account_has_lines(&tx, new_parent_code)?
@@ -518,7 +547,7 @@ impl Database {
                 tx.execute(
                     "WITH RECURSIVE descendants(code) AS (
                         SELECT code FROM accounts WHERE parent_code = ?1
-                        UNION ALL
+                        UNION
                         SELECT child.code
                           FROM accounts child
                           JOIN descendants parent ON child.parent_code = parent.code
@@ -600,7 +629,9 @@ impl Database {
         }
 
         self.with_conn(|conn| {
-            let tx = conn.transaction().map_err(db_error)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db_error)?;
             delete_account_tx(&tx, id)?;
             tx.commit().map_err(db_error)?;
             Ok(())
@@ -615,7 +646,9 @@ impl Database {
             return Err("حسابی برای حذف انتخاب نشده است.".to_string());
         }
         self.with_conn(move |conn| {
-            let tx = conn.transaction().map_err(db_error)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db_error)?;
             let mut deleted_count = 0;
             let mut blocked = Vec::new();
             for id in ids {
@@ -840,19 +873,22 @@ fn delete_account_tx(conn: &Connection, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-fn account_subtree_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
+fn account_legacy_subtree_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
     conn.query_row(
-        "WITH RECURSIVE account_tree(code) AS (
-            SELECT code FROM accounts WHERE code = ?1
+        "WITH RECURSIVE account_tree(code, level) AS (
+            SELECT code, level FROM accounts WHERE code = ?1
             UNION
-            SELECT child.code
+            SELECT child.code, child.level
               FROM accounts child
               JOIN account_tree parent ON child.parent_code = parent.code
         )
         SELECT EXISTS (
-            SELECT 1 FROM voucher_lines WHERE account_code IN (SELECT code FROM account_tree)
+            SELECT 1
+              FROM voucher_lines line
+              JOIN account_tree tree ON tree.code = line.account_code
+             WHERE tree.level > ?2
         )",
-        params![code],
+        params![code, MAX_ACCOUNT_LEVEL],
         |row| row.get(0),
     )
     .map_err(db_error)

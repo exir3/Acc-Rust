@@ -808,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn prevents_reclassifying_groups_and_posted_accounts() {
+    fn allows_reclassifying_used_groups_and_account_branches_like_webapp() {
         let db = test_database();
         let group = db
             .list_account_groups()
@@ -817,12 +817,12 @@ mod tests {
             .into_iter()
             .find(|group| group.code == "1")
             .unwrap();
-        let account = db
+        let root = db
             .list_accounts()
             .unwrap()
             .accounts
             .into_iter()
-            .find(|account| account.code == "110101")
+            .find(|account| account.code == "1101")
             .unwrap();
         db.with_conn(|conn| {
             conn.execute(
@@ -833,27 +833,38 @@ mod tests {
             let voucher_id = conn.last_insert_rowid();
             conn.execute(
                 "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
-                 VALUES (?1, 1, ?2, 1000, 0)",
-                params![voucher_id, account.code],
+                 VALUES (?1, 1, '110101', 1000, 0)",
+                params![voucher_id],
             )
             .map_err(db_error)?;
             Ok(())
         })
         .unwrap();
 
-        assert!(db
+        let updated_group = db
             .update_account_group(group.id, &group.code, &group.name, "بدهی", "")
-            .is_err());
-        assert!(db
-            .update_account(
-                account.id,
-                &account.name,
-                "4",
-                &account.nature,
-                &account.parent_code,
-                true
-            )
-            .is_err());
+            .unwrap();
+        assert_eq!(updated_group.group_type, "بدهی");
+
+        db.update_account(root.id, &root.name, "4", &root.nature, "", root.is_postable)
+            .unwrap();
+        let accounts = db.list_accounts().unwrap().accounts;
+        assert_eq!(
+            accounts
+                .iter()
+                .find(|a| a.code == "1101")
+                .unwrap()
+                .group_code,
+            "4"
+        );
+        assert_eq!(
+            accounts
+                .iter()
+                .find(|a| a.code == "110101")
+                .unwrap()
+                .group_code,
+            "4"
+        );
     }
 
     #[test]
@@ -969,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn account_with_descendant_history_cannot_change_parent() {
+    fn account_with_legacy_level4_descendant_history_cannot_change_parent() {
         let db = test_database();
         db.create_account("1102010", "والد جایگزین", 2, "1", "debtor", "1102", true)
             .unwrap();
@@ -1015,6 +1026,46 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("اسناد ثبت‌شده"));
+    }
+
+    #[test]
+    fn a_detail_account_used_in_vouchers_cannot_be_reparented() {
+        let db = test_database();
+        let detail = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110201001")
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'عادی')",
+                [],
+            )
+            .map_err(db_error)?;
+            let voucher_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+                 VALUES (?1, 1, '110201001', 1000, 0)",
+                params![voucher_id],
+            )
+            .map_err(db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let error = db
+            .update_account(
+                detail.id,
+                &detail.name,
+                &detail.group_code,
+                &detail.nature,
+                "110202",
+                false,
+            )
+            .unwrap_err();
+        assert!(error.contains("حساب تفصیلی"));
     }
 
     #[test]

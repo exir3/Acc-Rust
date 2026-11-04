@@ -164,40 +164,50 @@ function accountPathTo(accounts, account) {
 }
 
 function nextAccountCode(accounts, level, parentCode = '') {
-  const sameLevel = accounts.filter((account) => Number(account.level) === level);
-  const siblings = sameLevel.filter((account) =>
-    level === 1 ? !account.parentCode : account.parentCode === parentCode
+  const baseWidth = ({ 1: 3, 2: 2, 3: 2 })[Number(level)];
+  if (!baseWidth || (Number(level) > 1 && !parentCode)) return '';
+
+  const prefix = Number(level) === 1 ? '' : String(parentCode);
+  const siblings = accounts.filter((account) =>
+    Number(account.level) === Number(level)
+    && (Number(level) === 1
+      ? !account.parentCode
+      : account.parentCode === parentCode && String(account.code).startsWith(prefix))
   );
-  const width = level === 1
-    ? Math.max(4, ...sameLevel.map((account) => String(account.code).length))
-    : Math.max(
-      2,
-      ...sameLevel.map((account) => String(account.code).length - String(account.parentCode || '').length)
-    );
-  const prefix = level === 1 ? '' : parentCode;
-  const used = new Set(accounts.map((account) => String(account.code)));
+  const suffixWidths = siblings
+    .map((account) => String(account.code).length - prefix.length)
+    .filter((width) => Number.isInteger(width) && width > 0);
+  const width = Math.max(baseWidth, ...suffixWidths);
+  if (prefix.length + width > 50) return '';
+
+  const minimum = Number(level) === 1 ? 10n ** BigInt(width - 1) : 1n;
+  const maximum = 10n ** BigInt(width) - 1n;
+  const suffixPattern = new RegExp(`^\\d{${width}}$`);
   const suffixes = siblings
     .map((account) => String(account.code).slice(prefix.length))
-    .filter((suffix) => /^\d+$/.test(suffix))
-      .map(BigInt);
-    const minimum = level === 1 ? 10n ** BigInt(width - 1) : 1n;
-    const maximum = 10n ** BigInt(width) - 1n;
-    const next = (suffixes.length ? suffixes.reduce((max, value) => value > max ? value : max, minimum - 1n) : minimum - 1n) + 1n;
-    const ranges = [
-      [next, maximum],
-      [minimum, next - 1n < maximum ? next - 1n : maximum],
-    ];
-    for (const [start, end] of ranges) {
-      let suffix = start;
-      let checked = 0;
-      while (suffix <= end && checked <= accounts.length) {
-        const code = `${prefix}${suffix.toString().padStart(width, '0')}`;
-        if (!used.has(code)) return code;
-        suffix += 1n;
-        checked += 1;
-      }
+    .filter((suffix) => suffixPattern.test(suffix))
+    .map(BigInt);
+  const maximumUsed = suffixes.length
+    ? suffixes.reduce((max, value) => (value > max ? value : max), minimum - 1n)
+    : (Number(level) === 1 ? minimum : 0n);
+  const next = maximumUsed + 1n;
+  const ranges = [
+    [next, maximum],
+    [minimum, next - 1n < maximum ? next - 1n : maximum],
+  ];
+  const used = new Set(accounts.map((account) => String(account.code)));
+
+  for (const [start, end] of ranges) {
+    let suffix = start;
+    let checked = 0;
+    while (suffix <= end && checked <= accounts.length) {
+      const candidate = `${prefix}${suffix.toString().padStart(width, '0')}`;
+      if (!used.has(candidate)) return candidate;
+      suffix += 1n;
+      checked += 1;
+    }
   }
-    return '';
+  return '';
 }
 
 function natureLabel(nature) {
