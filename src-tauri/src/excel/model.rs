@@ -32,6 +32,7 @@ pub struct BulkVoucherPreview {
     pub account_count: usize,
     pub new_account_count: usize,
     pub number_conflict_count: usize,
+    pub conflicting_voucher_numbers: Vec<i64>,
 }
 
 #[derive(Default)]

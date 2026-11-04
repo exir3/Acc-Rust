@@ -659,6 +659,58 @@ body.is-voucher-list-popup .page-scroll {
   accent-color: var(--accent);
 }
 
+.bulk-import-wizard { display: flex; flex-direction: column; gap: 14px; }
+.bulk-import-progress {
+  padding: 12px 16px 10px;
+  background: #f5f8fc;
+  border-bottom: 1px solid var(--line-2);
+}
+.bulk-import-progress-line { display: flex; justify-content: space-between; gap: 12px; color: #33475f; font-size: 11px; }
+.bulk-import-progress-line span { color: var(--teal-ink); font-weight: 700; }
+.bulk-import-progress-track { height: 7px; margin-top: 8px; overflow: hidden; background: #dfe7ef; }
+.bulk-import-progress-track i { display: block; height: 100%; background: linear-gradient(90deg, #0d7f7a, #1f7e9f); transition: width .35s ease; }
+.bulk-import-stepper { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.bulk-import-step { display: flex; align-items: center; gap: 6px; min-width: 0; color: #728198; font-size: 10px; }
+.bulk-import-step span { display: grid; place-items: center; width: 20px; height: 20px; flex: 0 0 20px; border-radius: 50%; background: #d9e1eb; color: #41536b; font-size: 10px; }
+.bulk-import-step span .ico { width: 12px; height: 12px; vertical-align: 0; }
+.bulk-import-step b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.bulk-import-step.is-active, .bulk-import-step.is-done { color: var(--teal-ink); }
+.bulk-import-step.is-active b, .bulk-import-step.is-done b { font-weight: 700; }
+.bulk-import-step.is-active span, .bulk-import-step.is-done span { background: var(--teal); color: #fff; }
+.bulk-import-content { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+.bulk-import-file-panel { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--line-2); background: #fff; }
+.bulk-import-file-heading { display: flex; align-items: center; gap: 10px; }
+.bulk-import-file-heading > div { min-width: 0; flex: 1; }
+.bulk-import-file-heading h2, .bulk-import-result h2 { margin: 0; color: #1d3552; font-size: 13px; }
+.bulk-import-file-heading p { margin: 3px 0 0; color: var(--text-3); font-size: 10.5px; }
+.bulk-import-file-icon, .bulk-import-result-icon { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 34px; color: var(--teal-ink); background: var(--teal-soft); }
+.bulk-import-file-icon .ico, .bulk-import-result-icon .ico { width: 19px; height: 19px; vertical-align: 0; }
+.bulk-import-format { padding: 3px 7px; border: 1px solid var(--line-2); background: #f6f8fb; color: #52657e; font-size: 9px; font-weight: 700; }
+.bulk-import-conflicts { display: flex; flex-direction: column; gap: 4px; padding: 9px 10px; border-inline-start: 3px solid var(--amber); background: var(--warn-soft); color: #6b4600; font-size: 11px; }
+.bulk-import-conflicts span { direction: rtl; overflow-wrap: anywhere; }
+.bulk-import-loading { display: flex; min-height: 160px; flex-direction: column; align-items: center; justify-content: center; gap: 9px; text-align: center; color: #33475f; }
+.bulk-import-loading small { color: var(--text-3); font-size: 10.5px; }
+.bulk-import-wave { display: flex; align-items: center; gap: 4px; height: 34px; color: var(--teal); }
+.bulk-import-wave i { width: 4px; height: 7px; background: currentColor; animation: bulkImportWave .9s ease-in-out infinite; }
+.bulk-import-wave i:nth-child(2) { animation-delay: .12s; }
+.bulk-import-wave i:nth-child(3) { animation-delay: .24s; }
+.bulk-import-wave i:nth-child(4) { animation-delay: .36s; }
+.bulk-import-wave i:nth-child(5) { animation-delay: .48s; }
+@keyframes bulkImportWave { 50% { height: 28px; } }
+.bulk-import-result { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 20px 8px; text-align: center; }
+.bulk-import-result-icon { width: 46px; height: 46px; flex-basis: 46px; border-radius: 50%; }
+.bulk-import-result p { margin: 0; color: #33475f; }
+.bulk-import-result p strong { color: var(--teal-ink); font-size: 20px; }
+.bulk-import-result .note { width: 100%; text-align: right; }
+
+@media (max-width: 620px) {
+  .bulk-import-progress, .bulk-import-content { padding-inline: 10px; }
+  .bulk-import-stepper { gap: 4px; }
+  .bulk-import-step { flex-direction: column; align-items: flex-start; gap: 3px; font-size: 9px; }
+  .bulk-import-step b { max-width: 100%; }
+  .bulk-import-progress-line { flex-direction: column; gap: 4px; }
+}
+
 .reorganize-preview {
   display: flex;
   flex-direction: column;

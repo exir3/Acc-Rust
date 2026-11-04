@@ -242,86 +242,121 @@ function openBulkVoucherImport() {
     return;
   }
 
+  const steps = ['انتخاب فایل اکسل', 'اعتبارسنجی ساختار', 'تطبیق کدینگ حساب', 'صدور نهایی سند'];
   const dialog = openDialog({
     title: 'ورود دسته‌جمعی اسناد از اکسل',
     wide: true,
-    body: '<div class="note">ستون‌های شماره سند، تاریخ، کد و عنوان کل، کد و عنوان معین، بدهکار و بستانکار الزامی هستند. در صورت استفاده از کد تفصیلی ۱، عنوان آن نیز لازم است. نوع سند، شرح سند و شرح ردیف اختیاری هستند. ستون کد گروه برای کدینگ‌های سفارشی اختیاری است؛ در صورت نبود آن، گروه از پیشوند کد حساب کل بر اساس کدینگ پیش‌فرض برنامه تشخیص داده می‌شود. ستون‌های ماهیت کل، ماهیت معین و ماهیت تفصیلی ۱ نیز اختیاری‌اند؛ اما برای ساخت حساب جدید در گروه‌های سایر درآمدها و هزینه‌ها، ماهیت حساب معین/تفصیلی را با مقدار بدهکار، بستانکار یا دوگانه مشخص کنید. تاریخ شمسی متنی یا تاریخ واقعی اکسل قابل قبول است؛ مبالغ باید عدد صحیح ریال باشند. کدهای عددی صحیح تا ۱۵ رقم پذیرفته می‌شوند؛ کدهای دارای صفر ابتدایی یا بیش از ۱۵ رقم را به‌صورت متن ذخیره کنید. ردیف‌های هر سند باید پشت سر هم باشند و کاربرگ دارای اطلاعات به‌صورت خودکار شناسایی می‌شود.</div>',
+    body: '',
     actions: [],
   });
   if (!dialog) return;
 
   let selecting = false;
+
+  const renderWizard = (activeStep, content) => {
+    const progress = activeStep === 4 ? 100 : Math.round(((activeStep + 1) / steps.length) * 100);
+    const stepper = steps.map((label, index) => {
+      const done = index < activeStep || activeStep === 4;
+      const active = index === activeStep && activeStep !== 4;
+      return `<div class="bulk-import-step${active ? ' is-active' : ''}${done ? ' is-done' : ''}">
+        <span>${done ? icon('i-check') : toFa(index + 1)}</span><b>${label}</b>
+      </div>`;
+    }).join('');
+    dialog.body.innerHTML = `
+      <section class="bulk-import-wizard" aria-label="مراحل ورود اسناد">
+        <header class="bulk-import-progress">
+          <div class="bulk-import-progress-line">
+            <strong>گام ${toFa(Math.min(activeStep + 1, steps.length))} از ${toFa(steps.length)}: ${activeStep === 4 ? 'تکمیل فرآیند' : steps[Math.min(activeStep, steps.length - 1)]}</strong>
+            <span>پیشرفت فرآیند: ${toFa(progress)}٪</span>
+          </div>
+          <div class="bulk-import-progress-track"><i style="width:${progress}%"></i></div>
+          <div class="bulk-import-stepper">${stepper}</div>
+        </header>
+        <div class="bulk-import-content">${content}</div>
+      </section>`;
+  };
+
+  const selectContent = (message = '') => `
+    ${message ? `<div class="note" data-tone="danger" role="alert">${esc(message)}</div>` : ''}
+    <section class="bulk-import-file-panel">
+      <div class="bulk-import-file-heading"><span class="bulk-import-file-icon">${icon('i-doc')}</span><div><h2>محل بارگذاری فایل دفاتر</h2><p>کاربرگ دارای اطلاعات به‌صورت خودکار شناسایی می‌شود.</p></div><span class="bulk-import-format">XLSX / XLS</span></div>
+      <div class="note">ستون‌های شماره سند، تاریخ، کد و عنوان کل، کد و عنوان معین، بدهکار و بستانکار الزامی هستند. در صورت استفاده از کد تفصیلی ۱، عنوان آن نیز لازم است. نوع سند، شرح سند و شرح ردیف اختیاری هستند. ستون کد گروه برای کدینگ‌های سفارشی اختیاری است؛ در صورت نبود آن، گروه از پیشوند کد حساب کل بر اساس کدینگ پیش‌فرض برنامه تشخیص داده می‌شود. ستون‌های ماهیت حساب نیز اختیاری‌اند؛ برای ساخت حساب در گروه‌های سایر درآمدها و هزینه‌ها، ماهیت حساب معین/تفصیلی را با مقدار بدهکار، بستانکار یا دوگانه مشخص کنید. تاریخ شمسی متنی یا تاریخ واقعی اکسل پذیرفته می‌شود و مبالغ باید عدد صحیح ریال باشند. کدهای دارای صفر ابتدایی یا بیش از ۱۵ رقم را در اکسل به‌صورت متن ذخیره کنید.</div>
+    </section>`;
+
+  function showReview(currentDialog, preview, message = '') {
+    const conflicts = Number(preview.numberConflictCount) || 0;
+    renderWizard(2, `${message ? `<div class="note" data-tone="danger" role="alert">${esc(message)}</div>` : ''}
+      <div class="note">فایل «${esc(preview.fileName)}» از کاربرگ «${esc(preview.sheetName || '—')}» شناسایی شد. ستون‌ها، تاریخ‌ها، تراز اسناد و ساختار اولیه حساب‌ها بررسی شده‌اند. شرح و نوع سند در صورت وجود در فایل حفظ می‌شود.</div>
+      <dl class="info-list">
+        <div><dt>کاربرگ</dt><dd>${esc(preview.sheetName || '—')}</dd></div>
+        <div><dt>تعداد سند</dt><dd>${toFa(preview.voucherCount)}</dd></div>
+        <div><dt>تعداد ردیف</dt><dd>${toFa(preview.lineCount)}</dd></div>
+        <div><dt>حساب‌های شناسایی‌شده</dt><dd>${toFa(preview.accountCount)}</dd></div>
+        <div><dt>حساب‌های جدید</dt><dd>${toFa(preview.newAccountCount)}</dd></div>
+        <div><dt>شماره‌های تکراری</dt><dd>${toFa(conflicts)}</dd></div>
+      </dl>
+      ${conflicts ? `<div class="bulk-import-conflicts"><strong>شماره‌های موجود در برنامه</strong><span>${(preview.conflictingVoucherNumbers || []).map((number) => toFa(number)).join('، ') || 'جزئیات شماره‌ها در دسترس نیست'}</span></div>` : ''}
+      ${conflicts ? `<label class="bulk-import-renumber"><input id="bulkImportRenumber" type="checkbox"><span>برای ${toFa(conflicts)} سند دارای شماره‌ی تکراری، شماره‌ی آزاد جدید اختصاص بده</span></label>` : ''}`);
+
+    currentDialog.setActions([
+      {
+        id: 'bulkImportCommit',
+        label: 'تأیید و ثبت اسناد',
+        primary: true,
+        icon: 'i-check',
+        onClick: async (activeDialog, button) => {
+          const renumberConflicts = Boolean(activeDialog.body.querySelector('#bulkImportRenumber')?.checked);
+          button.disabled = true;
+          activeDialog.body.querySelectorAll('button').forEach((item) => { item.disabled = true; });
+          renderWizard(3, '<div class="bulk-import-loading"><span class="bulk-import-wave"><i></i><i></i><i></i><i></i><i></i></span><strong>در حال ثبت اسناد و حساب‌های جدید…</strong><small>ثبت در پایگاه داده به‌صورت تراکنشی انجام می‌شود.</small></div>');
+          activeDialog.setActions([]);
+          try {
+            const count = await invoke('commit_bulk_voucher_excel', { renumberConflicts });
+            renderWizard(4, `<section class="bulk-import-result" role="status"><span class="bulk-import-result-icon">${icon('i-check')}</span><h2>ورود اسناد با موفقیت تکمیل شد</h2><p><strong>${toFa(count)}</strong> سند حسابداری ثبت شد.</p><div class="note">فایل «${esc(preview.fileName)}» پردازش شد و اطلاعات ثبت‌شده در فهرست اسناد قابل مشاهده است.</div></section>`);
+            activeDialog.setActions([
+              { label: 'مشاهده اسناد', primary: true, icon: 'i-journal', onClick: async (doneDialog) => { doneDialog.close(); await navigate('vouchers', { force: true }); } },
+              { label: 'بستن', onClick: (doneDialog) => doneDialog.close() },
+            ]);
+            toast(`${toFa(count)} سند با موفقیت وارد شد.`, 'ok');
+          } catch (error) {
+            showReview(activeDialog, preview, error instanceof Error ? error.message : String(error));
+          }
+        },
+      },
+      { label: 'انتخاب فایل دیگر', icon: 'i-refresh', onClick: selectFile },
+    ]);
+
+    const commitButton = currentDialog.foot.querySelector('#bulkImportCommit');
+    const renumberCheckbox = currentDialog.body.querySelector('#bulkImportRenumber');
+    if (commitButton && conflicts > 0) commitButton.disabled = true;
+    renumberCheckbox?.addEventListener('change', () => {
+      if (commitButton) commitButton.disabled = conflicts > 0 && !renumberCheckbox.checked;
+    });
+  }
+
   const selectFile = async () => {
     if (selecting) return;
     selecting = true;
-    dialog.body.innerHTML = '<div class="note">فایل در حال بررسی و اسناد در حال اعتبارسنجی هستند…</div>';
+    renderWizard(1, '<div class="bulk-import-loading"><span class="bulk-import-wave"><i></i><i></i><i></i><i></i><i></i></span><strong>فایل در حال بررسی و اسناد در حال اعتبارسنجی هستند…</strong><small>ساختار ستون‌ها، تاریخ‌ها، تراز اسناد و کدینگ حساب کنترل می‌شود.</small></div>');
     dialog.setActions([]);
     try {
       const preview = await invoke('analyze_bulk_voucher_excel');
       if (!preview) {
-        dialog.body.innerHTML = '<div class="note">انتخاب فایل لغو شد.</div>';
-        dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, onClick: selectFile }]);
+        renderWizard(0, selectContent('انتخاب فایل لغو شد.'));
+        dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, icon: 'i-doc', onClick: selectFile }]);
         return;
       }
-
-      const conflicts = Number(preview.numberConflictCount) || 0;
-      dialog.body.innerHTML = `
-        <div class="note">فایل «${esc(preview.fileName)}» از کاربرگ «${esc(preview.sheetName || '—')}» شناسایی شد. ستون‌ها، تاریخ‌ها، تراز اسناد و ساختار اولیه حساب‌ها بررسی شده‌اند. شرح و نوع سند در صورت وجود در فایل حفظ می‌شود؛ کنترل نهایی حساب‌ها و نوع سند هنگام ثبت نیز انجام خواهد شد.</div>
-        <dl class="info-list">
-          <div><dt>کاربرگ</dt><dd>${esc(preview.sheetName || '—')}</dd></div>
-          <div><dt>تعداد سند</dt><dd>${toFa(preview.voucherCount)}</dd></div>
-          <div><dt>تعداد ردیف</dt><dd>${toFa(preview.lineCount)}</dd></div>
-          <div><dt>تعداد حساب‌های شناسایی‌شده</dt><dd>${toFa(preview.accountCount)}</dd></div>
-          <div><dt>حساب‌های جدید</dt><dd>${toFa(preview.newAccountCount)}</dd></div>
-          <div><dt>شماره‌های تکراری</dt><dd>${toFa(conflicts)}</dd></div>
-        </dl>
-        ${conflicts ? `<label class="bulk-import-renumber"><input id="bulkImportRenumber" type="checkbox"><span>برای ${toFa(conflicts)} سند دارای شماره‌ی تکراری، شماره‌ی آزاد جدید اختصاص بده</span></label>` : ''}
-        <div class="note" data-import-error hidden></div>`;
-
-      dialog.setActions([
-        {
-          id: 'bulkImportCommit',
-          label: 'تأیید و ثبت اسناد',
-          primary: true,
-          icon: 'i-check',
-          onClick: async (currentDialog, button) => {
-            const renumberConflicts = Boolean(currentDialog.body.querySelector('#bulkImportRenumber')?.checked);
-            button.disabled = true;
-            try {
-              const count = await invoke('commit_bulk_voucher_excel', { renumberConflicts });
-              currentDialog.close();
-              toast(`${toFa(count)} سند با موفقیت وارد شد.`, 'ok');
-              await navigate('vouchers', { force: true });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              const errorBox = currentDialog.body.querySelector('[data-import-error]');
-              if (errorBox) {
-                errorBox.textContent = message;
-                errorBox.hidden = false;
-                errorBox.dataset.tone = 'danger';
-              }
-              button.disabled = false;
-            }
-          },
-        },
-        { id: 'bulkImportReselect', label: 'انتخاب فایل دیگر', icon: 'i-refresh', onClick: selectFile },
-      ]);
-
-      const commitButton = dialog.foot.querySelector('#bulkImportCommit');
-      const renumberCheckbox = dialog.body.querySelector('#bulkImportRenumber');
-      if (commitButton && conflicts > 0) commitButton.disabled = true;
-      renumberCheckbox?.addEventListener('change', () => {
-        if (commitButton) commitButton.disabled = conflicts > 0 && !renumberCheckbox.checked;
-      });
+      showReview(dialog, preview);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      dialog.body.innerHTML = `<div class="note" data-tone="danger">${esc(message)}</div>`;
-      dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, onClick: selectFile }]);
+      renderWizard(0, selectContent(message));
+      dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, icon: 'i-doc', onClick: selectFile }]);
     } finally {
       selecting = false;
     }
   };
 
+  renderWizard(0, selectContent());
   dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, icon: 'i-doc', onClick: selectFile }]);
 }
 

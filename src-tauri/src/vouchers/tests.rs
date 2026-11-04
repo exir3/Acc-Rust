@@ -559,6 +559,9 @@ fn bulk_import_is_atomic_and_supports_large_vouchers() {
         "902101",
         vec![line("902101", 100, 0), line("110101", 0, 100)],
     );
+    let preview = db.preview_bulk_import(&conflicting).unwrap();
+    assert_eq!(preview.number_conflict_count, 1);
+    assert_eq!(preview.conflicting_voucher_numbers, vec![1]);
     assert!(db.import_vouchers(conflicting.clone(), false).is_err());
     assert!(!db
         .list_accounts()
@@ -742,7 +745,7 @@ fn bulk_import_preview_rejects_posted_account_with_imported_child() {
 
     let error = db.preview_bulk_import(&import).unwrap_err();
     assert!(error.contains("زیرحساب"));
-    assert!(error.contains("99101"));
+    assert!(error.contains(&db::to_fa_digits("99101")));
 }
 
 #[test]

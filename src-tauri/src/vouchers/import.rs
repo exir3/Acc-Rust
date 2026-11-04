@@ -232,7 +232,7 @@ impl Database {
                 }
             }
 
-            let mut number_conflict_count = 0;
+            let mut conflicting_voucher_numbers = Vec::new();
             for number in numbers {
                 let exists = conn
                     .query_row(
@@ -244,9 +244,11 @@ impl Database {
                     .map_err(db::db_error)?
                     .is_some();
                 if exists {
-                    number_conflict_count += 1;
+                    conflicting_voucher_numbers.push(number);
                 }
             }
+            conflicting_voucher_numbers.sort_unstable();
+            conflicting_voucher_numbers.dedup();
             Ok(crate::excel::BulkVoucherPreview {
                 file_name,
                 sheet_name,
@@ -254,7 +256,8 @@ impl Database {
                 line_count,
                 account_count,
                 new_account_count,
-                number_conflict_count,
+                number_conflict_count: conflicting_voucher_numbers.len(),
+                conflicting_voucher_numbers,
             })
         })
     }
