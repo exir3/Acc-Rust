@@ -13,6 +13,7 @@ function applyVoucherGridSearch() {
     const account = accountForCode(code);
     const haystack = normalizeSearch([
       code, account ? account.name : '',
+      row.querySelector('.vf-detail1-input')?.value || '',
       row.querySelector('.vf-desc-input')?.value || '',
       row.querySelector('.vf-debit-input')?.value || '',
       row.querySelector('.vf-credit-input')?.value || '',
@@ -47,11 +48,12 @@ async function copyVoucherRow() {
   const row = focusedVoucherRow();
   if (!row || !rowHasValue(row)) { toast('ابتدا یک ردیف دارای اطلاعات را انتخاب کنید.', 'info'); return; }
   const code = digitsOnly(row.querySelector('.vf-code-input')?.value || '');
+  const detail1 = digitsOnly(row.querySelector('.vf-detail1-input')?.value || '');
   const description = row.querySelector('.vf-desc-input')?.value || '';
   const debit = digitsOnly(row.querySelector('.vf-debit-input')?.value || '');
   const credit = digitsOnly(row.querySelector('.vf-credit-input')?.value || '');
   const rowNumber = gridRows().filter(rowHasValue).indexOf(row) + 1;
-  const line = [rowNumber, code, '', description, debit, credit].join('\t');
+  const line = [rowNumber, code, detail1, description, debit, credit].join('\t');
   try { await writeClipboardText(line); state.activeRow = row; toast('ردیف جاری در کلیپ‌بورد کپی شد.', 'ok'); }
   catch (error) { toast(errorText(error), 'error'); }
 }
@@ -69,9 +71,10 @@ function parseVoucherClipboardRows(raw) {
   const parsed = [];
   for (const line of lines.slice(start)) {
     const cells = line.split('\t').map((cell) => cell.trim());
-    let code = '', description = '', debitText = '', creditText = '';
+    let code = '', detail1 = '', description = '', debitText = '', creditText = '';
     if (cells.length >= 6) {
       code = cells[1] || '';
+      detail1 = cells[2] || '';
       description = cells[3] || '';
       debitText = cells[4] || '';
       creditText = cells[5] || '';
@@ -83,6 +86,7 @@ function parseVoucherClipboardRows(raw) {
       debitText = cells[2] || ''; creditText = cells[3] || '';
     }
     const accountCode = digitsOnly(code);
+    const detail1Code = digitsOnly(detail1);
     const descriptionLength = [...description].length;
     if (descriptionLength > MAX_LINE_DESCRIPTION) {
       throw new Error(`شرح ردیف کلیپ‌بورد بیش از ${vfFa(MAX_LINE_DESCRIPTION)} نویسه است (${vfFa(descriptionLength)} نویسه).`);
@@ -100,13 +104,13 @@ function parseVoucherClipboardRows(raw) {
     };
     const debit = parseClipboardAmount(debitText);
     const credit = parseClipboardAmount(creditText);
-    if (!accountCode && !description && !debit && !credit) continue;
+    if (!accountCode && !detail1Code && !description && !debit && !credit) continue;
     if (!Number.isSafeInteger(debit) || !Number.isSafeInteger(credit) ||
         debit > Number(MAX_AMOUNT) || credit > Number(MAX_AMOUNT))
       throw new Error('یکی از مبالغ کلیپ‌بورد خارج از محدوده مجاز است.');
     if (debit > 0 && credit > 0)
       throw new Error('در ردیف چسبانده‌شده، هم‌زمان بدهکار و بستانکار پر شده است.');
-    parsed.push({ accountCode, description, debit, credit });
+    parsed.push({ accountCode, detail1Code, description, debit, credit });
   }
   return parsed;
 }
@@ -137,6 +141,7 @@ async function pasteVoucherRows() {
       const row = anchor ? anchor.nextElementSibling : tbody.firstElementChild;
       if (!row) break;
       row.querySelector('.vf-code-input').value = line.accountCode;
+      row.querySelector('.vf-detail1-input').value = line.detail1Code || '';
       row.querySelector('.vf-desc-input').value = line.description;
       row.querySelector('.vf-debit-input').value = line.debit ? formatAmount(line.debit) : '';
       row.querySelector('.vf-credit-input').value = line.credit ? formatAmount(line.credit) : '';

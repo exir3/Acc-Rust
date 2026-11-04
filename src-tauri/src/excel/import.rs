@@ -14,6 +14,7 @@ use std::path::Path;
 #[derive(Default)]
 pub(crate) struct ImportColumns {
     pub(crate) account_code: Option<usize>,
+    pub(crate) detail1_code: Option<usize>,
     pub(crate) description: Option<usize>,
     pub(crate) debit: Option<usize>,
     pub(crate) credit: Option<usize>,
@@ -70,6 +71,16 @@ pub(crate) fn find_columns(range: &calamine::Range<Data>) -> Option<(usize, Impo
                         None
                     }
                 }),
+            detail1_code: find(&[
+                "کد تفصیلی ۱", "کد تفصیلی 1", "کد تفصیلی",
+                "کد تفضیلی ۱", "کد تفضیلی 1", "کد تفضیلی",
+            ]).or_else(|| {
+                // سازگاری با فایل‌های قدیمی فقط وقتی عنوان ستون دقیقاً
+                // «تفصیلی ۱» است؛ عنوان/نام تفصیلی را به‌اشتباه کد فرض نکن.
+                headers.iter().position(|header| {
+                    matches!(header.as_str(), "تفصیلی ۱" | "تفصیلی 1" | "تفضیلی ۱" | "تفضیلی 1" | "تفصیلی1" | "تفضیلی1")
+                })
+            }),
             description: find(&["شرح"]),
             debit: find(&["بدهکار", "بدهی"]),
             credit: find(&["بستانکار", "ستانکار"]),
@@ -477,31 +488,10 @@ pub(crate) fn parse_bulk_voucher_sheet(
             )?
         };
         let detail1_name = cell_text(&read(row, columns.detail1_name));
-        if !subsidiary_code.starts_with(&general_code)
-            || subsidiary_code.len() <= general_code.len()
-        {
-            return Err(format!(
-                "کد معین {} در ردیف {} اکسل باید زیرمجموعه حساب کل {} باشد.",
-                db::to_fa_digits(&subsidiary_code),
-                db::to_fa_digits(excel_row),
-                db::to_fa_digits(&general_code)
-            ));
-        }
         if detail1_code.is_empty() && !detail1_name.trim().is_empty() {
             return Err(format!(
                 "عنوان تفصیلی ۱ در ردیف {} اکسل وارد شده اما کد آن خالی است.",
                 db::to_fa_digits(excel_row)
-            ));
-        }
-        if !detail1_code.is_empty()
-            && (!detail1_code.starts_with(&subsidiary_code)
-                || detail1_code.len() <= subsidiary_code.len())
-        {
-            return Err(format!(
-                "کد تفصیلی ۱ {} در ردیف {} اکسل باید زیرمجموعه حساب معین {} باشد.",
-                db::to_fa_digits(&detail1_code),
-                db::to_fa_digits(excel_row),
-                db::to_fa_digits(&subsidiary_code)
             ));
         }
 
@@ -559,7 +549,7 @@ pub(crate) fn parse_bulk_voucher_sheet(
             ));
         }
 
-        let account_code = if !detail1_code.is_empty() {
+        let detail1_code = if !detail1_code.is_empty() {
             let (detail1_nature, detail1_nature_is_explicit) = imported_account_nature(
                 &cell_text(&read(row, columns.detail1_nature)),
                 &group_code,
@@ -569,16 +559,19 @@ pub(crate) fn parse_bulk_voucher_sheet(
                 &mut accounts,
                 detail1_code.clone(),
                 detail1_name,
-                subsidiary_code,
+                subsidiary_code.clone(),
                 &group_code,
                 3,
                 detail1_nature,
                 detail1_nature_is_explicit,
             )?;
-            detail1_code
+            Some(detail1_code)
         } else {
-            subsidiary_code
+            None
         };
+        // The voucher row now stores its posting base (معین) separately
+        // from the optional level-3 detail account.
+        let account_code = subsidiary_code;
         if accounts.len() > MAX_ACCOUNT_IMPORT_ROWS {
             return Err(format!(
                 "تعداد حساب‌های یکتای فایل بیش از حد مجاز است (حداکثر {} حساب).",
@@ -694,6 +687,7 @@ pub(crate) fn parse_bulk_voucher_sheet(
         voucher.lines.push(VoucherLineInput {
             id: None,
             account_code,
+            detail1_code,
             description: line_description,
             debit,
             credit,
@@ -813,6 +807,17 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
             &format!("کد حساب ردیف {} اکسل", db::to_fa_digits(excel_row)),
         )?;
 
+        let detail1_cell = read(row, columns.detail1_code);
+        let detail1_text = cell_text(&detail1_cell);
+        let detail1_code = if detail1_text.is_empty() {
+            None
+        } else {
+            Some(parse_account_code_data_cell(
+                &detail1_cell,
+                &format!("کد تفصیلی ۱ ردیف {} اکسل", db::to_fa_digits(excel_row)),
+            )?)
+        };
+
         let description = cell_text(&read(row, columns.description));
         if description.chars().count() > MAX_LINE_DESCRIPTION {
             return Err(format!(
@@ -854,6 +859,7 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
         lines.push(VoucherLineInput {
             id: None,
             account_code,
+            detail1_code,
             description,
             debit,
             credit,

@@ -170,7 +170,7 @@ impl Database {
                                               THEN l.credit END), 0) AS period_credit
                        FROM accounts a
                        JOIN account_groups g ON g.code = a.group_code
-                       LEFT JOIN voucher_lines l ON l.account_code = a.code
+                       LEFT JOIN voucher_lines l ON COALESCE(NULLIF(l.detail1_code, ''), l.account_code) = a.code
                        LEFT JOIN vouchers v ON v.id = l.voucher_id
                       GROUP BY a.code
                       ORDER BY a.code",

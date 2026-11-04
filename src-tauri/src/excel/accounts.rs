@@ -366,13 +366,8 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                 if name.chars().count() > 255 {
                     return Err(format!("نام حساب «{}» بیش از ۲۵۵ کاراکتر است.", name));
                 }
-                if level > 1 && !code.starts_with(&parent_code) {
-                    return Err(format!(
-                        "کد «{}» با کد حساب بالاتر «{}» آغاز نمی‌شود.",
-                        db::to_fa_digits(&code),
-                        db::to_fa_digits(&parent_code)
-                    ));
-                }
+                // سلسله‌مراتب حساب با parent_code صریح اعتبارسنجی می‌شود؛
+                // الزام پیشوندی بین کد فرزند و والد، بخشی از مدل حسابداری نیست.
                 let nature = account_nature(raw_nature, &parent_nature)?;
                 if let Some(existing) = accounts.iter().find(|account| account.code == code) {
                     if existing.level != level

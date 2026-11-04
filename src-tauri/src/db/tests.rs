@@ -20,6 +20,46 @@ mod tests {
         memory_database()
     }
 
+    #[test]
+    fn account_hierarchy_uses_explicit_parent_not_code_prefix() {
+        let db = test_database();
+
+        db.create_account("9901", "کل با کد سفارشی", 1, "1", "debtor", "", true)
+            .unwrap();
+        let child = db
+            .create_account(
+                "881122",
+                "معین با کد مستقل",
+                2,
+                "1",
+                "debtor",
+                "9901",
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(child.parent_code, "9901");
+        assert_eq!(child.level, 2);
+    }
+
+    fn insert_test_line(
+        conn: &Connection,
+        voucher_id: i64,
+        row_no: i64,
+        base_code: &str,
+        detail1_code: Option<&str>,
+        debit: i64,
+        credit: i64,
+    ) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO voucher_lines
+                (voucher_id, row_no, account_id, account_code, detail1_code, debit, credit)
+             SELECT ?1, ?2, a.id, a.code, ?3, ?4, ?5
+               FROM accounts a WHERE a.code = ?6",
+            params![voucher_id, row_no, detail1_code, debit, credit, base_code],
+        )
+    }
+
     fn file_database(path: &Path) -> Database {
         let mut conn = Connection::open(path).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -106,21 +146,14 @@ mod tests {
 
             assert!(conn
                 .execute(
-                    "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit) VALUES (?1, 1, '110101', 0, 0)",
+                    "INSERT INTO voucher_lines (voucher_id, row_no, account_id, account_code, detail1_code, debit, credit)
+                     SELECT ?1, 1, id, code, NULL, 0, 0 FROM accounts WHERE code = '110101'",
                     params![voucher_id],
                 )
                 .is_err());
-            conn.execute(
-                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit) VALUES (?1, 1, '110101', 100, 0)",
-                params![voucher_id],
-            )
+            insert_test_line(conn, voucher_id, 1, "110101", None, 100, 0)
             .map_err(db_error)?;
-            assert!(conn
-                .execute(
-                    "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit) VALUES (?1, 1, '410101', 0, 100)",
-                    params![voucher_id],
-                )
-                .is_err());
+            assert!(insert_test_line(conn, voucher_id, 1, "410101", None, 0, 100).is_err());
             Ok(())
         })
         .unwrap();
@@ -136,7 +169,7 @@ mod tests {
         let accounts = db.list_accounts().unwrap();
         assert_eq!(accounts.accounts.len(), 34);
         assert_eq!(accounts.accounts[0].code, "1101");
-        assert!(!accounts.accounts[0].is_postable);
+        assert!(accounts.accounts[0].is_postable);
         assert!(accounts
             .accounts
             .iter()
@@ -152,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_parent_is_reported_non_postable_without_changing_stored_flag() {
+    fn level_two_parent_remains_postable_when_it_has_a_detail_child() {
         let db = test_database();
         db.with_conn(|conn| {
             conn.execute(
@@ -182,7 +215,7 @@ mod tests {
             })
             .unwrap();
 
-        assert!(!parent.is_postable);
+        assert!(parent.is_postable);
         assert_eq!(stored_flag, 1);
     }
 
@@ -249,6 +282,50 @@ mod tests {
     }
 
     #[test]
+    fn restores_a_v4_backup_and_migrates_legacy_detail_rows() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-v4-restore-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let active_path = dir.join(DB_FILE_NAME);
+        let backup_path = dir.join("v4-backup.sqlite3");
+
+        // Build a genuine v4-shaped backup: the old schema has account_code
+        // only, and an old voucher can point directly at a level-3 detail.
+        let mut old = Connection::open(&backup_path).unwrap();
+        old.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        apply_base_schema(&old).unwrap();
+        seed_default_groups(&mut old).unwrap();
+        seed_default_accounts(&mut old).unwrap();
+        seed_default_settings(&old).unwrap();
+        old.execute(
+            "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'سند حسابداری عادی')",
+            [],
+        ).unwrap();
+        let voucher_id = old.last_insert_rowid();
+        old.execute(
+            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+             VALUES (?1, 1, '110201001', 750, 0), (?1, 2, '410101', 0, 750)",
+            params![voucher_id],
+        ).unwrap();
+        drop(old);
+
+        let db = file_database(&active_path);
+        let safety_path = db.restore_from(&backup_path).unwrap();
+        assert!(safety_path.exists());
+        let restored = db.get_voucher(1).unwrap().unwrap();
+        assert_eq!(restored.lines[0].account_code, "110201");
+        assert_eq!(restored.lines[0].detail1_code.as_deref(), Some("110201001"));
+        assert_eq!(restored.lines[0].debit, 750);
+        assert_eq!(restored.lines[1].account_code, "410101");
+        assert_eq!(restored.lines[1].detail1_code, None);
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn bulk_delete_backup_preserves_and_restores_legacy_unbalanced_vouchers() {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -268,11 +345,7 @@ mod tests {
             )
             .map_err(db_error)?;
             let voucher_id = conn.last_insert_rowid();
-            conn.execute(
-                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
-                 VALUES (?1, 1, '110101', 100, 0)",
-                params![voucher_id],
-            )
+            insert_test_line(conn, voucher_id, 1, "110101", None, 100, 0)
             .map_err(db_error)?;
             Ok(())
         })
@@ -287,6 +360,7 @@ mod tests {
                 crate::vouchers::VoucherLineInput {
                     id: None,
                     account_code: "110101".to_string(),
+                    detail1_code: None,
                     description: String::new(),
                     debit: 200,
                     credit: 0,
@@ -294,6 +368,7 @@ mod tests {
                 crate::vouchers::VoucherLineInput {
                     id: None,
                     account_code: "410101".to_string(),
+                    detail1_code: None,
                     description: String::new(),
                     debit: 0,
                     credit: 200,
@@ -373,20 +448,18 @@ mod tests {
         )
         .unwrap();
         let voucher_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
-             VALUES (?1, 1, '110101', 1000, 0)",
-            params![voucher_id],
-        )
+        insert_test_line(&conn, voucher_id, 1, "110101", None, 1000, 0)
         .unwrap();
         assert!(validate_backup_connection(&conn)
             .unwrap_err()
             .contains("تراز"));
         conn.execute("DELETE FROM voucher_lines", []).unwrap();
 
+        conn.execute("DROP TRIGGER voucher_lines_account_pair_insert", []).unwrap();
         conn.execute(
-            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
-             VALUES (?1, 1, '999999', 1000, 0)",
+            "INSERT INTO voucher_lines
+                (voucher_id, row_no, account_id, account_code, detail1_code, debit, credit)
+             VALUES (?1, 1, 999999, '999999', NULL, 1000, 0)",
             params![voucher_id],
         )
         .unwrap();
@@ -490,7 +563,8 @@ mod tests {
             .unwrap();
         assert_eq!(created.group_name, "دارایی‌های جاری");
         assert_eq!(created.parent_name, "صندوق مرکزی");
-        assert!(created.is_postable);
+        // Level-3 is a detail reference, never a posting base on its own.
+        assert!(!created.is_postable);
         assert!(created.is_active);
 
         // A definition can be paused without touching its vouchers, and the
@@ -603,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_account_parent_updates_both_parent_postability_states() {
+    fn changing_account_parent_does_not_toggle_parent_postability() {
         let db = test_database();
         db.create_account("1102020", "والد قدیمی", 2, "1", "debtor", "1102", true)
             .unwrap();
@@ -613,7 +687,7 @@ mod tests {
 
         let before = db.list_accounts().unwrap().accounts;
         assert!(
-            !before
+            before
                 .iter()
                 .find(|account| account.code == "1102020")
                 .unwrap()
@@ -646,7 +720,7 @@ mod tests {
                 .is_postable
         );
         assert!(
-            !after
+            after
                 .iter()
                 .find(|account| account.code == "110202")
                 .unwrap()
@@ -772,13 +846,15 @@ mod tests {
     }
 
     #[test]
-    fn migrates_schema_v2_to_v3_without_losing_account_rows() {
+    fn migrates_schema_v2_to_v5_without_losing_account_rows() {
         let mut conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             CREATE TABLE accounts (id INTEGER PRIMARY KEY, code TEXT NOT NULL);
-             INSERT INTO accounts (code) VALUES ('110101');
-             INSERT INTO app_meta (key, value) VALUES ('schema_version', '2');",
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        apply_base_schema(&conn).unwrap();
+        seed_default_groups(&mut conn).unwrap();
+        seed_default_accounts(&mut conn).unwrap();
+        conn.execute(
+            "UPDATE app_meta SET value = '2' WHERE key = 'schema_version'",
+            [],
         )
         .unwrap();
 
@@ -798,17 +874,17 @@ mod tests {
             )
             .unwrap();
         let account_code: String = conn
-            .query_row("SELECT code FROM accounts WHERE id = 1", [], |row| {
+            .query_row("SELECT code FROM accounts WHERE code = '110101'", [], |row| {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, "4");
+        assert_eq!(version, "5");
         assert_eq!(column_count, 1);
         assert_eq!(account_code, "110101");
     }
 
     #[test]
-    fn allows_reclassifying_used_groups_and_account_branches_like_webapp() {
+    fn rejects_reclassifying_used_account_branches_like_webapp() {
         let db = test_database();
         let group = db
             .list_account_groups()
@@ -831,11 +907,7 @@ mod tests {
             )
             .map_err(db_error)?;
             let voucher_id = conn.last_insert_rowid();
-            conn.execute(
-                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
-                 VALUES (?1, 1, '110101', 1000, 0)",
-                params![voucher_id],
-            )
+            insert_test_line(conn, voucher_id, 1, "110101", None, 1000, 0)
             .map_err(db_error)?;
             Ok(())
         })
@@ -846,8 +918,11 @@ mod tests {
             .unwrap();
         assert_eq!(updated_group.group_type, "بدهی");
 
-        db.update_account(root.id, &root.name, "4", &root.nature, "", root.is_postable)
-            .unwrap();
+        let error = db
+            .update_account(root.id, &root.name, "4", &root.nature, "", root.is_postable)
+            .unwrap_err();
+        assert!(error.contains("تغییر حساب بالاتر یا گروه مجاز نیست"));
+
         let accounts = db.list_accounts().unwrap().accounts;
         assert_eq!(
             accounts
@@ -855,7 +930,7 @@ mod tests {
                 .find(|a| a.code == "1101")
                 .unwrap()
                 .group_code,
-            "4"
+            "1"
         );
         assert_eq!(
             accounts
@@ -863,7 +938,7 @@ mod tests {
                 .find(|a| a.code == "110101")
                 .unwrap()
                 .group_code,
-            "4"
+            "1"
         );
     }
 
@@ -923,11 +998,7 @@ mod tests {
             )
             .map_err(db_error)?;
             let id = conn.last_insert_rowid();
-            conn.execute(
-                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
-                 VALUES (?1, 1, ?2, 1000, 0)",
-                params![id, account.code],
-            )
+            insert_test_line(conn, id, 1, &account.code, None, 1000, 0)
             .map_err(db_error)?;
             Ok(())
         })
@@ -935,97 +1006,108 @@ mod tests {
         assert!(db.delete_account(account.id).is_err());
     }
     #[test]
-    fn account_with_vouchers_cannot_gain_children_or_lose_postable() {
+    fn account_with_vouchers_can_gain_detail_children_without_losing_postability() {
         let db = test_database();
-        let account = |db: &Database, code: &str| {
-            db.list_accounts()
-                .unwrap()
-                .accounts
-                .into_iter()
-                .find(|a| a.code == code)
-                .unwrap()
-        };
-        let used = account(&db, "110101");
+        let used = db.list_accounts().unwrap().accounts.into_iter()
+            .find(|account| account.code == "110101").unwrap();
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'عادی')",
                 [],
-            )
-            .map_err(db_error)?;
+            ).map_err(db_error)?;
             let id = conn.last_insert_rowid();
-            conn.execute(
-                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
-                 VALUES (?1, 1, '110101', 1000, 0)",
-                params![id],
-            )
-            .map_err(db_error)?;
+            insert_test_line(conn, id, 1, "110101", None, 1000, 0).map_err(db_error)?;
             Ok(())
-        })
-        .unwrap();
+        }).unwrap();
 
-        // Used accounts keep accepting vouchers and get no sub-accounts.
-        assert!(db
-            .create_account("110101001", "زیرحساب", 3, "1", "debtor", "110101", true)
-            .is_err());
-        assert!(db
-            .update_account(used.id, &used.name, "1", "debtor", "1101", false)
-            .is_err());
-
-        // A fresh parent becomes a heading once it gets a child.
-        let parent = account(&db, "110202");
+        db.create_account("110101001", "تفصیلی جدید", 3, "1", "debtor", "110101", false).unwrap();
+        let parent = db.list_accounts().unwrap().accounts.into_iter()
+            .find(|account| account.code == "110101").unwrap();
         assert!(parent.is_postable);
-        db.create_account("110202001", "زیرحساب", 3, "1", "debtor", "110202", true)
-            .unwrap();
-        assert!(!account(&db, "110202").is_postable);
+        assert!(db.update_account(used.id, &used.name, "1", "debtor", "1101", false).is_err());
     }
 
     #[test]
-    fn account_with_legacy_level4_descendant_history_cannot_change_parent() {
-        let db = test_database();
-        db.create_account("1102010", "والد جایگزین", 2, "1", "debtor", "1102", true)
-            .unwrap();
-        let old_parent = db
-            .list_accounts()
-            .unwrap()
-            .accounts
-            .into_iter()
-            .find(|account| account.code == "110201001")
-            .unwrap();
-        db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO accounts
-                    (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
-                 VALUES ('110201001001', 'تفصیلی قدیمی', 4, '1', 'debtor', '110201001', ?1, 1)",
-                params![old_parent.name],
-            )
-            .map_err(db_error)?;
-            conn.execute(
-                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'عادی')",
-                [],
-            )
-            .map_err(db_error)?;
-            let voucher_id = conn.last_insert_rowid();
-            conn.execute(
-                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
-                 VALUES (?1, 1, '110201001001', 1000, 0)",
-                params![voucher_id],
-            )
-            .map_err(db_error)?;
-            Ok(())
-        })
-        .unwrap();
+    fn schema_v5_migrates_level3_lines_to_base_and_detail1_without_changing_totals() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        apply_base_schema(&conn).unwrap();
+        seed_default_groups(&mut conn).unwrap();
+        seed_default_accounts(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'سند حسابداری عادی')",
+            [],
+        ).unwrap();
+        let voucher_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+             VALUES (?1, 1, '110201001', 750, 0)",
+            params![voucher_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+             VALUES (?1, 2, '410101', 0, 750)",
+            params![voucher_id],
+        ).unwrap();
 
-        let error = db
-            .update_account(
-                old_parent.id,
-                &old_parent.name,
-                &old_parent.group_code,
-                &old_parent.nature,
-                "1102010",
-                false,
-            )
-            .unwrap_err();
-        assert!(error.contains("اسناد ثبت‌شده"));
+        apply_schema_migrations(&mut conn).unwrap();
+        let rows: Vec<(String, Option<String>, i64, i64)> = {
+            let mut stmt = conn.prepare(
+                "SELECT account_code, detail1_code, debit, credit FROM voucher_lines WHERE voucher_id=?1 ORDER BY row_no"
+            ).unwrap();
+            stmt.query_map(params![voucher_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+                .unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        assert_eq!(rows[0], ("110201".to_string(), Some("110201001".to_string()), 750, 0));
+        assert_eq!(rows[1], ("410101".to_string(), None, 0, 750));
+        let fk_issues: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(fk_issues, 0);
+    }
+
+    #[test]
+    fn schema_v5_refuses_level4_data_without_mutating_the_v4_database() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        apply_base_schema(&conn).unwrap();
+        seed_default_groups(&mut conn).unwrap();
+        seed_default_accounts(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO accounts
+                (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
+             VALUES ('110201001001', 'تفصیلی سطح چهار قدیمی', 4, '1', 'debtor', '110201001', 'حساب تفصیلی', 1)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'سند حسابداری عادی')",
+            [],
+        ).unwrap();
+        let voucher_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
+             VALUES (?1, 1, '110201001001', 1000, 0)",
+            params![voucher_id],
+        ).unwrap();
+
+        let error = apply_schema_migrations(&mut conn).unwrap_err();
+        assert!(error.contains("سطح ۴"));
+        let version: String = conn.query_row(
+            "SELECT value FROM app_meta WHERE key='schema_version'", [], |row| row.get(0)
+        ).unwrap();
+        let level4_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM accounts WHERE level=4", [], |row| row.get(0)
+        ).unwrap();
+        let line_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM voucher_lines WHERE voucher_id=?1", params![voucher_id], |row| row.get(0)
+        ).unwrap();
+        let has_account_id: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('voucher_lines') WHERE name='account_id'", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(version, "4");
+        assert_eq!(level4_count, 1);
+        assert_eq!(line_count, 1);
+        assert_eq!(has_account_id, 0);
     }
 
     #[test]
@@ -1045,11 +1127,7 @@ mod tests {
             )
             .map_err(db_error)?;
             let voucher_id = conn.last_insert_rowid();
-            conn.execute(
-                "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
-                 VALUES (?1, 1, '110201001', 1000, 0)",
-                params![voucher_id],
-            )
+            insert_test_line(conn, voucher_id, 1, "110201", Some("110201001"), 1000, 0)
             .map_err(db_error)?;
             Ok(())
         })
@@ -1065,7 +1143,45 @@ mod tests {
                 false,
             )
             .unwrap_err();
-        assert!(error.contains("حساب تفصیلی"));
+        assert!(error.contains("زیرحساب"));
+    }
+
+    #[test]
+    fn a_posting_base_with_historical_lines_cannot_be_reparented() {
+        let db = test_database();
+        let base = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110201")
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'عادی')",
+                [],
+            )
+            .map_err(db_error)?;
+            let voucher_id = conn.last_insert_rowid();
+            insert_test_line(conn, voucher_id, 1, "110201", None, 1000, 0)
+                .map_err(db_error)?;
+            insert_test_line(conn, voucher_id, 2, "410101", None, 0, 1000)
+                .map_err(db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let error = db
+            .update_account(
+                base.id,
+                &base.name,
+                &base.group_code,
+                &base.nature,
+                "1103",
+                true,
+            )
+            .unwrap_err();
+        assert!(error.contains("اسناد ثبت‌شده"));
     }
 
     #[test]

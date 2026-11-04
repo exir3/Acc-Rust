@@ -177,7 +177,7 @@ pub(crate) fn write_sheet(worksheet: &mut Worksheet, input: &VoucherInput, accou
         .map_err(xlsx_error)?;
 
     let header_row = 4u32;
-    for (col, label) in ["ردیف", "کد حساب", "تفصیلی ۱", "شرح", "بدهکار", "بستانکار"]
+    for (col, label) in ["ردیف", "کد حساب", "کد تفصیلی ۱", "شرح", "بدهکار", "بستانکار"]
         .iter()
         .enumerate()
     {
@@ -196,13 +196,24 @@ pub(crate) fn write_sheet(worksheet: &mut Worksheet, input: &VoucherInput, accou
         worksheet
             .write_string_with_format(row, 1, &line.account_code, &code_format)
             .map_err(xlsx_error)?;
-        let detail1_name = accounts
-            .iter()
-            .find(|account| account.code == line.account_code && account.level == 3)
-            .map(|account| account.name.as_str())
-            .unwrap_or("");
+        // کد تفصیلی مستقل از حساب پایه صادر می‌شود تا همان فایل دوباره
+        // بدون از دست رفتن تفصیلی قابل ورود باشد.
+        let detail1_code = line.detail1_code.as_deref().unwrap_or("");
+        if !detail1_code.is_empty() {
+            let detail = accounts
+                .iter()
+                .find(|account| account.code == detail1_code && account.level == 3)
+                .ok_or_else(|| format!("حساب تفصیلی {} در فهرست حساب‌ها پیدا نشد.", db::to_fa_digits(detail1_code)))?;
+            if detail.parent_code != line.account_code {
+                return Err(format!(
+                    "تفصیلی {} فرزند مستقیم حساب پایه {} نیست.",
+                    db::to_fa_digits(detail1_code),
+                    db::to_fa_digits(&line.account_code)
+                ));
+            }
+        }
         worksheet
-            .write_string_with_format(row, 2, detail1_name, &code_format)
+            .write_string_with_format(row, 2, detail1_code, &code_format)
             .map_err(xlsx_error)?;
         worksheet
             .write_string_with_format(row, 3, &line.description, &description_format)

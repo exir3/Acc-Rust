@@ -45,8 +45,10 @@ function fillGrid(lines) {
       if (line.id != null) {
         row.dataset.lineId = String(line.id);
         row.dataset.savedAccount = digitsOnly(line.accountCode || '');
+        row.dataset.savedDetail1 = digitsOnly(line.detail1Code || '');
       }
       row.querySelector('.vf-code-input').value = line.accountCode || '';
+      row.querySelector('.vf-detail1-input').value = line.detail1Code || '';
       row.querySelector('.vf-desc-input').value = line.description || '';
       if (Number(line.debit) > 0) {
         row.querySelector('.vf-debit-input').value = formatAmount(line.debit);
@@ -96,12 +98,13 @@ function collectDraft() {
   const lines = [];
   for (const row of gridRows()) {
     const accountCode = digitsOnly(row.querySelector('.vf-code-input')?.value || '');
+    const detail1Code = digitsOnly(row.querySelector('.vf-detail1-input')?.value || '');
     const description = (row.querySelector('.vf-desc-input')?.value || '').trim();
     const debit = Number(parseAmount(row.querySelector('.vf-debit-input')?.value || ''));
     const credit = Number(parseAmount(row.querySelector('.vf-credit-input')?.value || ''));
-    if (!accountCode && !description && !debit && !credit) continue;
+    if (!accountCode && !detail1Code && !description && !debit && !credit) continue;
     const lineId = Number(row.dataset.lineId || 0);
-    lines.push({ id: lineId > 0 ? lineId : null, accountCode, description, debit, credit });
+    lines.push({ id: lineId > 0 ? lineId : null, accountCode, detail1Code: detail1Code || null, description, debit, credit });
   }
 
   const numberValue = Number(digitsOnly($('#vfDocNo')?.value || ''));
@@ -151,13 +154,24 @@ function validateDraft(draft) {
       ? null
       : (state.voucher?.lines || []).find((saved) => saved.id === line.id) || null;
     const savedAccountMatches = !!savedLine
-      && digitsOnly(savedLine.accountCode) === line.accountCode;
+      && digitsOnly(savedLine.accountCode) === line.accountCode
+      && digitsOnly(savedLine.detail1Code || '') === digitsOnly(line.detail1Code || '');
     if (!savedAccountMatches && account.isActive === false) {
       return `حساب «${account.name}» غیرفعال است و برای ردیف جدید سند قابل انتخاب نیست.`;
     }
-    const legacyAccountAlreadyOnThisVoucher = Number(account.level) > 3 && savedAccountMatches;
-    if (!account.isPostable && !legacyAccountAlreadyOnThisVoucher) {
-      return `حساب «${account.name}» (سطح ${levelLabel(account.level)}) قابل ثبت نیست. لطفاً یک حساب معین یا تفصیلی ۱ قابل ثبت انتخاب کنید.`;
+    if (![1, 2].includes(Number(account.level)) || !account.isPostable) {
+      return `حساب پایه «${account.name}» باید از سطح کل یا معینِ قابل ثبت باشد.`;
+    }
+    if (line.detail1Code) {
+      const detail = accountForCode(line.detail1Code);
+      if (!detail || Number(account.level) !== 2 || Number(detail.level) !== 3
+          || digitsOnly(detail.parentCode) !== line.accountCode
+          || String(detail.groupCode) !== String(account.groupCode)) {
+        return `تفصیلی ردیف ${rowNo} باید فرزند مستقیم همان حساب معین باشد.`;
+      }
+      if (detail.isActive === false && !savedAccountMatches) {
+        return `حساب تفصیلی «${detail.name}» غیرفعال است و برای ردیف جدید قابل استفاده نیست.`;
+      }
     }
     if (!line.debit && !line.credit) return `مبلغ ردیف ${rowNo} را وارد کنید.`;
     if (line.debit && line.credit) return `در ردیف ${rowNo} فقط یکی از بدهکار یا بستانکار را وارد کنید.`;

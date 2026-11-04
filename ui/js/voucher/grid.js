@@ -6,8 +6,8 @@ function voucherRowTemplate() {
   return `
     <tr>
       <td class="vf-rowno"></td>
-      <td><input class="vf-code-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="کد حساب" title="برای انتخاب حساب Space یا F4 را بزنید" /></td>
-      <td class="vf-detail1" aria-label="تفصیلی ۱"></td>
+      <td><input class="vf-code-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="کد حساب پایه" title="برای انتخاب حساب Space یا F4 را بزنید" /></td>
+      <td class="vf-detail1"><input class="vf-detail1-input" type="text" dir="rtl" readonly autocomplete="off" aria-label="تفصیلی ۱" placeholder="انتخاب تفصیلی" title="برای انتخاب تفصیلی Space یا F4 را بزنید" /></td>
       <td><input class="vf-desc-input" type="text" dir="rtl" maxlength="${MAX_LINE_DESCRIPTION}" autocomplete="off" aria-label="شرح" /></td>
       <td><input class="vf-amount-input vf-debit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بدهکار" /></td>
       <td><input class="vf-amount-input vf-credit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بستانکار" /></td>
@@ -142,28 +142,43 @@ function updateRowAccount(row, final = false) {
   if (!row) return null;
   const input = row.querySelector('.vf-code-input');
   const code = digitsOnly(input?.value || '');
-  // A saved row keeps its stable id only while it still points at the account
-  // it was saved with. Changing the account turns it into a new posting, so the
-  // "already saved" exceptions in the backend must not apply to it anymore.
-  if (row.dataset.lineId && row.dataset.savedAccount !== code) {
+  const account = accountForCode(code);
+  const detailInput = row.querySelector('.vf-detail1-input');
+  let detailCode = digitsOnly(detailInput?.value || '');
+  let detail = detailCode ? accountForCode(detailCode) : null;
+
+  // A saved row keeps its stable id only while the complete base/detail pair
+  // remains unchanged. A changed pair is treated as a new posting.
+  if (detailCode && (!detail || Number(detail.level) !== 3
+      || digitsOnly(detail.parentCode) !== code || Number(account?.level) !== 2)) {
+    if (detailInput) detailInput.value = '';
+    detailCode = '';
+    detail = null;
+  }
+  if (row.dataset.lineId && (row.dataset.savedAccount !== code
+      || digitsOnly(row.dataset.savedDetail1 || '') !== detailCode)) {
     delete row.dataset.lineId;
     delete row.dataset.savedAccount;
+    delete row.dataset.savedDetail1;
   }
-  const account = accountForCode(code);
-  const detailCell = row.querySelector('.vf-detail1');
-  const detail1 = account ? accountHierarchy(account).find((item) => Number(item.level) === 3) : null;
 
-  if (detailCell) {
-    detailCell.textContent = detail1 ? `${vfFa(detail1.code)} — ${detail1.name}` : '—';
-    detailCell.title = detail1 ? `${detail1.code} — ${detail1.name}` : '';
-  }
   if (input) {
     input.title = account
       ? `${account.code} — ${account.name}${accountAllowedForNewLine(account, row) ? '' : account.isActive === false ? ' (غیرفعال)' : ' (قابل ثبت نیست)'}`
-      : 'برای انتخاب حساب Space یا F4 را بزنید';
+      : 'برای انتخاب حساب پایه Space یا F4 را بزنید';
     if (accountAllowedForNewLine(account, row)) input.classList.remove('is-invalid');
     else if (!code) input.classList.remove('is-invalid');
     else if (final) input.classList.add('is-invalid');
+  }
+  if (detailInput) {
+    const validDetail = !!detail && (detail.isActive !== false ||
+      (row.dataset.lineId && row.dataset.savedDetail1 === detailCode));
+    detailInput.title = detail
+      ? `${detail.code} — ${detail.name}${validDetail ? '' : ' (غیرفعال یا نامعتبر)'}`
+      : account && Number(account.level) === 2
+        ? 'برای انتخاب تفصیلی سطح ۳ از Space یا F4 استفاده کنید؛ انتخاب تفصیلی اختیاری است.'
+        : 'تفصیلی فقط برای حساب معین قابل انتخاب است.';
+    detailInput.classList.toggle('is-invalid', !!detailCode && !validDetail);
   }
   return account;
 }
@@ -192,7 +207,10 @@ function updateLedger(row) {
     .map((item) => `${vfFa(item.code)} — ${item.name}`)
     .join(' / ') || '—';
   const accountGroup = account.groupName ? `گروه: ${account.groupName}` : '';
-  const headings = [[accountGroup, renderLevel([1, 2])].filter(Boolean).join(' / '), renderLevel([3])];
+  const selectedDetailCode = digitsOnly(row.querySelector('.vf-detail1-input')?.value || '');
+  const selectedDetail = selectedDetailCode ? accountForCode(selectedDetailCode) : null;
+  const detailLabel = selectedDetail ? `${vfFa(selectedDetail.code)} — ${selectedDetail.name}` : '—';
+  const headings = [[accountGroup, renderLevel([1, 2])].filter(Boolean).join(' / '), detailLabel];
   values.forEach((el, index) => {
     const value = headings[index] || '—';
     el.textContent = value;

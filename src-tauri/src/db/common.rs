@@ -1,7 +1,7 @@
 //! Small database-wide constants and error/format helpers.
 
 pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 6;
 // A pre-delete snapshot must preserve legacy vouchers exactly as they existed,
 // even when an old document already violates the current balancing rules.
 pub(crate) const BULK_DELETE_SNAPSHOT_KEY: &str = "backup_snapshot_kind";

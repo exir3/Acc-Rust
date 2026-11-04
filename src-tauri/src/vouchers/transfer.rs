@@ -7,8 +7,7 @@ use crate::vouchers::model::{
 };
 use crate::vouchers::query::fetch_voucher_by_id;
 use crate::vouchers::validation::{
-    assert_active_account, assert_postable_leaf, assert_voucher_type_matches_lines, checked_add,
-    checked_sum,
+    assert_voucher_type_matches_lines, checked_add, checked_sum, validate_voucher_line_accounts,
 };
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
@@ -63,7 +62,7 @@ impl Database {
 
             let source_lines = {
                 let mut stmt = tx.prepare(
-                    "SELECT id, row_no, account_code, description, debit, credit
+                    "SELECT id, row_no, account_code, NULLIF(detail1_code,''), description, debit, credit
                        FROM voucher_lines WHERE voucher_id = ?1 ORDER BY row_no, id"
                 ).map_err(db::db_error)?;
                 let rows = stmt.query_map(params![source_id], |row| {
@@ -73,9 +72,10 @@ impl Database {
                         VoucherLineInput {
                             id: None,
                             account_code: row.get(2)?,
-                            description: row.get(3)?,
-                            debit: row.get(4)?,
-                            credit: row.get(5)?,
+                            detail1_code: row.get(3)?,
+                            description: row.get(4)?,
+                            debit: row.get(5)?,
+                            credit: row.get(6)?,
                         },
                     ))
                 }).map_err(db::db_error)?
@@ -106,13 +106,11 @@ impl Database {
                         db::to_fa_digits(*row_no)
                     ));
                 }
-                if assert_postable_leaf(&tx, &line.account_code).is_err() {
-                    return Err(format!(
-                        "حساب ردیف {} دیگر قابل ثبت نیست؛ انتقال متوقف شد.",
+                validate_voucher_line_accounts(&tx, None, std::slice::from_ref(line))
+                    .map_err(|_| format!(
+                        "حساب پایه یا تفصیلی ردیف {} دیگر معتبر/فعال نیست؛ انتقال متوقف شد.",
                         db::to_fa_digits(*row_no)
-                    ));
-                }
-                assert_active_account(&tx, &line.account_code)?;
+                    ))?;
             }
 
             let selected_debit = checked_sum(
@@ -216,9 +214,9 @@ impl Database {
                 next_row = next_row.checked_add(1)
                     .ok_or_else(|| "شماره ردیف‌های سند مقصد از محدوده مجاز بیشتر است.".to_string())?;
                 tx.execute(
-                    "INSERT INTO voucher_lines (voucher_id, row_no, account_code, description, debit, credit)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![target_id, next_row, &line.account_code, &line.description, line.debit, line.credit],
+                    "INSERT INTO voucher_lines (voucher_id, row_no, account_id, account_code, detail1_code, description, debit, credit)
+                     SELECT ?1, ?2, a.id, ?3, ?4, ?5, ?6, ?7 FROM accounts a WHERE a.code = ?3",
+                    params![target_id, next_row, &line.account_code, &line.detail1_code, &line.description, line.debit, line.credit],
                 ).map_err(db::db_error)?;
             }
 

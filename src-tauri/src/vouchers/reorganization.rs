@@ -26,6 +26,7 @@ struct ReorganizationLine {
     voucher_id: i64,
     row_no: i64,
     account_code: String,
+    detail1_code: Option<String>,
     description: String,
     debit: i64,
     credit: i64,
@@ -77,7 +78,7 @@ fn read_reorganization_snapshot(conn: &Connection) -> Result<ReorganizationSnaps
         .map_err(db::db_error)?;
     let lines = conn
         .prepare(
-            "SELECT id, voucher_id, row_no, account_code, description, debit, credit FROM voucher_lines ORDER BY id",
+            "SELECT id, voucher_id, row_no, account_code, NULLIF(detail1_code,''), description, debit, credit FROM voucher_lines ORDER BY id",
         )
         .map_err(db::db_error)?
         .query_map([], |row| {
@@ -86,9 +87,10 @@ fn read_reorganization_snapshot(conn: &Connection) -> Result<ReorganizationSnaps
                 voucher_id: row.get(1)?,
                 row_no: row.get(2)?,
                 account_code: row.get(3)?,
-                description: row.get(4)?,
-                debit: row.get(5)?,
-                credit: row.get(6)?,
+                detail1_code: row.get(4)?,
+                description: row.get(5)?,
+                debit: row.get(6)?,
+                credit: row.get(7)?,
             })
         })
         .map_err(db::db_error)?

@@ -10,8 +10,8 @@
 //! - [`backup`] validates, creates and restores database snapshots.
 //! - [`validation`] normalizes codes and validates form input.
 //!
-//! The SQLite schema is unchanged; the public `crate::db::*` API keeps the
-//! same names and behavior.
+//! SQLite schema migrations are kept versioned; the public `crate::db::*` API
+//! keeps stable command-facing names while the persisted voucher model evolves.
 
 mod accounts;
 mod backup;
@@ -42,6 +42,7 @@ pub(crate) fn memory_database() -> Database {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
     apply_base_schema(&conn).unwrap();
+    apply_schema_migrations(&mut conn).unwrap();
     seed_default_groups(&mut conn).unwrap();
     seed_default_accounts(&mut conn).unwrap();
     seed_default_settings(&conn).unwrap();

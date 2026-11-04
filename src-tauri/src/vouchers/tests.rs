@@ -10,6 +10,7 @@ fn line(account_code: &str, debit: i64, credit: i64) -> VoucherLineInput {
     VoucherLineInput {
         id: None,
         account_code: account_code.to_string(),
+        detail1_code: None,
         description: String::new(),
         debit,
         credit,
@@ -107,58 +108,35 @@ fn editing_voucher_without_number_preserves_its_number() {
 }
 
 #[test]
-fn refuses_posting_to_parent_even_if_legacy_flag_allows_it() {
+fn accepts_direct_posting_to_a_level2_account_that_has_detail_children() {
     let db = db::memory_database();
-    db.with_conn(|conn| {
-        conn.execute(
-            "UPDATE accounts SET is_postable = 1 WHERE code = '110201'",
-            [],
-        )
-        .map_err(db::db_error)?;
-        Ok(())
-    })
-    .unwrap();
-
-    let result = db.save_voucher(voucher(
+    let saved = db.save_voucher(voucher(
         "1405/01/10",
         vec![line("110201", 1_000, 0), line("410101", 0, 1_000)],
-    ));
+    )).unwrap();
 
-    assert!(result.unwrap_err().contains("قابل ثبت نیست"));
+    assert_eq!(saved.lines[0].account_code, "110201");
+    assert!(saved.lines[0].detail1_code.is_none());
 }
 
 #[test]
-fn refuses_transferring_legacy_rows_posted_to_parent_accounts() {
+fn transfer_preserves_the_selected_detail1_account() {
     let db = db::memory_database();
-    let saved = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
-    let first_line_id = saved.lines[0].id;
-    let line_ids = saved.lines.iter().map(|line| line.id).collect();
-    db.with_conn(|conn| {
-        conn.execute(
-            "UPDATE accounts SET is_postable = 1 WHERE code = '110201'",
-            [],
-        )
-        .map_err(db::db_error)?;
-        conn.execute(
-            "UPDATE voucher_lines SET account_code = '110201' WHERE id = ?1",
-            params![first_line_id],
-        )
-        .map_err(db::db_error)?;
-        Ok(())
-    })
-    .unwrap();
+    let source = db.save_voucher(voucher(
+        "1405/01/10",
+        vec![line("110201001", 1_000, 0), line("410101", 0, 1_000)],
+    )).unwrap();
+    let line_ids = source.lines.iter().map(|line| line.id).collect();
+    let result = db.transfer_voucher_lines(VoucherTransferInput {
+        source_voucher_id: source.id,
+        source_voucher_number: source.number,
+        target_voucher_number: 2,
+        line_ids,
+        mode: "copy".to_string(),
+    }).unwrap();
 
-    let error = db
-        .transfer_voucher_lines(VoucherTransferInput {
-            source_voucher_id: saved.id,
-            source_voucher_number: saved.number,
-            target_voucher_number: 2,
-            line_ids,
-            mode: "copy".to_string(),
-        })
-        .unwrap_err();
-
-    assert!(error.contains("قابل ثبت نیست"));
+    assert_eq!(result.target.lines[0].account_code, "110201");
+    assert_eq!(result.target.lines[0].detail1_code.as_deref(), Some("110201001"));
 }
 
 #[test]
@@ -382,20 +360,12 @@ fn legacy_detail2_is_not_selectable_but_its_detail1_parent_remains_postable() {
     }).unwrap();
 
     let accounts = db.list_accounts().unwrap().accounts;
-    assert!(
-        accounts
-            .iter()
-            .find(|a| a.code == detail1.code)
-            .unwrap()
-            .is_postable
-    );
-    assert!(
-        !accounts
-            .iter()
-            .find(|a| a.code == "991010101")
-            .unwrap()
-            .is_postable
-    );
+    // سطح ۳ در ردیف سند به‌عنوان تفصیلی جدا انتخاب می‌شود؛ سطح ۲ همچنان
+    // حساب پایهٔ قابل ثبت باقی می‌ماند، حتی اگر تفصیلی سطح ۳ یا دادهٔ قدیمی
+    // سطح ۴ زیر آن وجود داشته باشد.
+    assert!(accounts.iter().find(|a| a.code == "99101").unwrap().is_postable);
+    assert!(!accounts.iter().find(|a| a.code == detail1.code).unwrap().is_postable);
+    assert!(!accounts.iter().find(|a| a.code == "991010101").unwrap().is_postable);
 
     let saved = db
         .save_voucher(voucher(
@@ -403,7 +373,8 @@ fn legacy_detail2_is_not_selectable_but_its_detail1_parent_remains_postable() {
             vec![line("9910101", 100, 0), line("110101", 0, 100)],
         ))
         .unwrap();
-    assert_eq!(saved.lines[0].account_code, "9910101");
+    assert_eq!(saved.lines[0].account_code, "99101");
+    assert_eq!(saved.lines[0].detail1_code.as_deref(), Some("9910101"));
     let rejected = db.save_voucher(voucher(
         "1405/01/02",
         vec![line("991010101", 100, 0), line("110101", 0, 100)],
@@ -412,65 +383,23 @@ fn legacy_detail2_is_not_selectable_but_its_detail1_parent_remains_postable() {
 }
 
 #[test]
-fn an_existing_voucher_can_be_saved_without_replacing_its_legacy_detail2_code() {
+fn legacy_level3_account_code_is_normalized_to_base_and_detail1() {
     let db = db::memory_database();
     db.create_account("992", "کل آزمایشی", 1, "1", "debtor", "", false)
         .unwrap();
     db.create_account("99201", "معین آزمایشی", 2, "1", "debtor", "992", true)
         .unwrap();
-    db.create_account(
-        "9920101",
-        "تفصیلی ۱ آزمایشی",
-        3,
-        "1",
-        "debtor",
-        "99201",
-        true,
-    )
-    .unwrap();
-    db.with_conn(|conn| {
-        conn.execute(
-            "INSERT INTO accounts (code, name, level, group_code, nature, parent_code, parent_name, is_postable) VALUES ('992010101', 'تفصیلی ۲ قدیمی', 4, '1', 'debtor', '9920101', 'تفصیلی ۱ آزمایشی', 1)",
-            [],
-        ).map_err(db::db_error)?;
-        conn.execute(
-            "INSERT INTO vouchers (number, date, type, description) VALUES (777, '1405/01/01', ?1, 'سند قدیمی')",
-            params![VOUCHER_TYPES[0]],
-        ).map_err(db::db_error)?;
-        let voucher_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, description, debit, credit) VALUES (?1, 1, '992010101', '', 100, 0)",
-            params![voucher_id],
-        ).map_err(db::db_error)?;
-        conn.execute(
-            "INSERT INTO voucher_lines (voucher_id, row_no, account_code, description, debit, credit) VALUES (?1, 2, '110101', '', 0, 100)",
-            params![voucher_id],
-        ).map_err(db::db_error)?;
-        Ok(())
-    }).unwrap();
-    let old = db.get_voucher(777).unwrap().unwrap();
-    let input = VoucherInput {
-        id: Some(old.id),
-        number: Some(old.number),
-        date: old.date.clone(),
-        voucher_type: old.voucher_type.clone(),
-        description: old.description.clone(),
-        lines: old
-            .lines
-            .iter()
-            .map(|line| VoucherLineInput {
-                id: Some(line.id),
-                account_code: line.account_code.clone(),
-                description: line.description.clone(),
-                debit: line.debit,
-                credit: line.credit,
-            })
-            .collect(),
-    };
-    let saved = db
-        .save_voucher_if_unchanged(input, Some(&old.updated_at))
+    db.create_account("9920101", "تفصیلی آزمایشی", 3, "1", "debtor", "99201", false)
         .unwrap();
-    assert_eq!(saved.lines[0].account_code, "992010101");
+
+    // Older clients may still send the level-3 code in accountCode.
+    let saved = db.save_voucher(voucher(
+        "1405/01/01",
+        vec![line("9920101", 100, 0), line("110101", 0, 100)],
+    )).unwrap();
+
+    assert_eq!(saved.lines[0].account_code, "99201");
+    assert_eq!(saved.lines[0].detail1_code.as_deref(), Some("9920101"));
 }
 
 #[test]
@@ -492,7 +421,7 @@ fn saves_voucher_to_a_new_detail1_account() {
         )
         .unwrap();
     assert_eq!(detail1.level, 3);
-    assert!(detail1.is_postable);
+    assert!(!detail1.is_postable);
 
     let saved = db
         .save_voucher(voucher(
@@ -500,7 +429,8 @@ fn saves_voucher_to_a_new_detail1_account() {
             vec![line("9910101", 100, 0), line("110101", 0, 100)],
         ))
         .unwrap();
-    assert_eq!(saved.lines[0].account_code, "9910101");
+    assert_eq!(saved.lines[0].account_code, "99101");
+    assert_eq!(saved.lines[0].detail1_code.as_deref(), Some("9910101"));
 }
 
 #[test]
@@ -581,7 +511,7 @@ fn bulk_import_is_atomic_and_supports_large_vouchers() {
 }
 
 #[test]
-fn bulk_import_supports_detail1_as_a_postable_leaf() {
+fn bulk_import_supports_level3_as_a_separate_detail1_reference() {
     let db = db::memory_database();
     let import = crate::excel::BulkVoucherImport {
         file_name: "detail1.xlsx".to_string(),
@@ -636,10 +566,11 @@ fn bulk_import_supports_detail1_as_a_postable_leaf() {
         .find(|account| account.code == "99101")
         .unwrap();
     assert_eq!(detail1.level, 3);
-    assert!(detail1.is_postable);
-    assert!(!subsidiary.is_postable);
+    assert!(!detail1.is_postable);
+    assert!(subsidiary.is_postable);
     let saved = db.get_voucher(1).unwrap().unwrap();
-    assert_eq!(saved.lines[0].account_code, "9910101");
+    assert_eq!(saved.lines[0].account_code, "99101");
+    assert_eq!(saved.lines[0].detail1_code.as_deref(), Some("9910101"));
 }
 
 #[test]
@@ -699,7 +630,7 @@ fn bulk_import_rejects_inactive_existing_parent_accounts() {
 }
 
 #[test]
-fn bulk_import_preview_rejects_posted_account_with_imported_child() {
+fn bulk_import_allows_a_posting_base_to_gain_an_imported_detail_child() {
     let db = db::memory_database();
     let import = crate::excel::BulkVoucherImport {
         file_name: "mixed-level.xlsx".to_string(),
@@ -739,13 +670,20 @@ fn bulk_import_preview_rejects_posted_account_with_imported_child() {
             date: "1405/01/01".to_string(),
             voucher_type: VOUCHER_TYPES[0].to_string(),
             description: String::new(),
-            lines: vec![line("99101", 100, 0), line("410101", 0, 100)],
+            // سازگاری با فایل‌های قدیمی: کد سطح ۳ به base + detail1 تبدیل می‌شود.
+            lines: vec![line("9910101", 100, 0), line("410101", 0, 100)],
         }],
     };
 
-    let error = db.preview_bulk_import(&import).unwrap_err();
-    assert!(error.contains("زیرحساب"));
-    assert!(error.contains(&db::to_fa_digits("99101")));
+    let preview = db.preview_bulk_import(&import).unwrap();
+    assert_eq!(preview.new_account_count, 3);
+    assert_eq!(db.import_vouchers(import, false).unwrap(), 1);
+    let saved = db.get_voucher(1).unwrap().unwrap();
+    assert_eq!(saved.lines[0].account_code, "99101");
+    assert_eq!(saved.lines[0].detail1_code.as_deref(), Some("9910101"));
+    let accounts = db.list_accounts().unwrap().accounts;
+    assert!(accounts.iter().find(|a| a.code == "99101").unwrap().is_postable);
+    assert!(!accounts.iter().find(|a| a.code == "9910101").unwrap().is_postable);
 }
 
 #[test]
@@ -789,18 +727,8 @@ fn bulk_import_preview_requires_nature_for_new_other_group_children() {
 }
 
 #[test]
-fn bulk_import_rejects_legacy_postable_parent_accounts() {
+fn bulk_import_accepts_direct_posting_to_a_level1_account_with_children() {
     let db = db::memory_database();
-    db.with_conn(|conn| {
-        conn.execute(
-            "UPDATE accounts SET is_postable = 1 WHERE code = '1102'",
-            [],
-        )
-        .map_err(db::db_error)?;
-        Ok(())
-    })
-    .unwrap();
-
     let import = crate::excel::BulkVoucherImport {
         file_name: "legacy.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
@@ -815,9 +743,10 @@ fn bulk_import_rejects_legacy_postable_parent_accounts() {
         }],
     };
 
-    let error = db.import_vouchers(import, false).unwrap_err();
-    assert!(error.contains("قابل ثبت"));
-    assert!(db.get_voucher(1).unwrap().is_none());
+    assert_eq!(db.import_vouchers(import, false).unwrap(), 1);
+    let saved = db.get_voucher(1).unwrap().unwrap();
+    assert_eq!(saved.lines[0].account_code, "1102");
+    assert!(saved.lines[0].detail1_code.is_none());
 }
 
 #[test]
@@ -1055,10 +984,16 @@ fn rejects_unbalanced_and_invalid_vouchers() {
         .unwrap_err();
     assert!(unbalanced.contains("تراز نیست"));
 
+    db.with_conn(|conn| {
+        conn.execute("UPDATE accounts SET is_postable = 0 WHERE code = '110101'", [])
+            .map_err(db::db_error)?;
+        Ok(())
+    })
+    .unwrap();
     let non_postable = db
         .save_voucher(voucher(
             "1405/01/10",
-            vec![line("1101", 100_000, 0), line("410101", 0, 100_000)],
+            vec![line("110101", 100_000, 0), line("410101", 0, 100_000)],
         ))
         .unwrap_err();
     assert!(non_postable.contains("قابل ثبت نیست"));

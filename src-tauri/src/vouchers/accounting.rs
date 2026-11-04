@@ -61,7 +61,7 @@ pub(crate) fn account_activities(
                                        OR (o.date = v.date AND o.id > v.id))
                            )
                      )
-               ) ON l.account_code = a.code
+               ) ON COALESCE(NULLIF(l.detail1_code, ''), l.account_code) = a.code
               ORDER BY a.code",
         )
         .map_err(db::db_error)?;

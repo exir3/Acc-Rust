@@ -2,7 +2,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::common::{db_error, CURRENT_SCHEMA_VERSION};
+use crate::db::common::{db_error, to_fa_digits, CURRENT_SCHEMA_VERSION};
 
 const SCHEMA: &str = r#"
     CREATE TABLE IF NOT EXISTS app_meta (
@@ -120,7 +120,7 @@ pub(crate) fn apply_base_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(SCHEMA).map_err(db_error)?;
     conn.execute(
         "INSERT OR IGNORE INTO app_meta(key, value) VALUES ('schema_version', ?1)",
-        params![CURRENT_SCHEMA_VERSION.to_string()],
+        params!["4"],
     )
     .map_err(db_error)?;
     Ok(())
@@ -351,6 +351,118 @@ pub(crate) fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String
     Ok(columns)
 }
 
+/// Safely converts legacy voucher rows into (base account, optional detail-1).
+/// This migration deliberately refuses to touch any level-4 data: the operator
+/// must archive/resolve that legacy data explicitly before upgrading.
+fn migrate_voucher_account_pairs(conn: &Connection) -> Result<(), String> {
+    let level4: i64 = conn
+        .query_row("SELECT COUNT(*) FROM accounts WHERE level > 3", [], |r| r.get(0))
+        .map_err(db_error)?;
+    let legacy_refs: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM voucher_lines l JOIN accounts a ON a.code = l.account_code WHERE a.level > 3",
+            [], |r| r.get(0),
+        )
+        .map_err(db_error)?;
+    if level4 > 0 || legacy_refs > 0 {
+        return Err(format!(
+            "ارتقای پایگاه داده به نسخه ۵ متوقف شد؛ {} حساب سطح ۴ یا بالاتر و {} ردیف سند مرتبط وجود دارد. برای حفظ سوابق، ابتدا نسخه پشتیبان تهیه و این داده‌های قدیمی را به‌صورت آگاهانه تعیین تکلیف کنید؛ هیچ داده‌ای حذف نشده است.",
+            to_fa_digits(level4.to_string()), to_fa_digits(legacy_refs.to_string())
+        ));
+    }
+
+    let orphaned: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM voucher_lines l LEFT JOIN accounts a ON a.code = l.account_code WHERE a.id IS NULL",
+            [], |r| r.get(0),
+        )
+        .map_err(db_error)?;
+    if orphaned > 0 {
+        return Err(format!(
+            "ارتقای پایگاه داده متوقف شد؛ {} ردیف سند به حساب ناموجود اشاره می‌کند. ابتدا ارجاعات یتیم را بررسی کنید.",
+            to_fa_digits(orphaned.to_string())
+        ));
+    }
+
+    let malformed_details: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)\n               FROM voucher_lines l\n               JOIN accounts d ON d.code = l.account_code\n               LEFT JOIN accounts p ON p.code = d.parent_code\n              WHERE d.level = 3 AND (p.id IS NULL OR p.level <> 2 OR p.group_code <> d.group_code)",
+            [], |r| r.get(0),
+        )
+        .map_err(db_error)?;
+    if malformed_details > 0 {
+        return Err(format!(
+            "ارتقای پایگاه داده متوقف شد؛ {} ردیف تفصیلی سطح ۳ والد معین معتبر یا گروه سازگار ندارد. ساختار حساب‌ها را اصلاح کنید؛ داده‌ها تغییر نکرده‌اند.",
+            to_fa_digits(malformed_details.to_string())
+        ));
+    }
+
+    let before: Vec<(i64, i64, i64, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT v.id, COUNT(l.id), COALESCE(SUM(l.debit),0), COALESCE(SUM(l.credit),0) FROM vouchers v LEFT JOIN voucher_lines l ON l.voucher_id=v.id GROUP BY v.id ORDER BY v.id")
+            .map_err(db_error)?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(db_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db_error)?;
+        rows
+    };
+
+    let columns = table_columns(conn, "voucher_lines")?;
+    if !columns.iter().any(|c| c == "account_id") {
+        conn.execute("ALTER TABLE voucher_lines ADD COLUMN account_id INTEGER REFERENCES accounts(id)", [])
+            .map_err(db_error)?;
+    }
+    if !columns.iter().any(|c| c == "detail1_code") {
+        conn.execute("ALTER TABLE voucher_lines ADD COLUMN detail1_code TEXT REFERENCES accounts(code) ON UPDATE CASCADE", [])
+            .map_err(db_error)?;
+    }
+
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS temp._voucher_line_account_map;\n         CREATE TEMP TABLE _voucher_line_account_map AS\n         SELECT l.id AS line_id,\n                CASE WHEN a.level = 3 THEN p.id ELSE a.id END AS base_id,\n                CASE WHEN a.level = 3 THEN p.code ELSE a.code END AS base_code,\n                CASE WHEN a.level = 3 THEN a.code ELSE NULL END AS detail_code\n           FROM voucher_lines l\n           JOIN accounts a ON a.code = l.account_code\n           LEFT JOIN accounts p ON p.code = a.parent_code;\n         UPDATE voucher_lines\n            SET account_id = (SELECT base_id FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id),\n                account_code = (SELECT base_code FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id),\n                detail1_code = (SELECT detail_code FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id);"
+    ).map_err(db_error)?;
+
+    let unmapped: i64 = conn
+        .query_row("SELECT COUNT(*) FROM voucher_lines WHERE account_id IS NULL", [], |r| r.get(0))
+        .map_err(db_error)?;
+    if unmapped > 0 {
+        return Err(format!(
+            "ارتقای پایگاه داده متوقف شد؛ {} ردیف سند قابل تبدیل به حساب پایه نیست.",
+            to_fa_digits(unmapped.to_string())
+        ));
+    }
+
+    // In the WebApp posting model, level 1 and 2 remain postable even when
+    // they have descendants. A detail-1 row is stored separately and does not
+    // cause the parent to become a non-postable heading.
+    conn.execute("UPDATE accounts SET is_postable = 1 WHERE level IN (1, 2)", [])
+        .map_err(db_error)?;
+
+    let after: Vec<(i64, i64, i64, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT v.id, COUNT(l.id), COALESCE(SUM(l.debit),0), COALESCE(SUM(l.credit),0) FROM vouchers v LEFT JOIN voucher_lines l ON l.voucher_id=v.id GROUP BY v.id ORDER BY v.id")
+            .map_err(db_error)?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .map_err(db_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db_error)?;
+        rows
+    };
+    if before != after {
+        return Err("ارتقای پایگاه داده متوقف شد؛ شمار ردیف‌ها یا جمع بدهکار/بستانکار یک یا چند سند تغییر کرده است. تراکنش بازگردانده شد.".to_string());
+    }
+    conn.execute_batch("DROP TABLE temp._voucher_line_account_map;")
+        .map_err(db_error)?;
+    Ok(())
+}
+
+/// Enforces base/detail consistency for every new or updated voucher line.
+pub(crate) fn ensure_voucher_account_pair_guards(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_voucher_lines_account_id ON voucher_lines(account_id);\n         CREATE INDEX IF NOT EXISTS idx_voucher_lines_detail1_code ON voucher_lines(detail1_code);\n         DROP TRIGGER IF EXISTS voucher_lines_account_pair_insert;\n         DROP TRIGGER IF EXISTS voucher_lines_account_pair_update;\n         CREATE TRIGGER voucher_lines_account_pair_insert\n         BEFORE INSERT ON voucher_lines\n         WHEN NEW.account_id IS NULL\n           OR NOT EXISTS (SELECT 1 FROM accounts b WHERE b.id=NEW.account_id AND b.code=NEW.account_code AND b.level IN (1,2))\n           OR (NEW.detail1_code IS NOT NULL AND NEW.detail1_code <> '' AND NOT EXISTS (\n                SELECT 1 FROM accounts d JOIN accounts b ON b.id=NEW.account_id\n                 WHERE d.code=NEW.detail1_code AND d.level=3 AND b.level=2\n                   AND d.parent_code=b.code AND d.group_code=b.group_code))\n         BEGIN SELECT RAISE(ABORT, 'invalid base/detail account pair'); END;\n         CREATE TRIGGER voucher_lines_account_pair_update\n         BEFORE UPDATE OF account_id, account_code, detail1_code ON voucher_lines\n         WHEN NEW.account_id IS NULL\n           OR NOT EXISTS (SELECT 1 FROM accounts b WHERE b.id=NEW.account_id AND b.code=NEW.account_code AND b.level IN (1,2))\n           OR (NEW.detail1_code IS NOT NULL AND NEW.detail1_code <> '' AND NOT EXISTS (\n                SELECT 1 FROM accounts d JOIN accounts b ON b.id=NEW.account_id\n                 WHERE d.code=NEW.detail1_code AND d.level=3 AND b.level=2\n                   AND d.parent_code=b.code AND d.group_code=b.group_code))\n         BEGIN SELECT RAISE(ABORT, 'invalid base/detail account pair'); END;"
+    ).map_err(db_error)
+}
+
 /// Applies additive, versioned schema changes. Migration 3 remembers whether
 /// a parent account was manually postable before its first child was added.
 pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), String> {
@@ -407,6 +519,14 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
             .map_err(db_error)?;
         }
     }
+    if version < 5 {
+        migrate_voucher_account_pairs(&tx)?;
+    }
+
+    // Re-create these idempotently on every open. This also repairs a backup
+    // created by a build that had the v5 columns but missed the guards.
+    ensure_voucher_account_pair_guards(&tx)?;
+
     if version < CURRENT_SCHEMA_VERSION {
         tx.execute(
             "UPDATE app_meta SET value = ?1 WHERE key = 'schema_version'",
@@ -441,7 +561,7 @@ pub(crate) fn seed_default_accounts(conn: &mut Connection) -> rusqlite::Result<(
         return Ok(());
     }
 
-    for (code, name, level, group_code, nature, parent_code, postable) in DEFAULT_ACCOUNTS {
+    for (code, name, level, group_code, nature, parent_code, _postable) in DEFAULT_ACCOUNTS {
         let group_exists: bool = tx
             .query_row(
                 "SELECT 1 FROM account_groups WHERE code = ?1",
@@ -485,7 +605,7 @@ pub(crate) fn seed_default_accounts(conn: &mut Connection) -> rusqlite::Result<(
                     Some(parent_code)
                 },
                 parent_name,
-                i64::from(postable)
+                i64::from(level <= 2)
             ],
         )?;
     }

@@ -6,11 +6,12 @@ use crate::vouchers::model::{
     MAX_VOUCHER_NUMBER,
 };
 use crate::vouchers::validation::{
-    assert_active_account, assert_postable_leaf, assert_voucher_type_matches_lines, checked_sum,
-    normalize_date, validate_description, validate_voucher_type,
+    assert_voucher_type_matches_lines, checked_sum,
+    normalize_date, normalize_voucher_line_accounts, validate_description,
+    validate_voucher_line_accounts, validate_voucher_type,
 };
 use rusqlite::{params, OptionalExtension};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 impl Database {
     pub fn preview_bulk_import(
@@ -24,18 +25,15 @@ impl Database {
             .iter()
             .map(|account| db::normalize_code(&account.code))
             .collect();
-        let imported_parent_children: HashMap<String, String> = account_rows
-            .iter()
-            .filter_map(|account| {
-                let parent = db::normalize_code(&account.parent_code);
-                (!parent.is_empty()).then(|| (parent, db::normalize_code(&account.code)))
-            })
-            .collect();
         let referenced_codes: HashSet<String> = import
             .vouchers
             .iter()
             .flat_map(|voucher| voucher.lines.iter())
-            .map(|line| db::normalize_code(&line.account_code))
+            .flat_map(|line| [
+                db::normalize_code(&line.account_code),
+                line.detail1_code.as_deref().map(db::normalize_code).unwrap_or_default(),
+            ])
+            .filter(|code| !code.is_empty())
             .collect();
         let numbers: Vec<i64> = import
             .vouchers
@@ -172,19 +170,6 @@ impl Database {
                                     db::to_fa_digits(&parent_code)
                                 ));
                             }
-                            let parent_has_lines = conn
-                                .query_row(
-                                    "SELECT EXISTS(SELECT 1 FROM voucher_lines WHERE account_code = ?1)",
-                                    params![parent_code],
-                                    |row| row.get::<_, bool>(0),
-                                )
-                                .map_err(db::db_error)?;
-                            if parent_has_lines {
-                                return Err(format!(
-                                    "حساب بالاتر {} در اسناد استفاده شده است؛ برای آن نمی‌توان زیرحساب جدید ساخت.",
-                                    db::to_fa_digits(&parent_code)
-                                ));
-                            }
                         } else if !account_codes.contains(&parent_code) {
                             return Err(format!(
                                 "حساب بالاتر {} برای حساب {} در فایل یا پایگاه داده پیدا نشد.",
@@ -196,35 +181,14 @@ impl Database {
                 }
             }
 
-            // A newly imported parent becomes non-postable when its child is
-            // created. Catch a workbook that tries to post to both levels now,
-            // rather than failing only after the user confirms the import.
+            // Base and detail references must each exist in the live chart or
+            // be declared in this workbook. Pair compatibility is validated
+            // after all missing accounts have been created in the import tx.
             for code in &referenced_codes {
-                if let Some(child_code) = imported_parent_children.get(code) {
-                    return Err(format!(
-                        "حساب {} در فایل اکسل زیرحساب {} دارد و پس از ورود قابل ثبت در سند نخواهد بود؛ ردیف‌های سند باید از حساب تفصیلی استفاده کنند.",
-                        db::to_fa_digits(code),
-                        db::to_fa_digits(child_code)
-                    ));
-                }
-            }
-
-            // Every voucher line must resolve either to an existing account or
-            // to an account that this workbook is going to create.
-            for code in &referenced_codes {
-                let exists = conn
-                    .query_row(
-                        "SELECT 1 FROM accounts WHERE code = ?1",
-                        params![code],
-                        |_| Ok(()),
-                    )
-                    .optional()
-                    .map_err(db::db_error)?
-                    .is_some();
-                if exists {
-                    assert_postable_leaf(conn, code)?;
-                    assert_active_account(conn, code)?;
-                } else if !account_codes.contains(code) {
+                let exists = conn.query_row(
+                    "SELECT 1 FROM accounts WHERE code = ?1", params![code], |_| Ok(())
+                ).optional().map_err(db::db_error)?.is_some();
+                if !exists && !account_codes.contains(code) {
                     return Err(format!(
                         "حساب ردیف سند با کد {} در فایل یا پایگاه داده پیدا نشد.",
                         db::to_fa_digits(code)
@@ -321,6 +285,7 @@ impl Database {
                 lines.push(VoucherLineInput {
                     id: line.id,
                     account_code,
+                    detail1_code: line.detail1_code.as_deref().map(db::normalize_code).filter(|v| !v.is_empty()),
                     description: line_description,
                     debit: line.debit,
                     credit: line.credit,
@@ -425,7 +390,7 @@ impl Database {
                     }
                     String::new()
                 } else {
-                    if parent_code.is_empty() || !code.starts_with(&parent_code) || code.len() <= parent_code.len() {
+                    if parent_code.is_empty() || code == parent_code {
                         return Err(format!("ساختار حساب {} در فایل اکسل معتبر نیست.", db::to_fa_digits(&code)));
                     }
                     let parent = tx
@@ -453,36 +418,19 @@ impl Database {
                             db::to_fa_digits(&parent_code)
                         ));
                     }
-                    let parent_has_lines = tx
-                        .query_row(
-                            "SELECT EXISTS(SELECT 1 FROM voucher_lines WHERE account_code = ?1)",
-                            params![parent_code],
-                            |row| row.get::<_, bool>(0),
-                        )
-                        .map_err(db::db_error)?;
-                    if parent_has_lines {
-                        return Err(format!("حساب بالاتر {} در اسناد استفاده شده و نمی‌توان برای آن زیرحساب ساخت.", db::to_fa_digits(&parent_code)));
-                    }
-                    tx.execute(
-                        "UPDATE accounts SET postable_before_children = COALESCE(postable_before_children, is_postable), is_postable = 0 WHERE code = ?1",
-                        params![parent_code],
-                    )
-                    .map_err(db::db_error)?;
                     parent.0
                 };
                 let parent_code_value = if parent_code.is_empty() { None } else { Some(parent_code) };
                 tx.execute(
                     "INSERT INTO accounts (code, name, level, group_code, nature, parent_code, parent_name, is_postable) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    params![code, name, account.level, group_code, account.nature, parent_code_value, parent_name, i64::from(account.level > 1)],
+                    params![code, name, account.level, group_code, account.nature, parent_code_value, parent_name, i64::from(account.level <= 2)],
                 )
                 .map_err(db::db_error)?;
             }
 
-            for (number, date, voucher_type, description, lines) in prepared {
-                for line in &lines {
-                    assert_postable_leaf(&tx, &line.account_code)?;
-                    assert_active_account(&tx, &line.account_code)?;
-                }
+            for (number, date, voucher_type, description, mut lines) in prepared {
+                normalize_voucher_line_accounts(&tx, &mut lines)?;
+                validate_voucher_line_accounts(&tx, None, &lines)?;
                 assert_voucher_type_matches_lines(&tx, &voucher_type, &lines)?;
                 let mut stored_number = number;
                 if used_numbers.contains(&number) {
@@ -513,8 +461,9 @@ impl Database {
                 let voucher_id = tx.last_insert_rowid();
                 for (index, line) in lines.iter().enumerate() {
                     tx.execute(
-                        "INSERT INTO voucher_lines (voucher_id, row_no, account_code, description, debit, credit) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        params![voucher_id, index as i64 + 1, line.account_code, line.description, line.debit, line.credit],
+                        "INSERT INTO voucher_lines (voucher_id, row_no, account_id, account_code, detail1_code, description, debit, credit)
+                         SELECT ?1, ?2, a.id, ?3, ?4, ?5, ?6, ?7 FROM accounts a WHERE a.code = ?3",
+                        params![voucher_id, index as i64 + 1, line.account_code, line.detail1_code, line.description, line.debit, line.credit],
                     )
                     .map_err(db::db_error)?;
                 }

@@ -11,7 +11,7 @@ use crate::vouchers::query::{
 };
 use crate::vouchers::validation::{
     assert_voucher_type_matches_lines, check_range, format_amount, normalize_date,
-    normalize_filter_date, validate_description, validate_voucher_line_accounts,
+    normalize_filter_date, validate_description, normalize_voucher_line_accounts, validate_voucher_line_accounts,
     validate_voucher_type,
 };
 use rusqlite::{params, OptionalExtension};
@@ -139,7 +139,9 @@ impl Database {
             let account_code = db::normalize_code(&line.account_code);
             let line_description =
                 validate_description(&line.description, "شرح ردیف", MAX_LINE_DESCRIPTION)?;
+            let detail1_code = line.detail1_code.as_deref().map(db::normalize_code).filter(|v| !v.is_empty());
             let blank = account_code.is_empty()
+                && detail1_code.is_none()
                 && line_description.is_empty()
                 && line.debit == 0
                 && line.credit == 0;
@@ -167,6 +169,7 @@ impl Database {
             lines.push(VoucherLineInput {
                 id: line.id,
                 account_code,
+                detail1_code,
                 description: line_description,
                 debit: line.debit,
                 credit: line.credit,
@@ -210,9 +213,11 @@ impl Database {
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db::db_error)?;
 
-            // Saving and exporting use the same account-eligibility rules.
-            // A saved inactive/legacy account is allowed only on its original
-            // line id; a new or changed row must pass the current rules.
+            // Convert legacy level-3-only payloads to the canonical pair, then
+            // validate both the base account and its optional detail.
+            normalize_voucher_line_accounts(&tx, &mut lines)?;
+            // A saved inactive account is allowed only on its original row id
+            // and unchanged base/detail pair.
             validate_voucher_line_accounts(&tx, (id > 0).then_some(id), &lines)?;
             assert_voucher_type_matches_lines(&tx, &voucher_type, &lines)?;
 
@@ -316,17 +321,16 @@ impl Database {
             };
 
             for (index, line) in lines.iter().enumerate() {
+                let account_id: i64 = tx.query_row(
+                    "SELECT id FROM accounts WHERE code = ?1", params![line.account_code], |row| row.get(0)
+                ).map_err(db::db_error)?;
                 tx.execute(
                     "INSERT INTO voucher_lines
-                        (voucher_id, row_no, account_code, description, debit, credit)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        (voucher_id, row_no, account_id, account_code, detail1_code, description, debit, credit)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     params![
-                        voucher_id,
-                        index as i64 + 1,
-                        line.account_code,
-                        line.description,
-                        line.debit,
-                        line.credit
+                        voucher_id, index as i64 + 1, account_id, line.account_code,
+                        line.detail1_code, line.description, line.debit, line.credit
                     ],
                 )
                 .map_err(db::db_error)?;

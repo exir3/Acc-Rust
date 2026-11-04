@@ -42,7 +42,7 @@ impl Database {
                         COALESCE(SUM(l.credit), 0)
                    FROM voucher_lines l
                    JOIN vouchers v ON v.id = l.voucher_id
-                   JOIN accounts a ON a.code = l.account_code
+                   JOIN accounts a ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
                  {where_clause}"
             );
             let (row_count, voucher_count, total_debit, total_credit) = conn
@@ -62,11 +62,11 @@ impl Database {
 
             let mut sql = format!(
                 "SELECT v.id, v.number, v.date, v.type, v.description,
-                        l.row_no, l.account_code, a.name, l.description,
+                        l.row_no, COALESCE(NULLIF(l.detail1_code, ''), l.account_code), a.name, l.description,
                         l.debit, l.credit
                    FROM voucher_lines l
                    JOIN vouchers v ON v.id = l.voucher_id
-                   JOIN accounts a ON a.code = l.account_code
+                   JOIN accounts a ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
                  {where_clause}
                   ORDER BY v.date, v.number, l.row_no"
             );

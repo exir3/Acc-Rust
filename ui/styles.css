@@ -1983,6 +1983,16 @@ input, textarea, select { user-select: text; }
   font-variant-numeric: tabular-nums;
   background: inherit;
 }
+.vf-grid .vf-detail1-input {
+  width: 100%;
+  padding: 0 5px;
+  text-align: center;
+  color: #1e3a8a;
+  cursor: pointer;
+}
+.vf-grid .vf-detail1-input::placeholder { color: #8493a2; opacity: 1; }
+.vf-grid .vf-detail1-input:focus { background: #fff8df; box-shadow: inset 0 0 0 1px #c49b45; }
+.vf-grid .vf-detail1-input.is-invalid { background: #fff1f1; box-shadow: inset 0 0 0 1px #d24a4a; }
 .vf-grid input {
   width: 100%;
   height: 100%;

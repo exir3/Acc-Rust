@@ -11,7 +11,7 @@ use crate::db::common::{
     CURRENT_SCHEMA_VERSION,
 };
 use crate::db::model::Database;
-use crate::db::schema::{apply_base_schema, table_exists};
+use crate::db::schema::{apply_base_schema, apply_schema_migrations, ensure_voucher_account_pair_guards, table_exists};
 use crate::vouchers::MAX_VOUCHER_NUMBER;
 
 impl Database {
@@ -108,6 +108,10 @@ impl Database {
                     .map_err(db_error)
             }
             .and_then(|()| {
+                // Upgrade a supported v4 backup inside the same restore safety
+                // envelope. A v5 migration failure (for example, legacy level-4
+                // accounts) rolls the whole restore back to the active database.
+                apply_schema_migrations(target)?;
                 validate_backup_connection_with_options(target, is_bulk_delete_snapshot)
             })
             .and_then(|()| reset_schema_triggers(target))
@@ -153,11 +157,13 @@ impl Database {
     }
 }
 
-const SCHEMA_TRIGGERS: [&str; 4] = [
+const SCHEMA_TRIGGERS: [&str; 6] = [
     "vouchers_positive_number_insert",
     "vouchers_positive_number_update",
     "voucher_lines_valid_insert",
     "voucher_lines_valid_update",
+    "voucher_lines_account_pair_insert",
+    "voucher_lines_account_pair_update",
 ];
 
 /// `SCHEMA` uses `CREATE TRIGGER IF NOT EXISTS`, so a restored database could
@@ -168,7 +174,8 @@ fn reset_schema_triggers(conn: &Connection) -> Result<(), String> {
         conn.execute(&format!("DROP TRIGGER IF EXISTS \"{trigger}\""), [])
             .map_err(db_error)?;
     }
-    apply_base_schema(conn)
+    apply_base_schema(conn)?;
+    ensure_voucher_account_pair_guards(conn)
 }
 
 pub(crate) fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
@@ -208,7 +215,9 @@ fn validate_backup_connection_with_options(
                                         'vouchers_positive_number_insert',
                                         'vouchers_positive_number_update',
                                         'voucher_lines_valid_insert',
-                                        'voucher_lines_valid_update'
+                                        'voucher_lines_valid_update',
+                                        'voucher_lines_account_pair_insert',
+                                        'voucher_lines_account_pair_update'
                                 )
                             LIMIT 1",
             [],
@@ -228,7 +237,13 @@ fn validate_backup_connection_with_options(
             |row| row.get(0),
         )
         .map_err(db_error)?;
-    if version.parse::<i64>().ok() != Some(CURRENT_SCHEMA_VERSION) {
+    let version_number = version
+        .parse::<i64>()
+        .map_err(|_| "نسخه ساختار فایل پشتیبان معتبر نیست.".to_string())?;
+    // Version 4 backups are accepted as migration inputs. They are upgraded
+    // only after copying into the active DB, where restore's safety snapshot
+    // can roll everything back if v5's level-4/reference preflight fails.
+    if !(4..=CURRENT_SCHEMA_VERSION).contains(&version_number) {
         return Err("نسخه ساختار فایل پشتیبان با این نسخه برنامه سازگار نیست.".to_string());
     }
     for table in [
@@ -320,6 +335,15 @@ fn validate_backup_connection_with_options(
                 ));
             }
         }
+        if table == "voucher_lines" && version_number >= 5 {
+            for column in ["account_id", "detail1_code"] {
+                if !columns.iter().any(|name| name == column) {
+                    return Err(format!(
+                        "فایل پشتیبان نسخه ۵ معتبر نیست؛ ستون voucher_lines.{column} وجود ندارد."
+                    ));
+                }
+            }
+        }
     }
 
     {
@@ -383,11 +407,11 @@ fn validate_backup_connection_with_options(
     }
     if let Some(code) = backup_first_text(
         conn,
-        "SELECT code FROM accounts
-          WHERE level NOT BETWEEN 1 AND 4
+        &format!("SELECT code FROM accounts
+          WHERE level NOT BETWEEN 1 AND {}
              OR is_postable NOT IN (0, 1)
              OR nature NOT IN ('debtor', 'creditor', 'dual')
-          LIMIT 1",
+          LIMIT 1", if version_number < 5 { 4 } else { 3 }),
     )? {
         return Err(format!(
             "سطح، ماهیت یا وضعیت ثبت حساب «{code}» در فایل پشتیبان معتبر نیست."
@@ -499,18 +523,25 @@ fn validate_backup_connection_with_options(
             "مبلغ، شماره ردیف یا شرح ردیف {line} در فایل پشتیبان معتبر نیست."
         ));
     }
-    if let Some(line) = backup_first_text(
-        conn,
+    let account_reference_check = if version_number >= 5 {
+        "SELECT CAST(l.id AS TEXT)
+           FROM voucher_lines l
+           LEFT JOIN accounts a ON a.id = l.account_id AND a.code = l.account_code
+           LEFT JOIN accounts d ON d.code = l.detail1_code
+          WHERE a.id IS NULL OR a.level NOT IN (1,2) OR a.is_postable = 0
+             OR (l.detail1_code IS NOT NULL AND l.detail1_code <> '' AND
+                 (d.id IS NULL OR d.level <> 3 OR a.level <> 2 OR d.parent_code <> a.code OR d.group_code <> a.group_code))
+          LIMIT 1"
+    } else {
         "SELECT CAST(l.id AS TEXT)
            FROM voucher_lines l
            LEFT JOIN accounts a ON a.code = l.account_code
-          WHERE a.code IS NULL
-             OR a.is_postable = 0
-             OR EXISTS (SELECT 1 FROM accounts child WHERE child.parent_code = a.code)
-          LIMIT 1",
-    )? {
+          WHERE a.id IS NULL OR a.level NOT BETWEEN 1 AND 4
+          LIMIT 1"
+    };
+    if let Some(line) = backup_first_text(conn, account_reference_check)? {
         return Err(format!(
-            "حساب ردیف {line} در فایل پشتیبان وجود ندارد یا قابل ثبت نیست."
+            "حساب ردیف {line} در فایل پشتیبان وجود ندارد یا ساختار ارجاع آن معتبر نیست."
         ));
     }
     // A marked pre-delete snapshot is a reversible archive of the exact live

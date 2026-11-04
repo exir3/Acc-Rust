@@ -5,7 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use crate::db::common::{db_error, normalize_code, to_fa_digits};
 use crate::db::model::{
     Account, AccountGroup, AccountGroupList, AccountList, BulkAccountDeleteFailure,
-    BulkAccountDeleteResult, Database, NewAccount, MAX_ACCOUNT_LEVEL,
+    BulkAccountDeleteResult, Database, NewAccount,
 };
 use crate::db::validation::{
     validate_account_code, validate_group_code, validate_level, validate_name, validate_nature,
@@ -46,18 +46,9 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
         false,
     )?;
 
-    // An account that already carries vouchers cannot also become a heading
-    // for sub-accounts: its balance would be counted twice in the ledger.
-    if let Some(parent) = &parent_code {
-        if account_has_lines(conn, parent)? {
-            return Err(
-                "حساب بالاتر در اسناد استفاده شده است؛ برای آن زیرحساب تعریف نمی‌شود."
-                    .to_string(),
-            );
-        }
-    }
-
-    let postable = account.level > 1 && account.is_postable;
+    // Level 1/2 accounts remain valid posting bases even when children exist.
+    // The optional level-3 detail is stored in a separate voucher column.
+    let postable = account.level <= 2;
     conn.execute(
         "INSERT INTO accounts
             (code, name, level, group_code, nature, parent_code, parent_name, is_postable, is_active)
@@ -76,19 +67,6 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
     )
     .map_err(db_error)?;
     let new_id = conn.last_insert_rowid();
-
-    // The parent is now a heading and can no longer receive vouchers.
-    if let Some(parent) = &parent_code {
-        conn.execute(
-            "UPDATE accounts
-                SET postable_before_children = COALESCE(postable_before_children, is_postable),
-                    is_postable = 0,
-                    updated_at = datetime('now', 'localtime')
-              WHERE code = ?1",
-            params![parent],
-        )
-        .map_err(db_error)?;
-    }
 
     fetch_account(conn, new_id)
 }
@@ -435,10 +413,10 @@ impl Database {
                 .map_err(db_error)?;
 
             if (old_group != group_code || old_parent_code != parent_code)
-                && account_legacy_subtree_has_lines(&tx, &code)?
+                && account_subtree_has_lines(&tx, &code)?
             {
                 return Err(
-                    "این حساب دارای تفصیلی سطح ۲ قدیمی با سابقه استفاده در اسناد ثبت‌شده است؛ برای حفظ سوابق، تغییر والد آن مجاز نیست."
+                    "این حساب یا یکی از زیرحساب‌های آن در اسناد ثبت‌شده استفاده شده است؛ برای جلوگیری از تغییر طبقه‌بندی سوابق، تغییر حساب بالاتر یا گروه مجاز نیست."
                         .to_string(),
                 );
             }
@@ -454,16 +432,6 @@ impl Database {
                 old_parent_code == parent_code,
             )?;
             let new_parent_code = parent_code.as_deref().unwrap_or("");
-
-            if level == 3
-                && old_parent_code != new_parent_code
-                && account_has_lines(&tx, &code)?
-            {
-                return Err(
-                    "حساب تفصیلی در اسناد استفاده شده است؛ پیش از تغییر حساب معینِ والد، اسناد مرتبط را اصلاح کنید."
-                        .to_string(),
-                );
-            }
 
             if !new_parent_code.is_empty() {
                 let creates_cycle: bool = tx
@@ -489,17 +457,11 @@ impl Database {
                 }
             }
 
-            if old_parent_code != new_parent_code
-                && !new_parent_code.is_empty()
-                && account_has_lines(&tx, new_parent_code)?
-            {
-                return Err(
-                    "حساب بالاتر در اسناد استفاده شده است؛ این حساب به‌عنوان زیرحساب انتخاب نمی‌شود."
-                        .to_string(),
-                );
-            }
-            let postable = level > 1 && is_postable && children == 0;
-            if !postable && level > 1 && children == 0 && account_has_lines(&tx, &code)? {
+            let postable = level <= 2 && is_postable;
+            // A level-1/2 account is the posting base for both direct rows and
+            // rows carrying detail1_code. Do not let the user disable it while
+            // any voucher still references that base, even when it has children.
+            if !postable && level <= 2 && account_has_lines(&tx, &code)? {
                 return Err(
                     "این حساب در اسناد استفاده شده است و باید قابل ثبت بماند.".to_string(),
                 );
@@ -561,38 +523,8 @@ impl Database {
             }
 
             if old_parent_code != new_parent_code {
-                if !old_parent_code.is_empty() {
-                    let remaining_children: i64 = tx
-                        .query_row(
-                            "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
-                            params![old_parent_code],
-                            |row| row.get(0),
-                        )
-                        .map_err(db_error)?;
-                    if remaining_children == 0 {
-                        tx.execute(
-                            "UPDATE accounts
-                                SET is_postable = COALESCE(postable_before_children, is_postable),
-                                    postable_before_children = NULL,
-                                    updated_at = datetime('now', 'localtime')
-                              WHERE code = ?1",
-                            params![old_parent_code],
-                        )
-                        .map_err(db_error)?;
-                    }
-                }
-
-                if !new_parent_code.is_empty() {
-                    tx.execute(
-                        "UPDATE accounts
-                            SET postable_before_children = COALESCE(postable_before_children, is_postable),
-                                is_postable = 0,
-                                updated_at = datetime('now', 'localtime')
-                          WHERE code = ?1",
-                        params![new_parent_code],
-                    )
-                    .map_err(db_error)?;
-                }
+                // Parent postability is independent from child existence in v5.
+                // Re-parenting a child therefore does not toggle the parent flag.
             }
 
             let updated = fetch_account(&tx, id)?;
@@ -701,21 +633,7 @@ fn list_accounts(conn: &mut Connection) -> Result<Vec<Account>, String> {
         .prepare(
             "SELECT a.id, a.code, a.name, a.level, a.group_code, g.name, g.type,
                     a.nature, COALESCE(a.parent_code, ''), COALESCE(p.name, ''),
-                    CASE
-                        WHEN a.level > 3 THEN 0
-                        WHEN EXISTS(
-                            SELECT 1 FROM accounts child
-                             WHERE child.parent_code = a.code AND child.level <= 3
-                        ) THEN 0
-                        WHEN a.level = 3 AND EXISTS(
-                            SELECT 1 FROM accounts child
-                             WHERE child.parent_code = a.code AND child.level > 3
-                        ) THEN COALESCE(a.postable_before_children, 1)
-                        WHEN EXISTS(
-                            SELECT 1 FROM accounts child WHERE child.parent_code = a.code
-                        ) THEN 0
-                        ELSE a.is_postable
-                    END,
+                    CASE WHEN a.level IN (1, 2) THEN a.is_postable ELSE 0 END,
                     a.is_active, a.created_at, a.updated_at
                FROM accounts a
                JOIN account_groups g ON g.code = a.group_code
@@ -745,21 +663,7 @@ fn fetch_account(conn: &Connection, id: i64) -> Result<Account, String> {
     conn.query_row(
         "SELECT a.id, a.code, a.name, a.level, a.group_code, g.name, g.type,
                 a.nature, COALESCE(a.parent_code, ''), COALESCE(p.name, ''),
-                CASE
-                    WHEN a.level > 3 THEN 0
-                    WHEN EXISTS(
-                        SELECT 1 FROM accounts child
-                         WHERE child.parent_code = a.code AND child.level <= 3
-                    ) THEN 0
-                    WHEN a.level = 3 AND EXISTS(
-                        SELECT 1 FROM accounts child
-                         WHERE child.parent_code = a.code AND child.level > 3
-                    ) THEN COALESCE(a.postable_before_children, 1)
-                    WHEN EXISTS(
-                        SELECT 1 FROM accounts child WHERE child.parent_code = a.code
-                    ) THEN 0
-                    ELSE a.is_postable
-                END,
+                CASE WHEN a.level IN (1, 2) THEN a.is_postable ELSE 0 END,
                 a.is_active, a.created_at, a.updated_at
            FROM accounts a
            JOIN account_groups g ON g.code = a.group_code
@@ -809,24 +713,24 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
 
 fn account_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM voucher_lines WHERE account_code = ?1)",
+        "SELECT EXISTS (SELECT 1 FROM voucher_lines WHERE account_code = ?1 OR detail1_code = ?1)",
         params![code],
         |row| row.get(0),
     )
     .map_err(db_error)
 }
 
-/// Deletes one account inside an existing transaction and restores its
-/// parent's postable flag when the last child disappears.
+/// Deletes one account inside an existing transaction. Parent postability
+/// is independent from whether child accounts remain (schema v5).
 fn delete_account_tx(conn: &Connection, id: i64) -> Result<(), String> {
     if id <= 0 {
         return Err("شناسه حساب نامعتبر است.".to_string());
     }
-    let (code, parent_code) = conn
+    let code = conn
         .query_row(
-            "SELECT code, COALESCE(parent_code, '') FROM accounts WHERE id = ?1",
+            "SELECT code FROM accounts WHERE id = ?1",
             params![id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(db_error)?
@@ -850,45 +754,25 @@ fn delete_account_tx(conn: &Connection, id: i64) -> Result<(), String> {
     conn.execute("DELETE FROM accounts WHERE id = ?1", params![id])
         .map_err(db_error)?;
 
-    if !parent_code.is_empty() {
-        let remaining_children: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
-                params![parent_code],
-                |row| row.get(0),
-            )
-            .map_err(db_error)?;
-        if remaining_children == 0 {
-            conn.execute(
-                "UPDATE accounts
-                    SET is_postable = COALESCE(postable_before_children, is_postable),
-                        postable_before_children = NULL,
-                        updated_at = datetime('now', 'localtime')
-                  WHERE code = ?1",
-                params![parent_code],
-            )
-            .map_err(db_error)?;
-        }
-    }
+    // Parent postability does not depend on whether children remain.
     Ok(())
 }
 
-fn account_legacy_subtree_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
+fn account_subtree_has_lines(conn: &Connection, code: &str) -> Result<bool, String> {
     conn.query_row(
-        "WITH RECURSIVE account_tree(code, level) AS (
-            SELECT code, level FROM accounts WHERE code = ?1
+        "WITH RECURSIVE account_tree(code) AS (
+            SELECT code FROM accounts WHERE code = ?1
             UNION
-            SELECT child.code, child.level
+            SELECT child.code
               FROM accounts child
               JOIN account_tree parent ON child.parent_code = parent.code
         )
         SELECT EXISTS (
             SELECT 1
               FROM voucher_lines line
-              JOIN account_tree tree ON tree.code = line.account_code
-             WHERE tree.level > ?2
+              JOIN account_tree tree ON tree.code = COALESCE(NULLIF(line.detail1_code, ''), line.account_code)
         )",
-        params![code, MAX_ACCOUNT_LEVEL],
+        params![code],
         |row| row.get(0),
     )
     .map_err(db_error)

@@ -209,7 +209,7 @@ mod tests {
             text("10"),
             text("9901"),
             text("سایر درآمدها و هزینه‌های سفارشی"),
-            text("990101"),
+            text("881122"),
             text("هزینه عملیاتی سفارشی"),
             text("بدهکار"),
             Data::Int(100),
@@ -221,7 +221,7 @@ mod tests {
             Data::Empty,
             text("9901"),
             Data::Empty,
-            text("990102"),
+            text("881123"),
             text("هزینه عملیاتی دوم"),
             text("بدهکار"),
             Data::Int(50),
@@ -251,12 +251,12 @@ mod tests {
 
         let import = parse_bulk_voucher_sheet(Path::new("custom.xlsx"), "اسناد", &range).unwrap();
         let custom_parent = import.accounts.iter().find(|account| account.code == "9901").unwrap();
-        let custom_child = import.accounts.iter().find(|account| account.code == "990101").unwrap();
+        let custom_child = import.accounts.iter().find(|account| account.code == "881122").unwrap();
         assert_eq!(custom_parent.group_code, "10");
         assert_eq!(custom_child.group_code, "10");
         assert_eq!(custom_child.nature, "debtor");
         assert!(custom_child.nature_is_explicit);
-        let merged_group_child = import.accounts.iter().find(|account| account.code == "990102").unwrap();
+        let merged_group_child = import.accounts.iter().find(|account| account.code == "881123").unwrap();
         assert_eq!(merged_group_child.group_code, "10");
         assert_eq!(import.vouchers.len(), 1);
         assert_eq!(import.vouchers[0].lines.len(), 3);
@@ -451,10 +451,10 @@ mod tests {
             parse_account_code_data_cell(&text("001101"), "کد حساب").unwrap(),
             "001101"
         );
-        assert!(parse_account_code_data_cell(&Data::Int(1101), "کد حساب")
+        assert!(parse_account_code_data_cell(&Data::Int(1_000_000_000_000_000), "کد حساب")
             .unwrap_err()
             .contains("به‌صورت متن"));
-        assert!(parse_account_code_data_cell(&Data::Float(1101.0), "کد حساب").is_err());
+        assert!(parse_account_code_data_cell(&Data::Float(1101.5), "کد حساب").is_err());
     }
 
     #[test]
@@ -490,9 +490,34 @@ mod tests {
         let (row, columns) = find_columns(&range).expect("header row");
         assert_eq!(row, 0);
         assert_eq!(columns.account_code, Some(1));
+        assert_eq!(columns.detail1_code, Some(2));
         assert_eq!(columns.description, Some(3));
         assert_eq!(columns.debit, Some(4));
         assert_eq!(columns.credit, Some(5));
+    }
+
+    #[test]
+    fn exported_voucher_detail_code_column_is_recognized_without_mistaking_its_title_for_a_code() {
+        let mut exported = calamine::Range::new((0, 0), (0, 5));
+        for (col, value) in ["ردیف", "کد حساب", "کد تفصیلی ۱", "شرح", "بدهکار", "بستانکار"]
+            .iter()
+            .enumerate()
+        {
+            exported.set_value((0, col as u32), text(value));
+        }
+        let (_, columns) = find_columns(&exported).expect("exported voucher headers");
+        assert_eq!(columns.account_code, Some(1));
+        assert_eq!(columns.detail1_code, Some(2));
+
+        let mut titled = calamine::Range::new((0, 0), (0, 5));
+        for (col, value) in ["کد حساب", "عنوان تفصیلی ۱", "شرح", "بدهکار", "بستانکار", "ردیف"]
+            .iter()
+            .enumerate()
+        {
+            titled.set_value((0, col as u32), text(value));
+        }
+        let (_, columns) = find_columns(&titled).expect("voucher headers with detail title");
+        assert_eq!(columns.detail1_code, None);
     }
 
     #[test]

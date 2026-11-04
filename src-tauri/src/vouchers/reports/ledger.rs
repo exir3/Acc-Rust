@@ -36,8 +36,8 @@ impl Database {
                 .map_err(db::db_error)?
                 .ok_or_else(|| "حساب انتخاب‌شده یافت نشد.".to_string())?;
 
-            // Vouchers are only posted to leaf accounts, so the ledger of a
-            // parent account is the combined activity of all its descendants.
+            // A line posts either to its base account or to its selected
+            // level-3 detail. The tree therefore rolls up each line exactly once.
             const TREE: &str = "WITH RECURSIVE tree(code) AS (
                     SELECT code FROM accounts WHERE code = ?1
                     UNION ALL
@@ -58,7 +58,7 @@ impl Database {
                      SELECT l.debit, l.credit
                        FROM voucher_lines l
                        JOIN vouchers v ON v.id = l.voucher_id
-                      WHERE l.account_code IN (SELECT code FROM tree)
+                      WHERE COALESCE(NULLIF(l.detail1_code, ''), l.account_code) IN (SELECT code FROM tree)
                         AND (?2 <> '' AND v.date < ?2)"
                 ))
                 .map_err(db::db_error)?;
@@ -79,11 +79,11 @@ impl Database {
                 .prepare(&format!(
                     "{TREE}
                      SELECT v.id, v.number, v.date, v.type, v.description,
-                            l.description, l.debit, l.credit, l.account_code, a.name
+                            l.description, l.debit, l.credit, COALESCE(NULLIF(l.detail1_code, ''), l.account_code), a.name
                        FROM voucher_lines l
                        JOIN vouchers v ON v.id = l.voucher_id
-                       JOIN accounts a ON a.code = l.account_code
-                      WHERE l.account_code IN (SELECT code FROM tree)
+                       JOIN accounts a ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
+                      WHERE COALESCE(NULLIF(l.detail1_code, ''), l.account_code) IN (SELECT code FROM tree)
                         AND (?2 = '' OR v.date >= ?2)
                         AND (?3 = '' OR v.date <= ?3)
                       ORDER BY v.date, v.number, l.row_no"

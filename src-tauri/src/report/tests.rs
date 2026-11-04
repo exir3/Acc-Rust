@@ -47,6 +47,8 @@ mod tests {
                 row_no: 1,
                 account_code: "<svg/onload=alert(1)>".to_string(),
                 account_name: "<script>alert(2)</script>".to_string(),
+                detail1_code: None,
+                detail1_name: None,
                 description: "\"quoted\" & <tag>".to_string(),
                 debit: 100,
                 credit: 0,

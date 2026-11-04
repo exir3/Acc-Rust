@@ -50,9 +50,12 @@ fn search_clause(p: &str) -> String {
              SELECT 1
                FROM voucher_lines l2
                JOIN accounts a2 ON a2.code = l2.account_code
+               LEFT JOIN accounts d2 ON d2.code = l2.detail1_code
               WHERE l2.voucher_id = v.id
                 AND (a2.name LIKE '%' || {p} || '%' ESCAPE '\\'
                      OR l2.account_code LIKE '%' || {p} || '%' ESCAPE '\\'
+                     OR d2.name LIKE '%' || {p} || '%' ESCAPE '\\'
+                     OR COALESCE(l2.detail1_code, '') LIKE '%' || {p} || '%' ESCAPE '\\'
                      OR l2.description LIKE '%' || {p} || '%' ESCAPE '\\')
          )"
     )
@@ -213,9 +216,11 @@ pub(crate) fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher,
 
     let mut stmt = conn
         .prepare(
-            "SELECT l.id, l.row_no, l.account_code, a.name, l.description, l.debit, l.credit
+            "SELECT l.id, l.row_no, l.account_code, a.name,
+                    NULLIF(l.detail1_code,''), d.name, l.description, l.debit, l.credit
                FROM voucher_lines l
                JOIN accounts a ON a.code = l.account_code
+               LEFT JOIN accounts d ON d.code = l.detail1_code
               WHERE l.voucher_id = ?1
               ORDER BY l.row_no",
         )
@@ -227,9 +232,11 @@ pub(crate) fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher,
                 row_no: row.get(1)?,
                 account_code: row.get(2)?,
                 account_name: row.get(3)?,
-                description: row.get(4)?,
-                debit: row.get(5)?,
-                credit: row.get(6)?,
+                detail1_code: row.get(4)?,
+                detail1_name: row.get(5)?,
+                description: row.get(6)?,
+                debit: row.get(7)?,
+                credit: row.get(8)?,
             })
         })
         .map_err(db::db_error)?

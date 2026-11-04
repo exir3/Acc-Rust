@@ -65,6 +65,9 @@ pub struct VoucherLineInput {
     pub id: Option<i64>,
     #[serde(default)]
     pub account_code: String,
+    /// Optional level-3 detail account. The account_code is always the base (level 1/2).
+    #[serde(default)]
+    pub detail1_code: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -235,6 +238,10 @@ pub struct VoucherLine {
     pub row_no: i64,
     pub account_code: String,
     pub account_name: String,
+    #[serde(default)]
+    pub detail1_code: Option<String>,
+    #[serde(default)]
+    pub detail1_name: Option<String>,
     pub description: String,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub debit: i64,

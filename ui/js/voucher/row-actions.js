@@ -43,6 +43,7 @@ function repeatRow(includeAmounts = false) {
 
   const source = {
     code: row.querySelector('.vf-code-input').value,
+    detail1: row.querySelector('.vf-detail1-input').value,
     description: row.querySelector('.vf-desc-input').value,
     debit: row.querySelector('.vf-debit-input').value,
     credit: row.querySelector('.vf-credit-input').value,
@@ -51,6 +52,7 @@ function repeatRow(includeAmounts = false) {
   row.insertAdjacentHTML('afterend', voucherRowTemplate());
   const copy = row.nextElementSibling;
   copy.querySelector('.vf-code-input').value = source.code;
+  copy.querySelector('.vf-detail1-input').value = source.detail1;
   copy.querySelector('.vf-desc-input').value = source.description;
   if (includeAmounts) {
     copy.querySelector('.vf-debit-input').value = source.debit;
