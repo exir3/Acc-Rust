@@ -7,6 +7,7 @@ const TRIAL_BALANCE_TYPES = ['چهار ستونی', 'شش ستونی', 'هشت �
 let trialView = null;
 let trialAbort = null;
 let trialSearchTimer = 0;
+let trialScrollbarFrame = 0;
 let trialState = {
   search: '',
   drillPath: [],
@@ -104,14 +105,20 @@ function trialRowNumbers(row) {
 }
 
 function createTrialView(report) {
-  const rows = (report?.rows || []).map((row) => ({
-    code: String(row.accountCode ?? ''),
-    name: row.accountName || '',
-    groupName: row.groupName || '',
-    parentCode: String(row.parentCode ?? ''),
-    level: Number(row.level) || 1,
-    numbers: trialRowNumbers(row),
-  }));
+  const rows = (report?.rows || []).map((row) => {
+    const code = String(row.accountCode ?? '');
+    const name = row.accountName || '';
+    return {
+      code,
+      name,
+      groupName: row.groupName || '',
+      parentCode: String(row.parentCode ?? ''),
+      level: Number(row.level) || 1,
+      numbers: trialRowNumbers(row),
+      // Normalized once here; the search box filters on every keystroke.
+      searchText: normalizeSearch(`${code} ${name}`),
+    };
+  });
 
   const byCode = new Map(rows.map((row) => [row.code, row]));
   const byCleanCode = new Map(rows.map((row) => [trialCleanCode(row.code), row]));
@@ -223,9 +230,7 @@ function trialFilterRows(view) {
   }
 
   if (hasSearch) {
-    rows = rows.filter(
-      (row) => normalizeSearch(row.code).includes(query) || normalizeSearch(row.name).includes(query),
-    );
+    rows = rows.filter((row) => row.searchText.includes(query));
   }
 
   if (!f.showZero) {
@@ -611,10 +616,15 @@ function trialGridParts() {
 }
 
 function trialSyncScrollbarWidth() {
-  const grid = document.getElementById('tbpGrid');
-  const body = grid?.querySelector('.tbp-grid-body');
-  if (!grid || !body) return;
-  grid.style.setProperty('--tbp-sb', `${Math.max(0, body.offsetWidth - body.clientWidth)}px`);
+  // Resize events fire in bursts; measure at most once per frame.
+  if (trialScrollbarFrame) return;
+  trialScrollbarFrame = requestAnimationFrame(() => {
+    trialScrollbarFrame = 0;
+    const grid = document.getElementById('tbpGrid');
+    const body = grid?.querySelector('.tbp-grid-body');
+    if (!grid || !body) return;
+    grid.style.setProperty('--tbp-sb', `${Math.max(0, body.offsetWidth - body.clientWidth)}px`);
+  });
 }
 
 function trialEnsureSelection(rows) {

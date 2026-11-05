@@ -125,23 +125,29 @@ async function runVoucherSearch(term) {
   }
 
   const request = ++searchRequest;
+  const numberTerm = isVoucherNumberTerm(wanted);
   try {
-    const payload = await invoke('list_vouchers', { from: '', to: '', search: wanted });
+    // Only a handful of rows are rendered, so cap the query instead of
+    // loading every matching voucher and slicing in the UI. A numeric term
+    // also asks for that exact voucher, which keeps it reachable even when
+    // the capped date-ordered page does not contain it.
+    const [payload, exactVoucher] = await Promise.all([
+      invoke('list_vouchers', { from: '', to: '', search: wanted, limit: 10 }),
+      numberTerm
+        ? invoke('get_voucher', { number: Number(digitsOnly(wanted)) }).catch(() => null)
+        : null,
+    ]);
     if (request !== searchRequest) return;
     if (normalizeSearch(voucherSearchInput()?.value || '') !== normalizeSearch(wanted)) return;
 
     const allResults = Array.isArray(payload?.vouchers) ? payload.vouchers : [];
-    let results;
-    if (isVoucherNumberTerm(wanted)) {
-      const exactNumber = digitsOnly(wanted);
-      const exact = allResults.find((voucher) => String(voucher.number) === exactNumber);
-      results = exact
-        ? [exact, ...allResults.filter((voucher) => voucher !== exact).slice(0, 7)]
-        : allResults.slice(0, 8);
-    } else {
-      results = allResults.slice(0, 8);
+    if (numberTerm && exactVoucher) {
+      const exactNumber = String(exactVoucher.number);
+      const existing = allResults.findIndex((voucher) => String(voucher.number) === exactNumber);
+      if (existing >= 0) allResults.splice(existing, 1);
+      allResults.unshift(exactVoucher);
     }
-    renderVoucherSearchResults(results);
+    renderVoucherSearchResults(allResults.slice(0, 8));
   } catch (error) {
     if (request !== searchRequest) return;
     showVoucherSearchMessage(errorText(error));

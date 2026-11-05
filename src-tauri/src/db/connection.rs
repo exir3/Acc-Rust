@@ -99,9 +99,22 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
 
     connection
         .execute_batch(
+            // Read-mostly desktop workload: keep a larger page cache, sort in
+            // memory instead of spilling to a temp file, and memory-map the
+            // database so large reports do not copy every page through the
+            // SQLite page cache first.
+            //
+            // `synchronous` intentionally stays at SQLite's FULL default.
+            // NORMAL is faster for writes but can drop the last committed
+            // transactions after a power loss; accounting records must not
+            // take that trade-off.
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = 5000;",
+             PRAGMA busy_timeout = 5000;
+             PRAGMA cache_size = -32768;
+             PRAGMA temp_store = MEMORY;
+             PRAGMA mmap_size = 268435456;
+             PRAGMA journal_size_limit = 67108864;",
         )
         .map_err(db_error)?;
     apply_base_schema(&connection)?;

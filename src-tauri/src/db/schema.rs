@@ -507,6 +507,31 @@ pub(crate) fn ensure_voucher_account_pair_guards(conn: &Connection) -> Result<()
     ).map_err(db_error)
 }
 
+/// Indexes used by the read paths that scan the most data: voucher lists,
+/// journals, ledgers and the trial balance. They are created on every open
+/// (idempotently) so an existing database gets them without a schema-version
+/// bump, and a restored database is brought up to date by the migration that
+/// runs after restore.
+pub(crate) fn ensure_query_indexes(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        // Reports group by the account a line actually posts to: its level-3
+        // detail when one is selected, otherwise the base account. Without
+        // this expression index SQLite has to scan every voucher line for
+        // every account in the trial balance and the financial statements.
+        "CREATE INDEX IF NOT EXISTS idx_voucher_lines_effective_account
+             ON voucher_lines(COALESCE(NULLIF(detail1_code, ''), account_code));
+         -- Voucher lists and the journal order by date and number; the
+         -- composite index serves both the range filter and that ordering.
+         CREATE INDEX IF NOT EXISTS idx_vouchers_date_number
+             ON vouchers(date, number);
+         -- Report scopes filter is_temporary before the date range, so keep
+         -- that column first and keep the sort columns in the same order.
+         CREATE INDEX IF NOT EXISTS idx_vouchers_scope_date_number
+             ON vouchers(is_temporary, date, number);",
+    )
+    .map_err(db_error)
+}
+
 /// Permanent vouchers are immutable across every database write path.
 pub(crate) fn ensure_permanent_voucher_guards(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -744,9 +769,11 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
     )
     .map_err(db_error)?;
 
-    // Re-create guards on every open, including after a database restore.
+    // Re-create guards and read-path indexes on every open, including after
+    // a database restore.
     ensure_voucher_account_pair_guards(&tx)?;
     ensure_permanent_voucher_guards(&tx)?;
+    ensure_query_indexes(&tx)?;
 
     if version < CURRENT_SCHEMA_VERSION {
         tx.execute(
