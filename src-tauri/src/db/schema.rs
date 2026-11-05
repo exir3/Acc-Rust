@@ -2,7 +2,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::common::{db_error, to_fa_digits, CURRENT_SCHEMA_VERSION};
+use crate::db::common::{db_error, to_fa_digits, BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION};
 
 const SCHEMA: &str = r#"
     CREATE TABLE IF NOT EXISTS app_meta (
@@ -37,7 +37,6 @@ const SCHEMA: &str = r#"
         parent_name TEXT NOT NULL DEFAULT '',
         is_postable INTEGER NOT NULL DEFAULT 1 CHECK(is_postable IN (0, 1)),
         is_active   INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
-        postable_before_children INTEGER CHECK(postable_before_children IN (0, 1)),
         created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
         updated_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
     );
@@ -111,16 +110,18 @@ const SCHEMA: &str = r#"
     END;
 "#;
 
-/// Creates the base tables and records the current schema version.
+/// Creates the base tables and records the version they physically match.
 ///
-/// The version marker is written from `CURRENT_SCHEMA_VERSION` instead of being
-/// duplicated inside `SCHEMA`, so bumping the constant can never leave a fresh
-/// database tagged with an older version.
+/// The base schema is intentionally pinned to `BASE_SCHEMA_VERSION`; the
+/// version marker is not duplicated inside `SCHEMA`. `apply_schema_migrations`
+/// then adds the later columns and upgrades the marker to
+/// `CURRENT_SCHEMA_VERSION`. This guarantees a fresh and a restored database
+/// pass through exactly the same migration path.
 pub(crate) fn apply_base_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(SCHEMA).map_err(db_error)?;
     conn.execute(
         "INSERT OR IGNORE INTO app_meta(key, value) VALUES ('schema_version', ?1)",
-        params!["4"],
+        params![BASE_SCHEMA_VERSION.to_string()],
     )
     .map_err(db_error)?;
     Ok(())
@@ -463,8 +464,7 @@ pub(crate) fn ensure_voucher_account_pair_guards(conn: &Connection) -> Result<()
     ).map_err(db_error)
 }
 
-/// Applies additive, versioned schema changes. Migration 3 remembers whether
-/// a parent account was manually postable before its first child was added.
+/// Applies additive schema changes and upgrades the recorded version.
 pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), String> {
     let version_text: String = conn
         .query_row(
@@ -488,16 +488,6 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
     let tx = conn.transaction().map_err(db_error)?;
     if table_exists(&tx, "accounts")? {
         let account_columns = table_columns(&tx, "accounts")?;
-        if !account_columns
-            .iter()
-            .any(|column| column == "postable_before_children")
-        {
-            tx.execute(
-                "ALTER TABLE accounts ADD COLUMN postable_before_children INTEGER CHECK(postable_before_children IN (0, 1))",
-                [],
-            )
-            .map_err(db_error)?;
-        }
         if !account_columns.iter().any(|column| column == "is_active") {
             tx.execute(
                 "ALTER TABLE accounts ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1))",

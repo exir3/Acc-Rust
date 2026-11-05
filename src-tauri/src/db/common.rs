@@ -1,6 +1,11 @@
 //! Small database-wide constants and error/format helpers.
 
 pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
+/// Version physically described by the base `SCHEMA` string. Additive
+/// migrations then bring a fresh or restored database up to
+/// `CURRENT_SCHEMA_VERSION`. Keeping the two constants separate is intentional:
+/// a fresh database must still run the v5 voucher-pair migration.
+pub(crate) const BASE_SCHEMA_VERSION: i64 = 4;
 pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 6;
 // A pre-delete snapshot must preserve legacy vouchers exactly as they existed,
 // even when an old document already violates the current balancing rules.

@@ -296,7 +296,6 @@ fn validate_backup_connection_with_options(
                 "parent_name",
                 "is_postable",
                 "is_active",
-                "postable_before_children",
                 "created_at",
                 "updated_at",
             ],
@@ -632,3 +631,73 @@ fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Keeps the newest regular backups so the backups folder cannot grow without
+/// bound. Older files are removed only when they match the backup naming
+/// pattern used by this application.
+pub(crate) fn prune_backup_files(directory: &Path) -> Result<usize, String> {
+    prune_matching_files(directory, BACKUP_RETENTION, |name| {
+        name.starts_with("hesabdari-backup-") && name.ends_with(".sqlite3")
+    })
+}
+
+/// Removes older `.before-restore-*` safety copies next to the active
+/// database. The newest copies remain available for manual recovery.
+pub(crate) fn prune_restore_safety_files(database_path: &Path) -> Result<usize, String> {
+    let directory = database_path
+        .parent()
+        .ok_or_else(|| "مسیر پوشه پایگاه داده پیدا نشد.".to_string())?;
+    prune_matching_files(directory, RESTORE_SAFETY_RETENTION, |name| {
+        name.contains(".before-restore-")
+    })
+}
+
+fn prune_matching_files<F>(directory: &Path, keep: usize, matches: F) -> Result<usize, String>
+where
+    F: Fn(&str) -> bool,
+{
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("خواندن پوشه پشتیبان ناموفق بود: {error}")),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("خواندن فایل پشتیبان ناموفق بود: {error}"))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("تعیین نوع فایل پشتیبان ناموفق بود: {error}"))?
+            .is_file()
+        {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !matches(&name) {
+            continue;
+        }
+        // Both backup and safety names end in a nanosecond timestamp, so the
+        // suffix orders them without depending on filesystem time precision.
+        let stem = name.strip_suffix(".sqlite3").unwrap_or(&name);
+        let stamp = stem
+            .rsplit('-')
+            .next()
+            .and_then(|value| value.parse::<u128>().ok())
+            .unwrap_or(0);
+        files.push((stamp, name));
+    }
+    if files.len() <= keep {
+        return Ok(0);
+    }
+    files.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    let mut removed = 0;
+    for (_, name) in files.into_iter().skip(keep) {
+        let path = directory.join(name);
+        std::fs::remove_file(&path).map_err(|error| {
+            format!("حذف پشتیبان قدیمی «{}» ناموفق بود: {error}", path.display())
+        })?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+const BACKUP_RETENTION: usize = 30;
+const RESTORE_SAFETY_RETENTION: usize = 5;

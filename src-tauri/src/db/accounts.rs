@@ -40,15 +40,18 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
 
     let (parent_code, parent_name) = resolve_parent(
         conn,
+        &account.code,
         account.level,
         &account.parent_code,
         &account.group_code,
         false,
     )?;
 
-    // Level 1/2 accounts remain valid posting bases even when children exist.
-    // The optional level-3 detail is stored in a separate voucher column.
-    let postable = account.level == 1 || (account.level == 2 && account.is_postable);
+    // Same posting policy as WebApp (migration v14 / POST /api/accounts):
+    // level 1 (کل) and level 2 (معین) are always the voucher base;
+    // level 3 (تفصیلی) is only detail1_code and is never postable.
+    // The is_postable flag on NewAccount is ignored so callers cannot drift.
+    let postable = account.level <= 2;
     conn.execute(
         "INSERT INTO accounts
             (code, name, level, group_code, nature, parent_code, parent_name, is_postable, is_active)
@@ -324,9 +327,8 @@ impl Database {
         group_code: &str,
         nature: &str,
         parent_code: &str,
-        is_postable: bool,
     ) -> Result<Account, String> {
-        self.update_account_inner(id, name, group_code, nature, parent_code, is_postable, None)
+        self.update_account_inner(id, name, group_code, nature, parent_code, None)
     }
 
     pub fn update_account_with_active(
@@ -336,18 +338,9 @@ impl Database {
         group_code: &str,
         nature: &str,
         parent_code: &str,
-        is_postable: bool,
         is_active: bool,
     ) -> Result<Account, String> {
-        self.update_account_inner(
-            id,
-            name,
-            group_code,
-            nature,
-            parent_code,
-            is_postable,
-            Some(is_active),
-        )
+        self.update_account_inner(id, name, group_code, nature, parent_code, Some(is_active))
     }
 
     fn update_account_inner(
@@ -357,7 +350,6 @@ impl Database {
         group_code: &str,
         nature: &str,
         parent_code: &str,
-        is_postable: bool,
         is_active: Option<bool>,
     ) -> Result<Account, String> {
         if id <= 0 {
@@ -374,7 +366,8 @@ impl Database {
                 .map_err(db_error)?;
             let existing = tx
                 .query_row(
-                    "SELECT code, level, group_code, COALESCE(parent_code, '') FROM accounts WHERE id = ?1",
+                    "SELECT code, level, group_code, nature, COALESCE(parent_code, '')
+                       FROM accounts WHERE id = ?1",
                     params![id],
                     |row| {
                         Ok((
@@ -382,6 +375,7 @@ impl Database {
                             row.get::<_, i64>(1)?,
                             row.get::<_, String>(2)?,
                             row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
                         ))
                     },
                 )
@@ -389,7 +383,7 @@ impl Database {
                 .map_err(db_error)?
                 .ok_or_else(|| "حساب یافت نشد.".to_string())?;
 
-            let (code, level, old_group, old_parent_code) = existing;
+            let (code, level, old_group, old_nature, old_parent_code) = existing;
 
             let group_exists = tx
                 .query_row(
@@ -404,19 +398,14 @@ impl Database {
                 return Err("گروه حساب انتخاب‌شده وجود ندارد.".to_string());
             }
 
-            let children: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM accounts WHERE parent_code = ?1",
-                    params![code],
-                    |row| row.get(0),
-                )
-                .map_err(db_error)?;
-
-            if (old_group != group_code || old_parent_code != parent_code)
-                && account_subtree_has_lines(&tx, &code)?
-            {
+            // Historical lines keep their meaning only if the branch they were
+            // posted through stays in the same group, nature and hierarchy.
+            // Renaming and activating/deactivating remain allowed.
+            let hierarchy_changed =
+                old_group != group_code || old_nature != nature || old_parent_code != parent_code;
+            if hierarchy_changed && account_subtree_has_lines(&tx, &code)? {
                 return Err(
-                    "این حساب یا یکی از زیرحساب‌های آن در اسناد ثبت‌شده استفاده شده است؛ برای جلوگیری از تغییر طبقه‌بندی سوابق، تغییر حساب بالاتر یا گروه مجاز نیست."
+                    "این حساب یا یکی از زیرحساب‌های آن در اسناد ثبت‌شده استفاده شده است؛ تغییر گروه، ماهیت یا حساب بالاتر مجاز نیست."
                         .to_string(),
                 );
             }
@@ -426,6 +415,7 @@ impl Database {
             // different inactive parent is rejected, matching the WebApp.
             let (parent_code, parent_name) = resolve_parent(
                 &tx,
+                &code,
                 level,
                 &parent_code,
                 &group_code,
@@ -457,25 +447,13 @@ impl Database {
                 }
             }
 
-            let postable = level <= 2 && is_postable;
-            // A level-1/2 account is the posting base for both direct rows and
-            // rows carrying detail1_code. Do not let the user disable it while
-            // any voucher still references that base, even when it has children.
-            if !postable && level <= 2 && account_has_lines(&tx, &code)? {
-                return Err(
-                    "این حساب در اسناد استفاده شده است و باید قابل ثبت بماند.".to_string(),
-                );
-            }
+            let postable = level <= 2;
 
             tx.execute(
                 "UPDATE accounts
                     SET name = ?1, group_code = ?2, nature = ?3,
                         parent_code = ?4, parent_name = ?5, is_postable = ?6,
-                        is_active = COALESCE(?10, is_active),
-                        postable_before_children = CASE
-                            WHEN ?8 = 1 THEN COALESCE(postable_before_children, ?9)
-                            ELSE NULL
-                        END,
+                        is_active = COALESCE(?8, is_active),
                         updated_at = datetime('now', 'localtime')
                   WHERE id = ?7",
                 params![
@@ -486,8 +464,6 @@ impl Database {
                     parent_name,
                     i64::from(postable),
                     id,
-                    i64::from(children > 0),
-                    i64::from(is_postable),
                     is_active.map(i64::from)
                 ],
             )
@@ -520,11 +496,6 @@ impl Database {
                     params![code, group_code],
                 )
                 .map_err(db_error)?;
-            }
-
-            if old_parent_code != new_parent_code {
-                // Parent postability is independent from child existence in v5.
-                // Re-parenting a child therefore does not toggle the parent flag.
             }
 
             let updated = fetch_account(&tx, id)?;
@@ -780,16 +751,24 @@ fn account_subtree_has_lines(conn: &Connection, code: &str) -> Result<bool, Stri
 
 fn resolve_parent(
     conn: &Connection,
+    account_code: &str,
     level: i64,
     parent_code: &str,
     group_code: &str,
     allow_inactive_parent: bool,
 ) -> Result<(Option<String>, String), String> {
+    // Wording matches WebApp validateParentForWrite.
     if level == 1 {
+        if !parent_code.is_empty() {
+            return Err("حساب سطح اول نباید حساب والد داشته باشد.".to_string());
+        }
         return Ok((None, String::new()));
     }
     if parent_code.is_empty() {
-        return Err("برای این سطح، انتخاب حساب بالاتر الزامی است.".to_string());
+        return Err("برای حساب‌های غیر سطح اول، حساب والد الزامی است.".to_string());
+    }
+    if parent_code == account_code {
+        return Err("حساب نمی‌تواند والد خودش باشد.".to_string());
     }
 
     let parent = conn
@@ -807,17 +786,16 @@ fn resolve_parent(
         )
         .optional()
         .map_err(db_error)?
-        .ok_or_else(|| "حساب بالاتر انتخاب‌شده وجود ندارد.".to_string())?;
+        .ok_or_else(|| "حساب والد معتبر نیست.".to_string())?;
 
     if parent.1 != level - 1 {
-        return Err("سطح حساب بالاتر باید یک سطح کمتر از حساب جاری باشد.".to_string());
+        return Err("سطح حساب والد باید دقیقاً یک سطح بالاتر باشد.".to_string());
     }
     if parent.2 != group_code {
-        return Err("حساب بالاتر باید به همان گروه حساب تعلق داشته باشد.".to_string());
+        return Err("گروه حساب والد باید با گروه حساب جاری یکسان باشد.".to_string());
     }
     if parent.3 == 0 && !allow_inactive_parent {
-        return Err("حساب بالاتر غیرفعال است؛ ابتدا آن را فعال کنید.".to_string());
+        return Err("حساب والد غیرفعال است.".to_string());
     }
     Ok((Some(parent_code.to_string()), parent.0))
 }
-

@@ -141,7 +141,6 @@ pub(crate) fn update_account(
     group_code: String,
     nature: String,
     parent_code: String,
-    is_postable: bool,
     is_active: Option<bool>,
     app: AppHandle,
     window: WebviewWindow,
@@ -155,13 +154,12 @@ pub(crate) fn update_account(
             &group_code,
             &nature,
             &parent_code,
-            is_postable,
             is_active,
         )?
     } else {
         state
             .database
-            .update_account(id, &name, &group_code, &nature, &parent_code, is_postable)?
+            .update_account(id, &name, &group_code, &nature, &parent_code)?
     };
     notify_accounts_changed(&app);
     Ok(account)

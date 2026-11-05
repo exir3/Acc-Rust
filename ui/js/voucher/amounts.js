@@ -11,8 +11,6 @@ function formatAmount(value) {
   return `${negative ? '-' : ''}${groupDigits(digits)}`;
 }
 
-const parseAmount = (value) => BigInt(digitsOnly(value) || '0');
-
 function parseAmountInput(value) {
   const normalized = toAsciiDigits(String(value ?? '')).trim();
   if (!normalized) return 0n;

@@ -3,7 +3,6 @@ use crate::db;
 use crate::vouchers::accounting::{classify, AccountClass};
 use crate::vouchers::model::{serialize_exact_amount, CLOSING_FINAL, CLOSING_TEMPORARY};
 use crate::vouchers::validation::{checked_add, checked_neg, checked_sub, checked_sum};
-use rusqlite::params;
 use serde::Serialize;
 
 fn line(account_code: &str, debit: i64, credit: i64) -> VoucherLineInput {
@@ -352,7 +351,7 @@ fn legacy_detail2_is_not_selectable_but_its_detail1_parent_remains_postable() {
         )
         .map_err(db::db_error)?;
         conn.execute(
-            "UPDATE accounts SET is_postable = 0, postable_before_children = 1 WHERE code = '9910101'",
+            "UPDATE accounts SET is_postable = 0 WHERE code = '9910101'",
             [],
         )
         .map_err(db::db_error)?;

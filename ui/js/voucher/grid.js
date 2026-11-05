@@ -95,8 +95,8 @@ function totalsFor(untilRow) {
   let credit = 0n;
   for (const row of gridRows()) {
     if (rowHasValue(row)) {
-      debit += parseAmount(row.querySelector('.vf-debit-input')?.value || '');
-      credit += parseAmount(row.querySelector('.vf-credit-input')?.value || '');
+      debit += parseAmountInput(row.querySelector('.vf-debit-input')?.value || '') ?? 0n;
+      credit += parseAmountInput(row.querySelector('.vf-credit-input')?.value || '') ?? 0n;
     }
     if (untilRow && row === untilRow) break;
   }

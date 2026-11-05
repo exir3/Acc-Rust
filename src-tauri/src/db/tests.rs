@@ -1,7 +1,9 @@
 //! Database integration tests.
 
 use super::*;
-use crate::db::backup::validate_backup_connection;
+use crate::db::backup::{
+    prune_backup_files, prune_restore_safety_files, validate_backup_connection,
+};
 use crate::db::common::{BULK_DELETE_SNAPSHOT_KEY, LEGACY_DB_FILE_NAME, LEGACY_IDENTIFIER};
 use crate::db::connection::migrate_legacy_database;
 use crate::vouchers::{
@@ -420,6 +422,66 @@ mod tests {
     }
 
     #[test]
+    fn backup_retention_keeps_newest_files_and_prunes_old_restore_copies() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-backup-retention-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        for index in 1..=35 {
+            std::fs::write(
+                dir.join(format!("hesabdari-backup-{index}.sqlite3")),
+                b"backup",
+            )
+            .unwrap();
+        }
+        for index in 1..=7 {
+            std::fs::write(
+                dir.join(format!(
+                    "hesabdari.sqlite3.before-restore-{}-{index}",
+                    std::process::id()
+                )),
+                b"safety",
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.join("notes.txt"), b"keep").unwrap();
+
+        assert_eq!(prune_backup_files(&dir).unwrap(), 5);
+        let backups = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.starts_with("hesabdari-backup-") && name.ends_with(".sqlite3")
+            })
+            .count();
+        assert_eq!(backups, 30);
+        assert!(dir.join("hesabdari-backup-35.sqlite3").exists());
+        assert!(!dir.join("hesabdari-backup-1.sqlite3").exists());
+
+        assert_eq!(
+            prune_restore_safety_files(&dir.join("hesabdari.sqlite3")).unwrap(),
+            2
+        );
+        let safety_copies = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".before-restore-")
+            })
+            .count();
+        assert_eq!(safety_copies, 5);
+        assert!(dir.join("notes.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn backup_validation_rejects_inconsistent_rows() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
@@ -616,7 +678,7 @@ mod tests {
         assert!(db.set_account_active(created.id, true).unwrap().is_active);
 
         let updated = db
-            .update_account(created.id, "حساب آزمایشی ۲", "1", "debtor", "110101", false)
+            .update_account(created.id, "حساب آزمایشی ۲", "1", "debtor", "110101")
             .unwrap();
         assert_eq!(updated.name, "حساب آزمایشی ۲");
         assert!(!updated.is_postable);
@@ -629,7 +691,6 @@ mod tests {
                 "1",
                 "debtor",
                 "110101",
-                false,
                 false,
             )
             .unwrap();
@@ -667,7 +728,7 @@ mod tests {
 
         // Editing an account that keeps its (now inactive) parent is allowed.
         let updated = db
-            .update_account(child.id, "معین اصلاح‌شده", "1", "debtor", "995", true)
+            .update_account(child.id, "معین اصلاح‌شده", "1", "debtor", "995")
             .unwrap();
         assert_eq!(updated.name, "معین اصلاح‌شده");
     }
@@ -742,7 +803,6 @@ mod tests {
             &child.group_code,
             &child.nature,
             "110202",
-            true,
         )
         .unwrap();
 
@@ -786,7 +846,6 @@ mod tests {
             &target_group.code,
             &root.nature,
             "",
-            root.is_postable,
         )
         .unwrap();
 
@@ -828,22 +887,23 @@ mod tests {
     }
 
     #[test]
-    fn account_creation_honors_postable_setting_for_level_two() {
+    fn kol_and_moein_are_always_postable_like_webapp() {
         let db = test_database();
         let created = db
             .create_account("995", "کل موقت", 1, "1", "debtor", "", false)
             .unwrap();
         assert!(created.is_postable);
 
+        // The caller flag is ignored: WebApp forces is_postable for levels 1 and 2.
         let subsidiary = db
-            .create_account("99501", "معین غیرقابل ثبت", 2, "1", "debtor", "995", false)
+            .create_account("99501", "معین همیشه قابل ثبت", 2, "1", "debtor", "995", false)
             .unwrap();
-        assert!(!subsidiary.is_postable);
+        assert!(subsidiary.is_postable);
 
-        let postable = db
-            .create_account("99502", "معین قابل ثبت", 2, "1", "debtor", "995", true)
+        let detail = db
+            .create_account("99501001", "تفصیلی", 3, "1", "debtor", "99501", true)
             .unwrap();
-        assert!(postable.is_postable);
+        assert!(!detail.is_postable);
     }
 
     #[test]
@@ -867,7 +927,6 @@ mod tests {
             &parent.group_code,
             &parent.nature,
             &parent.parent_code,
-            parent.is_postable,
         )
         .unwrap();
 
@@ -930,7 +989,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        let column_count: i64 = conn
+        let legacy_column_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('accounts') WHERE name = 'postable_before_children'",
                 [],
@@ -943,12 +1002,13 @@ mod tests {
             })
             .unwrap();
         assert_eq!(version, "6");
-        assert_eq!(column_count, 1);
+        // The unused legacy column is no longer part of the schema or migrations.
+        assert_eq!(legacy_column_count, 0);
         assert_eq!(account_code, "110101");
     }
 
     #[test]
-    fn rejects_reclassifying_used_account_branches_like_webapp() {
+    fn group_change_is_rejected_for_a_posted_subtree() {
         let db = test_database();
         let group = db
             .list_account_groups()
@@ -982,10 +1042,12 @@ mod tests {
             .unwrap();
         assert_eq!(updated_group.group_type, "بدهی");
 
+        // Moving a branch that has posted lines would reclassify historical
+        // reports, so the account definition itself must stay put.
         let error = db
-            .update_account(root.id, &root.name, "4", &root.nature, "", root.is_postable)
+            .update_account(root.id, &root.name, "4", &root.nature, "")
             .unwrap_err();
-        assert!(error.contains("تغییر حساب بالاتر یا گروه مجاز نیست"));
+        assert!(error.contains("اسناد ثبت‌شده"));
 
         let accounts = db.list_accounts().unwrap().accounts;
         assert_eq!(
@@ -1072,23 +1134,50 @@ mod tests {
     #[test]
     fn account_with_vouchers_can_gain_detail_children_without_losing_postability() {
         let db = test_database();
-        let used = db.list_accounts().unwrap().accounts.into_iter()
-            .find(|account| account.code == "110101").unwrap();
+        let used = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110101")
+            .unwrap();
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'عادی')",
                 [],
-            ).map_err(db_error)?;
+            )
+            .map_err(db_error)?;
             let id = conn.last_insert_rowid();
             insert_test_line(conn, id, 1, "110101", None, 1000, 0).map_err(db_error)?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
-        db.create_account("110101001", "تفصیلی جدید", 3, "1", "debtor", "110101", false).unwrap();
-        let parent = db.list_accounts().unwrap().accounts.into_iter()
-            .find(|account| account.code == "110101").unwrap();
+        db.create_account(
+            "110101001",
+            "تفصیلی جدید",
+            3,
+            "1",
+            "debtor",
+            "110101",
+            false,
+        )
+        .unwrap();
+        let parent = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110101")
+            .unwrap();
         assert!(parent.is_postable);
-        assert!(db.update_account(used.id, &used.name, "1", "debtor", "1101", false).is_err());
+
+        // Editing name/active state of a posting base with history is allowed;
+        // is_postable is derived from level and cannot be turned off.
+        let updated = db
+            .update_account(used.id, &used.name, "1", "debtor", "1101")
+            .unwrap();
+        assert!(updated.is_postable);
     }
 
     #[test]
@@ -1204,7 +1293,6 @@ mod tests {
                 &detail.group_code,
                 &detail.nature,
                 "110202",
-                false,
             )
             .unwrap_err();
         assert!(error.contains("زیرحساب"));
@@ -1242,7 +1330,6 @@ mod tests {
                 &base.group_code,
                 &base.nature,
                 "1103",
-                true,
             )
             .unwrap_err();
         assert!(error.contains("اسناد ثبت‌شده"));

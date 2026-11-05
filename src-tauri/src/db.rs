@@ -22,6 +22,7 @@ mod schema;
 mod settings;
 mod validation;
 
+pub(crate) use backup::{prune_backup_files, prune_restore_safety_files};
 pub use common::{normalize_digits, DB_FILE_NAME};
 pub use connection::initialize;
 pub use model::{

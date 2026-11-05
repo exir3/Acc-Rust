@@ -8,7 +8,7 @@ use crate::commands::state::{
 use crate::commands::windows::open_external;
 use crate::db;
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn backup_database(
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -27,10 +27,13 @@ pub(crate) fn backup_database(
         .as_nanos();
     let path = backup_dir.join(format!("hesabdari-backup-{stamp}.sqlite3"));
     state.database.backup_to(&path)?;
+    // Retention is best-effort: a successful backup must not be reported as a
+    // failure just because Windows kept an old file locked.
+    let _ = db::prune_backup_files(&backup_dir);
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn restore_database(
     app: AppHandle,
     window: WebviewWindow,
@@ -44,7 +47,9 @@ pub(crate) fn restore_database(
     else {
         return Ok(None);
     };
+    let database_path = std::path::PathBuf::from(state.database.path_string());
     let safety_path = state.database.restore_from(&path)?;
+    let _ = db::prune_restore_safety_files(&database_path);
     notify_accounts_changed(&app);
     let _ = app.emit("database-restored", ());
     Ok(Some(safety_path.to_string_lossy().to_string()))

@@ -46,7 +46,7 @@ function openAccountDialog(account) {
         </div>
         <div class="field wide">
           <label for="acctGroup">گروه حساب <span class="req">*</span></label>
-          <select id="acctGroup" class="input">${groupOptions}</select>
+          <select id="acctGroup" class="input" ${isEdit ? 'disabled' : ''}>${groupOptions}</select>
         </div>
         <div class="field">
           <label for="acctNature">ماهیت حساب</label>
@@ -63,8 +63,8 @@ function openAccountDialog(account) {
         <div class="field">
           <label>&nbsp;</label>
           <label class="check-field" style="padding-top:0">
-            <input id="acctPostable" type="checkbox" ${account?.isPostable ? 'checked' : ''} ${Number(level) === 1 ? 'disabled' : ''} />
-            <span>قابل ثبت در سند</span>
+            <input id="acctPostable" type="checkbox" ${Number(level) <= 2 ? 'checked' : ''} disabled />
+            <span>قابل ثبت در سند (کل و معین)</span>
           </label>
         </div>
         <div class="form-error" id="acctError" hidden></div>
@@ -106,24 +106,35 @@ function openAccountDialog(account) {
     if (currentLevel <= 1) {
       parentSelect.innerHTML = '<option value="">— حساب سطح کل است —</option>';
       parentSelect.disabled = true;
-      if (groupSelect) groupSelect.disabled = false;
+      if (groupSelect) groupSelect.disabled = isEdit;
       if (postable) postable.checked = false;
       if (postable) postable.disabled = true;
       if (!isEdit && codeInput) codeInput.value = toFa(nextAccountCode(state.accounts, currentLevel));
       return;
     }
-    parentSelect.disabled = false;
-    if (groupSelect) groupSelect.disabled = !isEdit;
-    if (postable) postable.disabled = false;
+    parentSelect.disabled = isEdit;
+    if (groupSelect) groupSelect.disabled = isEdit;
+    if (postable) postable.disabled = true;
+    if (postable) postable.checked = currentLevel <= 2;
     const candidates = state.accounts.filter((a) => Number(a.level) === currentLevel - 1 && a.groupCode === groupCode);
-    const previous = parentSelect.value || (account && Number(account.level) === currentLevel
-      ? account.parentCode
-      : initialParentCode);
+    const previous = isEdit
+      ? account?.parentCode || ''
+      : (parentSelect.value || initialParentCode);
+    // Keep the stored parent visible in edit mode; never silently substitute
+    // another account if the hierarchy is unusual.
+    if (isEdit && previous && !candidates.some((a) => a.code === previous)) {
+      const existing = state.accounts.find((a) => a.code === previous);
+      if (existing) candidates.unshift(existing);
+    }
     parentSelect.innerHTML = candidates.length
       ? `<option value="">— انتخاب حساب بالاتر —</option>${candidates.map((a) => `<option value="${esc(a.code)}"${a.code === previous ? ' selected' : ''}>${toFa(a.code)} — ${esc(a.name)}</option>`).join('')}`
       : '<option value="">— حسابی در سطح بالاتر وجود ندارد —</option>';
-    if (candidates.length && !parentSelect.value) parentSelect.value = candidates[0].code;
-    if (!isEdit && codeInput) codeInput.value = toFa(nextAccountCode(state.accounts, currentLevel, parentSelect.value));
+    if (isEdit) {
+      parentSelect.value = previous;
+    } else {
+      if (candidates.length && !parentSelect.value) parentSelect.value = candidates[0].code;
+      if (codeInput) codeInput.value = toFa(nextAccountCode(state.accounts, currentLevel, parentSelect.value));
+    }
   };
 
   levelSelect?.addEventListener('change', refreshParents);
@@ -132,7 +143,6 @@ function openAccountDialog(account) {
     if (!isEdit && codeInput) codeInput.value = toFa(nextAccountCode(state.accounts, Number(levelSelect?.value || level), parentSelect.value));
   });
   refreshParents();
-  if (account?.parentCode && parentSelect) parentSelect.value = account.parentCode;
 
   setTimeout(() => (isEdit ? $('#acctName', dialog.body) : codeInput)?.focus(), 40);
 }
@@ -145,7 +155,6 @@ async function submitAccountForm(ref, button, account) {
   const groupSelect = $('#acctGroup', ref.body);
   const natureSelect = $('#acctNature', ref.body);
   const parentSelect = $('#acctParent', ref.body);
-  const postable = $('#acctPostable', ref.body);
 
   const showError = (message) => {
     if (!errorBox) return;
@@ -159,7 +168,7 @@ async function submitAccountForm(ref, button, account) {
   const groupCode = groupSelect?.value || '';
   const nature = natureSelect?.value || 'debtor';
   const parentCode = level <= 1 ? '' : (parentSelect?.value || '');
-  const isPostable = level > 1 && Boolean(postable?.checked);
+  const isPostable = level <= 2;
 
   if (!account && !code) return showError('کد حساب الزامی است.');
   if (!name) return showError('نام حساب الزامی است.');
@@ -177,7 +186,6 @@ async function submitAccountForm(ref, button, account) {
         groupCode,
         nature,
         parentCode,
-        isPostable,
       });
       toast('حساب با موفقیت ویرایش شد.', 'ok');
     } else {
