@@ -133,7 +133,6 @@
       <div class="menubar-start">
         <div class="menubar-brand" role="button" tabindex="0" title="نمایش فضای کار" data-workspace-home>
           <svg class="ico brand-ico"><use href="#i-logo" /></svg>
-          <span class="menubar-title">نرم‌افزار حسابداری</span>
         </div>
         <nav class="menubar-items" id="menubarNav" aria-label="منوی اصلی"></nav>
       </div>
@@ -159,14 +158,25 @@
     <footer class="statusbar">
       <div class="status-start">
         <span class="status-dot" id="statusDot" data-tone="idle"></span>
-        <span id="statusText">آماده</span>
+        <span class="status-cell status-company" id="statusCompany">شرکت: —</span>
       </div>
       <div class="status-end">
-        <span class="status-cell" id="statusCompany">شرکت: —</span>
         <span class="status-cell" id="statusFiscal">سال مالی: —</span>
         <span class="status-cell" id="statusDate">تاریخ: —</span>
+        <span class="status-cell status-message" id="statusText">آماده</span>
       </div>
     </footer>
+  </div>
+
+  <div class="workspace-context-menu" id="workspaceContextMenu" role="menu" aria-label="منوی فضای کار" hidden>
+    <button type="button" class="workspace-context-item" role="menuitem" data-context-action="new-voucher">
+      <svg class="ico" aria-hidden="true"><use href="#i-doc" /></svg>
+      <span>صدور سند حسابداری</span>
+    </button>
+    <button type="button" class="workspace-context-item" role="menuitem" data-context-action="voucher-list">
+      <svg class="ico" aria-hidden="true"><use href="#i-journal" /></svg>
+      <span>لیست اسناد حسابداری</span>
+    </button>
   </div>
 
   <div class="toast" id="toast" role="status" hidden></div>

@@ -42,7 +42,71 @@ async function openGroupsWindow() {
   }
 }
 
+function bindWorkspaceContextMenu() {
+  const menu = $('#workspaceContextMenu');
+  const appShell = $('.app-shell');
+  if (!menu || !appShell) return;
+
+  let isOpen = false;
+
+  const close = () => {
+    if (!isOpen) return;
+    menu.hidden = true;
+    isOpen = false;
+  };
+
+  const openAt = (x, y) => {
+    menu.hidden = false;
+    isOpen = true;
+    const margin = 8;
+    const rect = menu.getBoundingClientRect();
+    const left = Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin));
+    const top = Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin));
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+  };
+
+  // Only the bare background between the menu bar and the status bar opens
+  // this menu; right-clicks inside cards, forms and buttons keep their own
+  // behavior.
+  const isEmptyBackground = (target) => {
+    if (!(target instanceof Element)) return false;
+    return target === appShell
+      || target.classList.contains('workspace')
+      || target.classList.contains('page-scroll')
+      || target.id === 'page';
+  };
+
+  document.addEventListener('contextmenu', (event) => {
+    if (!isEmptyBackground(event.target)) {
+      close();
+      return;
+    }
+    event.preventDefault();
+    openAt(event.clientX, event.clientY);
+  });
+
+  menu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-context-action]');
+    if (!item) return;
+    close();
+    if (item.dataset.contextAction === 'new-voucher') openVoucherWindow();
+    else if (item.dataset.contextAction === 'voucher-list') openVoucherListWindow();
+  });
+
+  document.addEventListener('pointerdown', (event) => {
+    if (isOpen && !menu.contains(event.target)) close();
+  }, true);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') close();
+  });
+  document.addEventListener('scroll', close, true);
+  window.addEventListener('resize', close);
+  window.addEventListener('blur', close);
+}
+
 function bindChrome() {
+  if (!IS_TRIAL_POPUP && !IS_VOUCHER_LIST_POPUP) bindWorkspaceContextMenu();
   if (!IS_VOUCHER_LIST_POPUP) {
     const homeButton = $('[data-workspace-home]');
     homeButton?.addEventListener('click', () => void navigate('workspace'));

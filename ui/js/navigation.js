@@ -19,7 +19,7 @@ async function navigate(page, { force = false } = {}) {
     const workspaceRoot = $('#page');
     if (workspaceRoot) workspaceRoot.replaceChildren();
     document.title = 'نرم‌افزار حسابداری';
-    setStatus('فضای کار آماده است.', 'ok');
+    setStatus('آماده', 'ok');
     return;
   }
   // The voucher list is a popup window too; only its own window renders it.

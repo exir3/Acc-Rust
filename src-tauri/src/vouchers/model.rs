@@ -261,6 +261,18 @@ pub struct Voucher {
     pub total_credit: i64,
 }
 
+/// Counters shown in the voucher form header, mirroring the WebApp form.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherCounters {
+    /// Number of vouchers in the whole book.
+    pub total_records: i64,
+    /// Number of vouchers whose number is at or below the open voucher.
+    pub records_up_to_this_doc: i64,
+    /// Number of saved lines in the open voucher.
+    pub document_records: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoucherSummary {

@@ -48,9 +48,6 @@
 
   <div class="ad-app" id="adApp">
     <main class="ad-shell" aria-label="تعریف حساب‌های کل، معین و تفصیلی">
-      <!-- ── Breadcrumb drill path ─────────────────────────────────── -->
-      <nav class="ad-breadcrumb" id="adBreadcrumb" aria-label="مسیر حساب‌ها"></nav>
-
       <!-- ── Error bar (desktop ErrorProvider style) ───────────────── -->
       <div class="ad-error" id="adError" role="alert" aria-live="assertive" hidden>
         <svg class="ico ad-error-ico" aria-hidden="true"><use href="#ad-i-alert" /></svg>
@@ -59,23 +56,20 @@
       </div>
 
       <!-- ── Accounts grid ─────────────────────────────────────────── -->
-      <fieldset class="ad-groupbox ad-groupbox-grid" aria-label="حساب‌ها">
-        <div class="ad-grid" role="grid" aria-label="فهرست حساب‌ها" aria-colcount="5">
-          <div class="ad-grid-head" role="row" id="adGridHead">
-            <div class="ad-gh" role="columnheader">ردیف</div>
-            <div class="ad-gh" role="columnheader">کد حساب</div>
-            <div class="ad-gh" role="columnheader">نام حساب</div>
-            <div class="ad-gh" role="columnheader">سطح</div>
-            <div class="ad-gh" role="columnheader">نام سرفصل بالاتر</div>
-            <div class="ad-gh-spacer" role="presentation"></div>
-          </div>
-          <div class="ad-grid-body" id="adGridBody" role="rowgroup" aria-live="polite"></div>
+      <div class="ad-grid" role="grid" aria-label="فهرست حساب‌ها" aria-colcount="5">
+        <div class="ad-grid-head" role="row" id="adGridHead">
+          <div class="ad-gh" role="columnheader">ردیف</div>
+          <div class="ad-gh" role="columnheader">کد حساب</div>
+          <div class="ad-gh" role="columnheader">نام حساب</div>
+          <div class="ad-gh" role="columnheader">سطح</div>
+          <div class="ad-gh" role="columnheader">نام سرفصل بالاتر</div>
+          <div class="ad-gh-spacer" role="presentation"></div>
         </div>
-      </fieldset>
+        <div class="ad-grid-body" id="adGridBody" role="rowgroup" aria-live="polite"></div>
+      </div>
 
       <!-- ── Account details ───────────────────────────────────────── -->
       <fieldset class="ad-groupbox ad-groupbox-form">
-        <legend class="ad-legend">مشخصات حساب</legend>
         <form id="adForm" class="ad-form" novalidate autocomplete="off">
           <div class="ad-form-row">
             <div class="ad-field ad-field-code">

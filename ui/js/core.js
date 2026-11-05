@@ -60,7 +60,6 @@ const MENU_BAR = [
   {
     label: 'اطلاعات پایه',
     items: [
-      { label: 'فضای کار', icon: '🖼️', page: 'workspace' },
       { label: 'تعریف گروه حسابها', icon: '📂', command: 'groups-window' },
       { label: 'تعریف حسابهای کل، معین و تفصیلی ۱', icon: '📁', command: 'account-definition' },
       { label: 'مرور حسابها', icon: '🔍', page: 'accounts' },

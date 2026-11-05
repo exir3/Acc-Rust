@@ -108,24 +108,17 @@ body.ad-page [hidden] {
   white-space: nowrap;
 }
 
-.ad-groupbox-grid {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 220px;
-  padding-top: 10px;
-}
-
 /* ── Grid (DataGridView style) ────────────────────────────────── */
 
+/* The grid itself is the window's frame: there is no outer group box. */
 .ad-grid {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 220px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid #8d9bad;
-  border-radius: 4px;
+  border: 1px solid #9aa5b8;
+  border-radius: 6px;
   background: #fff;
 }
 
@@ -150,8 +143,7 @@ body.ad-page [hidden] {
   align-items: center;
   justify-content: center;
   height: 30px;
-  padding: 0 4px;
-  border-left: 1px solid #a3b0c2;
+  padding: 0 10px;
   color: #334155;
   font-size: 12px;
   font-weight: 600;
@@ -160,8 +152,12 @@ body.ad-page [hidden] {
   text-align: center;
 }
 
-.ad-gh:last-of-type {
-  border-left: none;
+.ad-gh + .ad-gh {
+  border-left: 1px solid #a3b0c2;
+}
+
+.ad-gh:first-child {
+  border-left: 1px solid #a3b0c2;
 }
 
 .ad-gh-spacer {
@@ -225,16 +221,17 @@ body.ad-page [hidden] {
 
 .ad-cell.ad-num {
   justify-content: center;
-  background: #f3f5f8;
+  background: linear-gradient(to bottom, #f8f9fa, #e9edf2);
   border-left-color: #97a4b8;
   border-bottom-color: #97a4b8;
-  color: #242424;
+  color: #334155;
   font-size: 12px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .ad-row.even .ad-cell.ad-num {
-  background: #eef1f5;
+  background: linear-gradient(to bottom, #f8f9fa, #e9edf2);
 }
 
 .ad-cell.ad-code {
@@ -255,6 +252,14 @@ body.ad-page [hidden] {
   background: #316ac5 !important;
   color: #fff !important;
   font-style: normal;
+}
+
+/* The row-number strip keeps the account-group grid treatment, even when
+   the row is selected. */
+.ad-row.selected .ad-cell.ad-num {
+  background: #f3f5f8;
+  border-left-color: #97a4b8;
+  color: #000;
 }
 
 .ad-state {

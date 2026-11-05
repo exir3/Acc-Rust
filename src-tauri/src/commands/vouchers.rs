@@ -76,6 +76,16 @@ pub(crate) fn get_voucher(
 }
 
 #[tauri::command(async)]
+pub(crate) fn voucher_counters(
+    number: Option<i64>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<vouchers::VoucherCounters, String> {
+    require_window(&window, &["main", "voucher"])?;
+    state.database.voucher_counters(number)
+}
+
+#[tauri::command(async)]
 pub(crate) fn transfer_voucher_lines(
     input: vouchers::VoucherTransferInput,
     app: AppHandle,

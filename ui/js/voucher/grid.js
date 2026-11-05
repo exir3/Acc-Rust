@@ -52,7 +52,16 @@ function renumberRows() {
       if (input) input.setAttribute('aria-label', `${label}${suffix}`);
     });
   });
+  const docCount = $('#vfDocRecordCount');
+  if (docCount) docCount.textContent = vfFa(filled.length);
   return filled.length;
+}
+
+function focusFirstDocumentRow() {
+  const row = gridRows().find((item) => item.isConnected);
+  if (!row) return;
+  state.activeRow = row;
+  row.querySelector('.vf-code-input')?.focus();
 }
 
 function syncVoucherRowCount() {
@@ -206,21 +215,24 @@ function updateLedger(row) {
     .filter((item) => levels.includes(Number(item.level)))
     .map((item) => `${vfFa(item.code)} — ${item.name}`)
     .join(' / ') || '—';
-  const accountGroup = account.groupName ? `گروه: ${account.groupName}` : '';
   const selectedDetailCode = digitsOnly(row.querySelector('.vf-detail1-input')?.value || '');
   const selectedDetail = selectedDetailCode ? accountForCode(selectedDetailCode) : null;
   const detailLabel = selectedDetail ? `${vfFa(selectedDetail.code)} — ${selectedDetail.name}` : '—';
-  const headings = [[accountGroup, renderLevel([1, 2])].filter(Boolean).join(' / '), detailLabel];
+  // Row 1 mirrors the reference «کل / معین» field (class and subsidiary);
+  // row 2 is the level-3 detail. The third row is decorative in the
+  // reference and stays empty here as well.
+  const headings = [renderLevel([1, 2]), detailLabel];
   values.forEach((el, index) => {
-    const value = headings[index] || '—';
+    const value = headings[index] || '';
     el.textContent = value;
-    el.title = value;
+    if (value) el.title = value;
   });
 }
 
 function refreshFormState() {
   renumberRows();
   const locked = isLockedVoucher();
+  $('.voucher-form')?.classList.toggle('is-locked', locked);
   gridRows().forEach((row) => {
     row.querySelectorAll('.vf-code-input, .vf-detail1-input, .vf-desc-input, .vf-debit-input, .vf-credit-input').forEach((input) => {
       input.readOnly = locked;
@@ -236,15 +248,25 @@ function refreshFormState() {
   });
   const docType = $('#vfDocType');
   if (docType) docType.disabled = locked;
-  const toggle = $('#vfPermanentToggle');
-  if (toggle) {
-    toggle.checked = locked || Boolean(state.makePermanent);
-    toggle.disabled = locked || state.busy;
-    toggle.title = locked
-      ? 'سند دائمی است و قابل بازگشت به وضعیت موقت نیست.'
+  const permanentBtn = $('#vfPermanentBtn');
+  const changesBtn = $('#vfChangesBtn');
+  if (permanentBtn) {
+    permanentBtn.classList.toggle('is-active', locked || Boolean(state.makePermanent));
+    permanentBtn.disabled = locked || state.busy;
+    permanentBtn.title = locked
+      ? 'این سند دائمی است و قابل تغییر نیست.'
       : 'پس از ذخیره، سند دائمی می‌شود و دیگر قابل ویرایش یا حذف نخواهد بود.';
   }
-  const mutating = ['save', 'add-row', 'delete-row', 'delete-voucher', 'transfer-move', 'excel-import'];
+  if (changesBtn) {
+    changesBtn.classList.toggle('is-active', !locked && !state.makePermanent);
+    changesBtn.disabled = locked || state.busy;
+    changesBtn.title = locked
+      ? 'این سند دائمی است و قابل تغییر نیست.'
+      : 'سند موقت بماند و پس از ذخیره قابل ویرایش باشد.';
+  }
+  const lockedBanner = $('#vfLockedBanner');
+  if (lockedBanner) lockedBanner.hidden = !locked;
+  const mutating = ['save', 'add-row', 'repeat-row', 'delete-row', 'transfer-document', 'transfer-move', 'excel-import', 'delete-voucher'];
   $$('[data-action]').forEach((button) => {
     if (mutating.includes(button.dataset.action)) button.disabled = locked || state.busy;
   });

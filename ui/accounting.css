@@ -51,6 +51,53 @@ body.is-voucher-list-popup .page-scroll {
   outline-offset: 2px;
 }
 
+/* ── Workspace context menu ─────────────────────────────────── */
+
+.workspace-context-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 216px;
+  padding: 4px;
+  background: #ffffff;
+  border: 1px solid #9aa9bb;
+  border-radius: 5px;
+  box-shadow: 0 8px 24px rgba(9, 24, 44, .22);
+  direction: rtl;
+}
+.workspace-context-menu[hidden] { display: none; }
+.workspace-context-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #21374f;
+  font: inherit;
+  font-size: 13px;
+  text-align: right;
+  white-space: nowrap;
+  cursor: default;
+}
+.workspace-context-item + .workspace-context-item {
+  border-top: 1px solid #e7ecf2;
+  border-radius: 0 0 3px 3px;
+}
+.workspace-context-item:hover,
+.workspace-context-item:focus-visible {
+  background: #dbe7f6;
+  color: #173c68;
+  outline: none;
+}
+.workspace-context-item .ico {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: #2f6dae;
+}
+
 .app-shell {
   flex: 1;
   min-height: 0;

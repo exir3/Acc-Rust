@@ -73,6 +73,7 @@ pub fn run() {
             list_vouchers,
             get_voucher_count,
             get_voucher,
+            voucher_counters,
             transfer_voucher_lines,
             save_voucher,
             set_voucher_permanent,

@@ -2,8 +2,8 @@
 
 use crate::db::{self, Database};
 use crate::vouchers::model::{
-    Voucher, VoucherInput, VoucherLineInput, VoucherList, MAX_AMOUNT, MAX_DESCRIPTION, MAX_LINES,
-    MAX_LINE_DESCRIPTION, MAX_VOUCHER_NUMBER, TOUCHED_AT,
+    Voucher, VoucherCounters, VoucherInput, VoucherLineInput, VoucherList, MAX_AMOUNT, MAX_DESCRIPTION,
+    MAX_LINES, MAX_LINE_DESCRIPTION, MAX_VOUCHER_NUMBER, TOUCHED_AT,
 };
 use crate::vouchers::query::{
     count, fetch_voucher_by_id, fetch_voucher_by_number, list_vouchers, page_window, search_terms,
@@ -55,6 +55,35 @@ impl Database {
 
     pub fn voucher_count(&self) -> Result<i64, String> {
         self.with_conn(|conn| count(conn, "SELECT COUNT(*) FROM vouchers"))
+    }
+
+    /// Header counters for the voucher form. `number` is the voucher open in
+    /// the form; a new (not yet saved) voucher passes its suggested number.
+    /// Passing `None` counts every voucher as "up to this document" only for
+    /// the total, which keeps the counters meaningful before a number exists.
+    pub fn voucher_counters(&self, number: Option<i64>) -> Result<VoucherCounters, String> {
+        self.with_conn(|conn| {
+            let total_records = count(conn, "SELECT COUNT(*) FROM vouchers")?;
+            let number = number.unwrap_or(0).max(0);
+            let (records_up_to_this_doc, document_records) = if number > 0 {
+                conn.query_row(
+                    "SELECT
+                        (SELECT COUNT(*) FROM vouchers WHERE number <= ?1),
+                        (SELECT COUNT(*) FROM voucher_lines
+                          WHERE voucher_id IN (SELECT id FROM vouchers WHERE number = ?1))",
+                    params![number],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(db::db_error)?
+            } else {
+                (0, 0)
+            };
+            Ok(VoucherCounters {
+                total_records,
+                records_up_to_this_doc,
+                document_records,
+            })
+        })
     }
 
     pub fn list_vouchers(&self, from: &str, to: &str, search: &str) -> Result<VoucherList, String> {

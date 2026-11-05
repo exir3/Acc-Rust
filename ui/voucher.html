@@ -192,56 +192,91 @@
         <!-- ── Document meta header ─────────────────────────────────── -->
         <div class="vf-meta">
           <div class="vf-meta-inner">
-            <div class="vf-meta-main">
-              <div class="vf-doc-search">
-                <div class="vf-search">
-                  <svg class="ico vf-search-ico" aria-hidden="true"><use href="#i-search" /></svg>
-                  <input id="vfVoucherSearch" type="search" placeholder="جستجوی سند…" autocomplete="off"
-                         aria-label="جستجوی سند" aria-controls="vfVoucherSearchResults" aria-expanded="false" />
+            <div class="vf-doc-search">
+              <div class="vf-search">
+                <svg class="ico vf-search-ico" aria-hidden="true"><use href="#i-search" /></svg>
+                <input id="vfVoucherSearch" type="search" placeholder="جستجو از حساب، شرح، مبلغ" autocomplete="off"
+                       aria-label="جستجوی سند" aria-controls="vfVoucherSearchResults" aria-expanded="false" />
+              </div>
+            </div>
+
+            <div class="vf-meta-fields">
+              <div class="vf-meta-row">
+                <div class="vf-field vf-docno-field">
+                  <label class="vf-label" for="vfDocNo">شماره سند :</label>
+                  <div class="vf-input-group">
+                    <button type="button" class="vf-spin" id="vfPrevBtn" title="سند قبلی" aria-label="سند قبلی">
+                      <svg class="ico"><use href="#i-chevron" /></svg>
+                    </button>
+                    <input id="vfDocNo" class="vf-docno-input" type="text" dir="ltr" value="" autocomplete="off" aria-label="شماره سند" title="برای باز کردن سند، شماره را وارد و Enter بزنید" />
+                    <button type="button" class="vf-spin vf-spin-next" id="vfNextBtn" title="سند بعدی" aria-label="سند بعدی">
+                      <svg class="ico"><use href="#i-chevron" /></svg>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="vf-date-field">
+                  <label class="vf-label" for="vfDocDate">تاریخ سند :</label>
+                  <input id="vfDocDate" maxlength="10" class="vf-date-input" type="text" dir="ltr" value="" autocomplete="off" aria-label="تاریخ سند" title="سال، ماه و روز را جداگانه تایپ کنید؛ Enter به بخش بعدی می‌رود." />
                 </div>
               </div>
 
-              <div class="vf-field vf-docno-field">
-                <label class="vf-label" for="vfDocNo">شماره سند :</label>
-                <div class="vf-input-group">
-                  <button type="button" class="vf-spin" id="vfPrevBtn" title="سند قبلی" aria-label="سند قبلی">
-                    <svg class="ico"><use href="#i-chevron" /></svg>
-                  </button>
-                  <input id="vfDocNo" class="vf-docno-input" type="text" dir="ltr" value="" autocomplete="off" aria-label="شماره سند" title="برای باز کردن سند، شماره را وارد و Enter بزنید" />
-                  <button type="button" class="vf-spin vf-spin-next" id="vfNextBtn" title="سند بعدی" aria-label="سند بعدی">
-                    <svg class="ico"><use href="#i-chevron" /></svg>
-                  </button>
-                </div>
-              </div>
-
-              <div class="vf-date-field">
-                <label class="vf-label" for="vfDocDate">تاریخ سند :</label>
-                <input id="vfDocDate" maxlength="10" class="vf-date-input" type="text" dir="ltr" value="" autocomplete="off" aria-label="تاریخ سند" />
-              </div>
-
-              <div class="vf-field vf-type-field">
-                <label class="vf-label" for="vfDocType">نـوع سنـد :</label>
-                <div class="vf-select-wrap">
-                  <select id="vfDocType" aria-label="نوع سند">
-                    <option>سند حسابداری عادی</option>
-                    <option>سند حسابداری افتتاحیه</option>
-                    <option>سند حسابداری اختتامیه</option>
-                    <option>سند بستن حساب‌های موقت</option>
-                  </select>
-                  <span class="vf-select-arrow" aria-hidden="true">
-                    <svg class="ico"><use href="#i-chevron" /></svg>
-                  </span>
+              <div class="vf-meta-row">
+                <div class="vf-field vf-type-field">
+                  <label class="vf-label" for="vfDocType">نـوع سنـد :</label>
+                  <div class="vf-select-wrap">
+                    <select id="vfDocType" aria-label="نوع سند">
+                      <option>سند حسابداری عادی</option>
+                      <option>سند حسابداری افتتاحیه</option>
+                      <option>سند حسابداری اختتامیه</option>
+                      <option>سند بستن حساب‌های موقت</option>
+                    </select>
+                    <span class="vf-select-arrow" aria-hidden="true">
+                      <svg class="ico"><use href="#i-chevron" /></svg>
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
 
             <div class="vf-meta-spacer"></div>
 
-            <div class="vf-doc-status" id="vfDocStatus" data-tone="info" role="status" aria-live="polite">
-              <span class="vf-doc-status-dot" aria-hidden="true"></span>
-              <span id="vfDocStatusText">در حال بارگذاری…</span>
+            <div class="vf-counters" aria-label="شمارنده‌های اسناد">
+              <div class="vf-counter-row">
+                <span>تعداد کل رکوردهای اسناد:</span>
+                <span class="vf-counter" id="vfTotalRecords">۰</span>
+              </div>
+              <div class="vf-counter-row">
+                <span>تعداد رکوردهای این سند:</span>
+                <span class="vf-counter" id="vfDocRecordCount">۰</span>
+              </div>
+              <div class="vf-counter-row">
+                <span>تعداد رکوردها تا این سند:</span>
+                <span class="vf-counter" id="vfRecordsUpTo">۰</span>
+              </div>
+            </div>
+
+            <div class="vf-permanent-btns" role="group" aria-label="وضعیت سند">
+              <button type="button" class="vf-lock-btn" id="vfPermanentBtn" title="پس از ذخیره، سند غیرقابل‌ویرایش و غیرقابل‌حذف می‌شود">
+                <svg class="ico vf-ic-green" aria-hidden="true"><use href="#i-lock" /></svg>
+                <span>سند دائمی</span>
+              </button>
+              <button type="button" class="vf-lock-btn" id="vfChangesBtn" title="سند موقت بماند و پس از ذخیره قابل ویرایش باشد">
+                <svg class="ico vf-ic-amber" aria-hidden="true"><use href="#i-edit" /></svg>
+                <span>تغییرات سند</span>
+              </button>
             </div>
           </div>
+        </div>
+
+        <div class="vf-visually-hidden vf-doc-status" id="vfDocStatus" data-tone="info" role="status" aria-live="polite">
+          <span class="vf-doc-status-dot" aria-hidden="true"></span>
+          <span id="vfDocStatusText">در حال بارگذاری…</span>
+        </div>
+
+        <div class="vf-locked-banner" id="vfLockedBanner" role="status" hidden>
+          <svg class="ico" aria-hidden="true"><use href="#i-lock" /></svg>
+          <span>این سند دائمی است و قابل ویرایش یا حذف نیست.</span>
         </div>
 
         <!-- ── Document toolbar ─────────────────────────────────────── -->
@@ -251,47 +286,28 @@
               <svg class="ico vf-ic-green"><use href="#i-save" /></svg>
               <span>ذخیره F2</span>
             </button>
-            <label class="vf-permanent-toggle" title="پس از ذخیره، سند غیرقابل‌ویرایش و غیرقابل‌حذف می‌شود">
-              <input id="vfPermanentToggle" type="checkbox" />
-              <span>سند دائمی</span>
-            </label>
-            <button type="button" class="vf-tool" data-action="copy" title="کپی سند جاری">
+            <button type="button" class="vf-tool" data-action="transfer-document" title="انتقال سند جاری به شماره سند دیگر">
+              <svg class="ico vf-ic-amber"><use href="#i-swap" /></svg>
+              <span>انتقال سند</span>
+            </button>
+            <button type="button" class="vf-tool" data-action="copy" title="کپی سند جاری در سند دیگر">
               <svg class="ico vf-ic-indigo"><use href="#i-copy" /></svg>
               <span>کپی سند</span>
-            </button>
-            <button type="button" class="vf-tool" data-action="print" title="ذخیره و چاپ سند (Ctrl+P)">
-              <svg class="ico vf-ic-slate"><use href="#i-print" /></svg>
-              <span>چاپ سند</span>
             </button>
           </div>
 
           <div class="vf-tool-group" role="group" aria-label="ردیف‌های سند">
-            <button type="button" class="vf-tool" data-action="saved-descriptions" title="شرح‌های ذخیره‌شده و قابل استفاده مجدد">
-              <svg class="ico vf-ic-indigo"><use href="#i-list" /></svg>
-              <span>شرح‌های آماده</span>
-            </button>
             <button type="button" class="vf-tool" data-action="add-row" title="ایجاد ردیف">
               <svg class="ico vf-ic-green"><use href="#i-plus" /></svg>
               <span>ایجاد ردیف</span>
             </button>
+            <button type="button" class="vf-tool" data-action="repeat-row" title="تکرار سطر بالای ردیف جاری (بدون مبالغ)">
+              <svg class="ico vf-ic-sky"><use href="#i-repeat" /></svg>
+              <span>تکرار سطر بالا</span>
+            </button>
             <button type="button" class="vf-tool" data-action="delete-row" title="حذف ردیف">
               <svg class="ico vf-ic-red"><use href="#i-trash" /></svg>
               <span>حذف ردیف</span>
-            </button>
-          </div>
-
-          <div class="vf-tool-group" role="group" aria-label="تبادل اطلاعات و گزارش حساب">
-            <button type="button" class="vf-tool" data-action="ledger" title="نمایش گردش حساب ردیف جاری">
-              <svg class="ico vf-ic-sky"><use href="#i-ledger" /></svg>
-              <span>گردش حساب</span>
-            </button>
-            <button type="button" class="vf-tool" data-action="excel-import" title="دریافت ردیف‌های سند از فایل اکسل">
-              <svg class="ico vf-ic-emerald"><use href="#i-open" /></svg>
-              <span>دریافت از اکسل</span>
-            </button>
-            <button type="button" class="vf-tool" data-action="excel-export" title="خروجی اکسل سند جاری">
-              <svg class="ico vf-ic-indigo"><use href="#i-doc" /></svg>
-              <span>خروجی اکسل</span>
             </button>
           </div>
 
@@ -302,7 +318,33 @@
             </button>
           </div>
 
-          <div class="vf-tool-group" role="group" aria-label="عملیات ردیف و انتقال">
+          <div class="vf-tool-group" role="group" aria-label="گزارش حساب">
+            <button type="button" class="vf-tool" data-action="ledger" title="نمایش گردش حساب ردیف جاری">
+              <svg class="ico vf-ic-violet"><use href="#i-ledger" /></svg>
+              <span>گردش حساب</span>
+            </button>
+          </div>
+
+          <div class="vf-tool-group" role="group" aria-label="تبادل اطلاعات">
+            <button type="button" class="vf-tool" data-action="excel-import" title="دریافت ردیف‌های سند از فایل اکسل">
+              <svg class="ico vf-ic-emerald"><use href="#i-open" /></svg>
+              <span>دریافت از اکسل</span>
+            </button>
+            <button type="button" class="vf-tool" data-action="excel-export" title="خروجی اکسل سند جاری">
+              <svg class="ico vf-ic-indigo"><use href="#i-doc" /></svg>
+              <span>خروجی اکسل</span>
+            </button>
+            <button type="button" class="vf-tool" data-action="print" title="ذخیره و چاپ سند (Ctrl+P)">
+              <svg class="ico vf-ic-slate"><use href="#i-print" /></svg>
+              <span>چاپ سند</span>
+            </button>
+          </div>
+
+          <div class="vf-tool-group" role="group" aria-label="عملیات تکمیلی">
+            <button type="button" class="vf-tool" data-action="saved-descriptions" title="شرح‌های ذخیره‌شده و قابل استفاده مجدد">
+              <svg class="ico vf-ic-indigo"><use href="#i-list" /></svg>
+              <span>شرح‌های آماده</span>
+            </button>
             <button type="button" class="vf-tool" data-action="transfer-copy" title="کپی ردیف‌های انتخابی به سند دیگر">
               <svg class="ico vf-ic-indigo"><use href="#i-copy" /></svg><span>کپی ردیف‌ها</span>
             </button>
@@ -348,11 +390,15 @@
         <div class="vf-footer">
           <div class="vf-ledger-panel">
             <div class="vf-ledger-row">
-              <span class="vf-ledger-label">گروه / کل / معین :</span>
+              <span class="vf-ledger-label">کل / معین :</span>
               <span class="vf-ledger-value"></span>
             </div>
             <div class="vf-ledger-row">
               <span class="vf-ledger-label">تفصیلی ۱ :</span>
+              <span class="vf-ledger-value"></span>
+            </div>
+            <div class="vf-ledger-row">
+              <span class="vf-ledger-label">تفصیلی ۲ :</span>
               <span class="vf-ledger-value"></span>
             </div>
           </div>

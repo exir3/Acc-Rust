@@ -216,10 +216,26 @@ async function openVoucherTransfer(mode) {
     return;
   }
   let source = state.voucher;
-  if (!source) { toast('برای کپی یا انتقال ردیف‌ها، ابتدا یک سند ذخیره‌شده را باز کنید.', 'warning'); return; }
-  if (state.dirty) {
+  if (!source) {
+    if (!collectDraft().lines.length) {
+      toast('برای کپی یا انتقال، ابتدا ردیف‌های سند را وارد کنید.', 'warning');
+      return;
+    }
+    const confirmed = await confirmAction(
+      mode === 'copy'
+        ? 'برای کپی‌کردن، ابتدا باید سند جاری ذخیره شود. سند جاری ذخیره و سپس کپی شود؟'
+        : 'برای انتقال، ابتدا باید سند جاری ذخیره شود. سند جاری ذخیره و سپس منتقل شود؟',
+      'بله، ذخیره کن'
+    );
+    if (!confirmed) return;
+  }
+  if (!source || state.dirty) {
     source = await saveVoucher({ silent: true });
     if (!source) return;
+  }
+  if (mode === 'move' && source.isTemporary === false) {
+    toast('این سند دائمی است؛ ردیف‌های آن قابل انتقال نیستند. برای کپی بدون حذف، از «کپی سند» استفاده کنید.', 'warning');
+    return;
   }
   const draftSnapshot = JSON.stringify(collectDraft());
   state.busy = true;

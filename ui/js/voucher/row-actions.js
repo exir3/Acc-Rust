@@ -31,7 +31,7 @@ function addRow() {
   row?.querySelector('.vf-code-input')?.focus();
 }
 
-function repeatRow(includeAmounts = false) {
+function repeatRow() {
   if (isLockedVoucher()) { toast('سند دائمی است و ردیف‌های آن قابل تغییر نیستند.', 'error'); return; }
   if (gridRows().filter(rowHasValue).length >= MAX_VOUCHER_LINES) {
     toast(`حداکثر ${vfFa(MAX_VOUCHER_LINES)} ردیف برای هر سند مجاز است.`, 'warning');
@@ -42,24 +42,27 @@ function repeatRow(includeAmounts = false) {
     toast('ابتدا ردیفی را انتخاب کنید.', 'info');
     return;
   }
+  const above = row.previousElementSibling;
+  if (!above || !rowHasValue(above)) {
+    toast('ردیف بالایی وجود ندارد.', 'warning');
+    return;
+  }
 
+  // Mirror the reference «تکرار سطر بالا»: copy account, detail and
+  // description from the row above into a new row placed above the active
+  // row. Amounts are deliberately not copied so a repeat never unbalances
+  // the voucher on its own.
   const source = {
-    code: row.querySelector('.vf-code-input').value,
-    detail1: row.querySelector('.vf-detail1-input').value,
-    description: row.querySelector('.vf-desc-input').value,
-    debit: row.querySelector('.vf-debit-input').value,
-    credit: row.querySelector('.vf-credit-input').value,
+    code: above.querySelector('.vf-code-input').value,
+    detail1: above.querySelector('.vf-detail1-input').value,
+    description: above.querySelector('.vf-desc-input').value,
   };
 
-  row.insertAdjacentHTML('afterend', voucherRowTemplate());
-  const copy = row.nextElementSibling;
+  row.insertAdjacentHTML('beforebegin', voucherRowTemplate());
+  const copy = row.previousElementSibling;
   copy.querySelector('.vf-code-input').value = source.code;
   copy.querySelector('.vf-detail1-input').value = source.detail1;
   copy.querySelector('.vf-desc-input').value = source.description;
-  if (includeAmounts) {
-    copy.querySelector('.vf-debit-input').value = source.debit;
-    copy.querySelector('.vf-credit-input').value = source.credit;
-  }
   updateRowAccount(copy);
   markDirty();
 

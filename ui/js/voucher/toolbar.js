@@ -14,7 +14,10 @@ function bindToolbar() {
           await newVoucher();
           break;
         case 'copy':
-          await copyVoucher();
+          await openVoucherTransfer('copy');
+          break;
+        case 'transfer-document':
+          await openVoucherTransfer('move');
           break;
         case 'print':
           await printVoucher();
@@ -23,7 +26,7 @@ function bindToolbar() {
           addRow();
           break;
         case 'repeat-row':
-          repeatRow(false);
+          repeatRow();
           break;
         case 'delete-row':
           deleteRow();

@@ -87,6 +87,7 @@
     refreshQueued: false,
     initialized: false,
     toastTimer: null,
+    lastRowClick: { id: null, at: 0 },
   };
 
   function isEditing() {
@@ -402,7 +403,7 @@
           <div class="ad-cell ad-center ad-code" dir="ltr" role="gridcell">${esc(toFaDigits(account.code))}</div>
           <div class="ad-cell ad-start ad-name" role="gridcell" title="${esc(account.name)}">${esc(account.name)}</div>
           <div class="ad-cell ad-center" role="gridcell">${esc(levelName(account.level))}</div>
-          <div class="ad-cell ad-start" role="gridcell" title="${esc(account.parentName)}">${esc(account.parentName || '—')}</div>
+          <div class="ad-cell ad-start" role="gridcell" title="${esc(account.parentName || (account.level === 1 ? account.groupName : ''))}">${esc(account.parentName || (account.level === 1 ? account.groupName : '') || '—')}</div>
         </div>`;
     }).join('');
 
@@ -636,6 +637,10 @@
 
   function selectAccount(account, options = {}) {
     if (!account || isEditing() || isBusy()) return;
+    if (state.selectedId === account.id && state.mode === 'view') {
+      clearError();
+      return;
+    }
     state.selectedId = account.id;
     state.form = formFromAccount(account);
     state.initial = snapshot();
@@ -647,6 +652,7 @@
 
   function navigateTo(path) {
     if (isEditing() || isBusy()) return;
+    state.lastRowClick = { id: null, at: 0 };
     const chain = resolveChain(path);
     state.drillPath = chain.map((account) => account.code);
     state.mode = 'view';
@@ -1321,13 +1327,20 @@
       const row = event.target.closest('.ad-row');
       if (!row) return;
       const account = state.accounts.find((item) => item.id === Number(row.dataset.id));
-      if (account) selectAccount(account);
-    });
-    gridBody?.addEventListener('dblclick', (event) => {
-      const row = event.target.closest('.ad-row');
-      if (!row) return;
-      const account = state.accounts.find((item) => item.id === Number(row.dataset.id));
-      if (account) drillInto(account);
+      if (!account) return;
+
+      // دابل‌کلیک باید مانند Enter یک سطح پایین‌تر برود. چون رندر پس از
+      // انتخاب ردیف، عنصر ردیف را جایگزین می‌کند، رویداد dblclick مرورگر
+      // قابل اتکا نیست و فاصله دو کلیک را خودمان می‌سنجیم.
+      const now = Date.now();
+      const last = state.lastRowClick;
+      if (last.id === account.id && now - last.at <= 500) {
+        state.lastRowClick = { id: null, at: 0 };
+        drillInto(account);
+        return;
+      }
+      state.lastRowClick = { id: account.id, at: now };
+      selectAccount(account);
     });
 
     $('#adForm')?.addEventListener('submit', (event) => {

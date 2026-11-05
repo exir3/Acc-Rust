@@ -312,6 +312,426 @@ body.voucher-page {
 }
 
 
+/* ═══════════════════════════════════════════════════════════════
+   WebApp parity — header, toolbar and footer match the reference
+   DocumentForm (E:\WebApp). Loaded after styles.css so these win
+   without touching the shared stylesheet.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Utile for screen-reader-only live regions. */
+.vf-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ── Header: 96px, 320px search, two field rows, counters, buttons ── */
+.voucher-page .vf-meta {
+  flex: 0 0 96px;
+  height: 96px;
+  border-inline: 1px solid #68798d;
+  background: linear-gradient(to bottom, #f5f5f5 0%, #e5e5e5 50%, #d0d0d0 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .95),
+    inset 0 -1px 0 rgba(67, 87, 110, .18);
+}
+.voucher-page .vf-meta-inner {
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+
+.vf-doc-search {
+  width: 320px;
+  flex: 0 0 320px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+}
+.vf-doc-search .vf-search { width: 100%; flex: 1 1 auto; }
+.vf-doc-search .vf-search-ico { display: none; }
+.vf-doc-search .vf-search input {
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid #7a9ea5;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #33475b;
+  font-size: 12px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08);
+}
+.vf-doc-search .vf-search input:focus {
+  border-color: #7a9ea5;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08);
+}
+
+.vf-meta-fields {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+}
+.vf-meta-row {
+  height: 32px;
+  display: flex;
+  align-items: stretch;
+}
+.voucher-page .vf-docno-field {
+  width: 300px;
+  flex: 0 0 300px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+}
+.voucher-page .vf-docno-field > .vf-label {
+  width: 78px;
+  flex: 0 0 78px;
+  color: #34495e;
+  font-size: 14px;
+  font-weight: 400;
+  text-align: start;
+}
+.voucher-page .vf-input-group {
+  height: 32px;
+  border: 1px solid #7a9ea5;
+  border-radius: 3px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08);
+}
+.voucher-page .vf-spin {
+  width: 28px;
+  flex: 0 0 28px;
+  border-color: #bdcbd7;
+  background: linear-gradient(to bottom, #f9fbfd, #dce7f0);
+  color: #46647e;
+}
+.voucher-page .vf-spin:hover {
+  background: linear-gradient(to bottom, #ffffff, #c9e2f5);
+  color: #1f5f91;
+}
+.voucher-page .vf-docno-input {
+  color: #31465a;
+  font-size: 14px;
+  font-weight: 700;
+}
+.voucher-page .vf-docno-input:focus { background: #fef9c3; }
+
+.voucher-page .vf-date-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-inline-start: 20px;
+  padding: 0 8px;
+}
+.voucher-page .vf-date-field > .vf-label {
+  color: #34495e;
+  font-size: 13px;
+  font-weight: 400;
+}
+.voucher-page .vf-date-input {
+  width: 160px;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #858585;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #303030;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08);
+}
+.voucher-page .vf-date-input:focus {
+  border-color: #858585;
+  background: #fffbd8;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08);
+}
+.voucher-page .vf-type-field {
+  width: 300px;
+  flex: 0 0 300px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+}
+.voucher-page .vf-type-field > .vf-label {
+  width: 78px;
+  flex: 0 0 78px;
+  color: #34495e;
+  font-size: 14px;
+  font-weight: 400;
+  text-align: start;
+}
+.voucher-page .vf-select-wrap {
+  height: 32px;
+  border: 1px solid #858585;
+  border-radius: 3px;
+  background: #ffffff;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08);
+}
+.voucher-page .vf-select-wrap select {
+  color: #303030;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0 8px 0 28px;
+}
+.voucher-page .vf-select-arrow {
+  width: 28px;
+  border-right-color: #bdcbd7;
+  background: linear-gradient(to bottom, #f9fbfd, #dce7f0);
+}
+.voucher-page .vf-select-wrap:focus-within { border-color: #b4a84d; background: #fffbd8; }
+.voucher-page .vf-select-wrap:focus-within select { background: #fffbd8; }
+
+.vf-counters {
+  width: 260px;
+  flex: 0 0 260px;
+  display: flex;
+  flex-direction: column;
+  margin-inline-start: 24px;
+}
+.vf-counter-row {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2.5rem;
+  align-items: center;
+  column-gap: 64px;
+  padding: 0 8px;
+  border-bottom: 1px solid #c6d2dc;
+  color: #40576d;
+  font-size: 12px;
+}
+.vf-counter-row > span:first-child { white-space: nowrap; }
+.vf-counter {
+  min-width: 36px;
+  padding: 2px 8px;
+  border: 1px solid #b6c9d8;
+  border-radius: 3px;
+  background: linear-gradient(to bottom, #ffffff, #dceaf5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .95),
+    0 1px 1px rgba(48, 70, 92, .14);
+  color: #294b66;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.vf-permanent-btns {
+  width: 150px;
+  flex: 0 0 150px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+}
+.vf-permanent-btns .vf-lock-btn {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  padding: 0 4px;
+  gap: 4px;
+  border: 1px solid #9a9a9a;
+  border-radius: 3px;
+  background: linear-gradient(to bottom, #ffffff, #f1f1f1 50%, #d1d1d1);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .95),
+    0 1px 2px rgba(48, 70, 92, .24);
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+}
+.vf-permanent-btns .vf-lock-btn:hover {
+  border-color: #4e779e;
+  background: linear-gradient(to bottom, #ffffff, #f1f1f1 50%, #d1d1d1);
+}
+.vf-permanent-btns .vf-lock-btn.is-active {
+  border-color: #8a8a8a;
+  background: linear-gradient(to bottom, #d4d4d4, #c7c7c7 50%, #b0b0b0);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, .18);
+  color: #334155;
+}
+.vf-permanent-btns .vf-lock-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* Permanent-document banner between the header and the toolbar. */
+.vf-locked-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #fbbf24;
+  background: #fef3c7;
+  color: #78350f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.vf-locked-banner .ico { width: 14px; height: 14px; flex: 0 0 14px; }
+.vf-locked-banner[hidden] { display: none; }
+
+/* ── Toolbar: 59px, connected 108px flat-grey buttons ───────── */
+.voucher-page .vf-toolbar {
+  --vf-tool-w: 108px;
+  flex: 0 0 59px;
+  height: 59px;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  border: 1px solid #68798d;
+  background: linear-gradient(to bottom, #f4f4f4 0%, #e3e3e3 50%, #cccccc 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .95),
+    inset 0 -1px 0 rgba(67, 87, 110, .22);
+}
+.voucher-page .vf-tool-group {
+  gap: 0;
+  padding: 0;
+}
+.voucher-page .vf-tool-group:first-child,
+.voucher-page .vf-tool-group:last-child { padding: 0; }
+.voucher-page .vf-tool-group-danger { margin-inline-start: 0; }
+.voucher-page .vf-tool-group + .vf-tool-group::before { display: none; }
+.voucher-page .vf-tool {
+  flex: 0 0 var(--vf-tool-w);
+  width: var(--vf-tool-w);
+  min-width: var(--vf-tool-w);
+  gap: 6px;
+  padding: 4px;
+  margin-inline-start: -1px;
+  border: 1px solid #9a9a9a;
+  border-top-width: 0;
+  border-bottom-width: 0;
+  border-radius: 0;
+  background: linear-gradient(to bottom, #ffffff 0%, #f5f5f5 45%, #e8e8e8 50%, #d0d0d0 100%);
+  box-shadow: none;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+}
+.voucher-page .vf-tool-group:first-child .vf-tool:first-child { border-inline-start-width: 0; }
+.voucher-page .vf-tool-group:last-child .vf-tool:last-child { border-inline-end-width: 0; }
+.voucher-page .vf-tool .ico {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.voucher-page .vf-tool:hover {
+  border-color: #707070;
+  background: linear-gradient(to bottom, #fdfdfd 0%, #f1f1f1 45%, #e3e3e3 50%, #c9c9c9 100%);
+  box-shadow: none;
+}
+.voucher-page .vf-tool:active {
+  border-color: #707070;
+  background: linear-gradient(to bottom, #c9c9c9 0%, #bcbcbc 50%, #afafaf 51%, #a2a2a2 100%);
+  box-shadow: none;
+  transform: none;
+}
+.voucher-page .vf-tool:active .ico { box-shadow: none; }
+.voucher-page .vf-tool-primary {
+  border-color: #9a9a9a;
+  background: linear-gradient(to bottom, #ffffff 0%, #f5f5f5 45%, #e8e8e8 50%, #d0d0d0 100%);
+  color: #374151;
+}
+.voucher-page .vf-tool-primary:hover {
+  border-color: #707070;
+  background: linear-gradient(to bottom, #fdfdfd 0%, #f1f1f1 45%, #e3e3e3 50%, #c9c9c9 100%);
+}
+.voucher-page .vf-tool-primary:active {
+  border-color: #707070;
+  background: linear-gradient(to bottom, #c9c9c9 0%, #bcbcbc 50%, #afafaf 51%, #a2a2a2 100%);
+}
+.voucher-page .vf-tool-danger {
+  border-color: #d9a0a0;
+  background: linear-gradient(to bottom, #ffffff 0%, #fdeaea 45%, #f6d2d2 50%, #efc0c0 100%);
+  color: #8f2736;
+}
+.voucher-page .vf-tool-danger:hover {
+  border-color: #c24545;
+  background: linear-gradient(to bottom, #fef7f7 0%, #fde3e3 45%, #f8c0c0 50%, #f2a0a0 100%);
+}
+.voucher-page .vf-tool-danger:active {
+  border-color: #c24545;
+  background: linear-gradient(to bottom, #f2a0a0 0%, #ec8a8a 50%, #e67676 51%, #df6161 100%);
+}
+.voucher-page .vf-tool:disabled {
+  opacity: .75;
+  cursor: not-allowed;
+  background: linear-gradient(to bottom, #f4f4f4 0%, #e9e9e9 50%, #e1e1e1 51%, #d9d9d9 100%);
+}
+
+/* ── Footer: 39% / 31% / 30%, three ledger rows ─────────────── */
+.voucher-page .vf-footer {
+  flex: 0 0 144px;
+  height: 144px;
+  gap: 4px;
+  padding: 4px;
+  border-top: 1px solid #6b7280;
+  background: #f0f0f0;
+}
+.voucher-page .vf-ledger-panel {
+  width: 39%;
+  flex: 0 0 39%;
+}
+.voucher-page .vf-ledger-row {
+  gap: 8px;
+  padding: 0 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.voucher-page .vf-ledger-label {
+  width: 85px;
+  flex: 0 0 85px;
+  color: #374151;
+  font-size: 14px;
+  font-weight: 700;
+}
+.voucher-page .vf-ledger-value {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid #9ca3af;
+  border-radius: 3px;
+  background: #fef9c3;
+  color: #1e3a8a;
+  font-size: 13px;
+  font-weight: 700;
+}
+.voucher-page .vf-desc-panel {
+  width: 31%;
+  flex: 0 0 31%;
+}
+.voucher-page .vf-totals {
+  width: 30%;
+  flex: 0 0 30%;
+}
+.voucher-page .vf-totals td.vf-total-label { font-size: 11.5px; }
+
+/* Read-only (permanent) fields follow the reference's grey state. */
+.voucher-page .vf-docno-input[readonly],
+.voucher-page .vf-date-input[readonly] {
+  background: #e7e7e7;
+  opacity: .6;
+}
+.voucher-page .vf-doc-desc-box textarea[readonly] { opacity: .65; }
+.voucher-page .vf-grid input[readonly] {
+  background: #eef1f5;
+  color: #64748b;
+}
+
 /* ── WebApp parity: permanent documents and reusable descriptions ── */
 .vf-permanent-toggle {
   display: inline-flex;
