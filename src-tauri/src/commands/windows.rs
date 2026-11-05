@@ -296,11 +296,11 @@ pub(crate) fn open_account_definition_window(app: AppHandle, caller: WebviewWind
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
         builder = builder.inner_size(
-            (logical.width * 0.82).clamp(900.0, 1320.0),
-            (logical.height * 0.82).clamp(620.0, 900.0),
+            (logical.width * 0.70).clamp(900.0, 1000.0),
+            (logical.height * 0.78).clamp(640.0, 720.0),
         );
     } else {
-        builder = builder.inner_size(1120.0, 760.0);
+        builder = builder.inner_size(960.0, 680.0);
     }
 
     if let Some(main) = app.get_webview_window("main") {
@@ -310,7 +310,7 @@ pub(crate) fn open_account_definition_window(app: AppHandle, caller: WebviewWind
     }
 
     let window = builder
-        .min_inner_size(800.0, 560.0)
+        .min_inner_size(840.0, 600.0)
         .center()
         .build()
         .map_err(|e| format!("باز کردن فرم تعریف حساب ناموفق بود: {e}"))?;

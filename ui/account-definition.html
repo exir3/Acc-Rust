@@ -7,7 +7,190 @@
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="account-definition.css" />
 </head>
-<body data-account-definition="true">
+<body class="ad-page" data-account-definition="true">
+  <!-- ═══ Icon sprite (only the symbols used by this window) ═══════════════ -->
+  <svg class="sprite" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="ad-i-plus" viewBox="0 0 16 16">
+      <path d="M8 3.1v9.8M3.1 8h9.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+    </symbol>
+    <symbol id="ad-i-edit" viewBox="0 0 16 16">
+      <path d="M10.6 2.4 13.6 5.4 5.8 13.2 2.4 13.6 2.8 10.2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+      <path d="m9.4 3.6 3 3" fill="none" stroke="currentColor" stroke-width="1.1" />
+    </symbol>
+    <symbol id="ad-i-trash" viewBox="0 0 16 16">
+      <path d="M2.8 4.3h10.4M6.2 2.3h3.6M4.2 4.3l.6 9.2c.1.6.5 1 1.1 1h4.2c.6 0 1-.4 1.1-1l.6-9.2M6.6 7v4.4M9.4 7v4.4" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="ad-i-save" viewBox="0 0 16 16">
+      <path d="M2.2 2.2h9.1l2.5 2.5v9.1H2.2z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" />
+      <path d="M4.9 2.2v3.7h6V2.2M4.9 13.8V9.5h6.2v4.3" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="ad-i-close" viewBox="0 0 16 16">
+      <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+    </symbol>
+    <symbol id="ad-i-alert" viewBox="0 0 16 16">
+      <path d="M8 2.3 14.4 13.4H1.6z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+      <path d="M8 6.4v3.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+      <circle cx="8" cy="11.6" r=".85" fill="currentColor" />
+    </symbol>
+    <symbol id="ad-i-info" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2" />
+      <circle cx="8" cy="5.2" r=".9" fill="currentColor" />
+      <path d="M8 7.4v4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+    </symbol>
+    <symbol id="ad-i-refresh" viewBox="0 0 16 16">
+      <path d="M13.1 8a5.1 5.1 0 1 1-1.5-3.6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
+      <path d="M13.4 2.7v3.1h-3.1" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
+    </symbol>
+    <symbol id="ad-i-chevron" viewBox="0 0 16 16">
+      <path d="M10 3.6 5.6 8 10 12.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+    </symbol>
+  </svg>
+
+  <div class="ad-app" id="adApp">
+    <main class="ad-shell" aria-label="تعریف حساب‌های کل، معین و تفصیلی">
+      <!-- ── Breadcrumb drill path ─────────────────────────────────── -->
+      <nav class="ad-breadcrumb" id="adBreadcrumb" aria-label="مسیر حساب‌ها"></nav>
+
+      <!-- ── Error bar (desktop ErrorProvider style) ───────────────── -->
+      <div class="ad-error" id="adError" role="alert" aria-live="assertive" hidden>
+        <svg class="ico ad-error-ico" aria-hidden="true"><use href="#ad-i-alert" /></svg>
+        <span class="ad-error-text" id="adErrorText"></span>
+        <button type="button" class="ad-error-close" id="adErrorClose" title="بستن پیام" aria-label="بستن پیام خطا">✕</button>
+      </div>
+
+      <!-- ── Accounts grid ─────────────────────────────────────────── -->
+      <fieldset class="ad-groupbox ad-groupbox-grid" aria-label="حساب‌ها">
+        <div class="ad-grid" role="grid" aria-label="فهرست حساب‌ها" aria-colcount="5">
+          <div class="ad-grid-head" role="row" id="adGridHead">
+            <div class="ad-gh" role="columnheader">ردیف</div>
+            <div class="ad-gh" role="columnheader">کد حساب</div>
+            <div class="ad-gh" role="columnheader">نام حساب</div>
+            <div class="ad-gh" role="columnheader">سطح</div>
+            <div class="ad-gh" role="columnheader">نام سرفصل بالاتر</div>
+            <div class="ad-gh-spacer" role="presentation"></div>
+          </div>
+          <div class="ad-grid-body" id="adGridBody" role="rowgroup" aria-live="polite"></div>
+        </div>
+      </fieldset>
+
+      <!-- ── Account details ───────────────────────────────────────── -->
+      <fieldset class="ad-groupbox ad-groupbox-form">
+        <legend class="ad-legend">مشخصات حساب</legend>
+        <form id="adForm" class="ad-form" novalidate autocomplete="off">
+          <div class="ad-form-row">
+            <div class="ad-field ad-field-code">
+              <label class="ad-label" for="adCode">کد حساب:</label>
+              <input id="adCode" class="ad-input" type="text" dir="ltr" inputmode="numeric"
+                     maxlength="50" autocomplete="off" spellcheck="false" aria-label="کد حساب" />
+            </div>
+            <div class="ad-field ad-field-name">
+              <label class="ad-label" for="adName">نام حساب:</label>
+              <input id="adName" class="ad-input" type="text" maxlength="255"
+                     autocomplete="off" aria-label="نام حساب" />
+            </div>
+            <div class="ad-field ad-field-group">
+              <label class="ad-label" for="adGroup">گروه حساب:</label>
+              <select id="adGroup" class="ad-input ad-select" aria-label="گروه حساب"></select>
+            </div>
+            <div class="ad-field ad-field-nature">
+              <label class="ad-label" for="adNature">ماهیت:</label>
+              <select id="adNature" class="ad-input ad-select" aria-label="ماهیت حساب">
+                <option value="debtor">بدهکار</option>
+                <option value="creditor">بستانکار</option>
+                <option value="dual">ماهیت دوگانه</option>
+              </select>
+            </div>
+            <div class="ad-field ad-field-active">
+              <span class="ad-label">وضعیت:</span>
+              <label class="ad-check" for="adActive">
+                <input id="adActive" type="checkbox" />
+                <span>حساب فعال</span>
+              </label>
+            </div>
+          </div>
+        </form>
+      </fieldset>
+    </main>
+
+    <!-- ── Dialog button panel (desktop style) ──────────────────────── -->
+    <footer class="ad-toolbar">
+      <div class="ad-toolbar-group">
+        <button type="button" class="ad-btn" id="adNew" title="تعریف حساب جدید (در سطح جاری)">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-plus" /></svg>
+          <span>جدید</span>
+        </button>
+        <button type="button" class="ad-btn" id="adEdit" title="اصلاح حساب انتخاب‌شده (F3)">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-edit" /></svg>
+          <span>اصلاح</span>
+        </button>
+        <button type="button" class="ad-btn" id="adDelete" title="حذف حساب انتخاب‌شده (Delete)">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-trash" /></svg>
+          <span>حذف</span>
+        </button>
+        <button type="button" class="ad-btn" id="adDeleteAll" title="حذف همه حساب‌ها">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-trash" /></svg>
+          <span id="adDeleteAllLabel">حذف همه</span>
+        </button>
+      </div>
+
+      <div class="ad-toolbar-group">
+        <button type="button" class="ad-btn" id="adExport" title="خروجی اکسل">
+          <span id="adExportLabel">خروجی اکسل</span>
+        </button>
+        <button type="button" class="ad-btn" id="adImport" title="ورودی اکسل">
+          <span id="adImportLabel">ورودی اکسل</span>
+        </button>
+      </div>
+
+      <span class="ad-spacer"></span>
+
+      <div class="ad-toolbar-group" id="adEditActions" hidden>
+        <button type="button" class="ad-btn ad-btn-save" id="adSave" title="ذخیره تغییرات (F2)">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-save" /></svg>
+          <span id="adSaveLabel">ذخیره (F2)</span>
+        </button>
+        <button type="button" class="ad-btn" id="adCancel" title="انصراف از ویرایش (Esc)">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-close" /></svg>
+          <span>انصراف</span>
+        </button>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ── Confirmation dialog (inside this native window) ───────────── -->
+  <div class="ad-modal" id="adConfirm" hidden>
+    <div class="ad-msgbox" id="adConfirmBox" role="alertdialog" aria-modal="true"
+         aria-labelledby="adConfirmTitle" aria-describedby="adConfirmText" data-tone="warn">
+      <div class="ad-msgbox-title" id="adConfirmTitle">تأیید</div>
+      <div class="ad-msgbox-body">
+        <div class="ad-msgbox-icon" aria-hidden="true">!</div>
+        <p class="ad-msgbox-text" id="adConfirmText"></p>
+      </div>
+      <div class="ad-msgbox-btns">
+        <button type="button" class="ad-btn ad-btn-save" id="adConfirmYes">بله</button>
+        <button type="button" class="ad-btn" id="adConfirmNo">خیر</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Result / report dialog ────────────────────────────────────── -->
+  <div class="ad-modal" id="adResult" hidden>
+    <div class="ad-msgbox ad-msgbox-wide" id="adResultBox" role="alertdialog" aria-modal="true"
+         aria-labelledby="adResultTitle" aria-describedby="adResultText" data-tone="info">
+      <div class="ad-msgbox-title" id="adResultTitle">نتیجه</div>
+      <div class="ad-msgbox-body">
+        <div class="ad-msgbox-icon" id="adResultIcon" aria-hidden="true">i</div>
+        <p class="ad-msgbox-text" id="adResultText"></p>
+      </div>
+      <div class="ad-msgbox-list" id="adResultList" hidden></div>
+      <div class="ad-msgbox-btns">
+        <button type="button" class="ad-btn" id="adResultOk">تأیید</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="ad-toast" id="adToast" role="status" aria-live="polite" hidden></div>
+
   <script src="account-definition.js"></script>
 </body>
 </html>
