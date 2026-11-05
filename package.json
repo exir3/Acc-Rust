@@ -9,9 +9,11 @@
     "build": "tauri build",
     "tauri": "tauri",
     "check:js": "node scripts/check-js.mjs",
-    "test": "node --test tests/account-picker-core.test.mjs tests/voucher-core.test.mjs"
+    "test": "node --test tests/account-picker-core.test.mjs tests/voucher-core.test.mjs",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@tauri-apps/cli": "2.12.4"
   }
 }

@@ -57,6 +57,8 @@ npm run build
 ```bat
 npm run check:js
 npm test
+npx playwright install chromium
+npm run test:e2e
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features
 cargo test --manifest-path src-tauri/Cargo.toml
@@ -64,6 +66,13 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 - `npm run check:js` فقط صحت نحوی فایل‌های JavaScript را بررسی می‌کند.
 - `npm test` آزمون‌های واحد فرانت‌اند را با test runner داخلی Node اجرا می‌کند.
+- `npm run test:e2e` آزمون‌های واقعی مرورگر را با Playwright و Chromium اجرا می‌کند.
+  بار اول باید Chromium را با `npx playwright install chromium` نصب کرد. این آزمون‌ها
+  رابط کاربری را روی یک سرور استاتیک محلی (`scripts/serve-ui.mjs`) باز می‌کنند و
+  تعامل انتخابگر حساب، فرم تعریف حساب و چرخهٔ کامل سند (ساخت، ذخیره، بازکردن،
+  دائمی‌سازی و حذف) را در DOM واقعی بررسی می‌کنند. بک‌اند Tauri در این آزمون‌ها با
+  یک mock درون‌صفحه‌ای (`tests/e2e/mock-tauri.js`) شبیه‌سازی می‌شود؛ منطق واقعی
+  بک‌اند همچنان با آزمون‌های Rust پوشش داده می‌شود.
 - آزمون‌های Rust شامل قواعد سند، سال مالی، گزارش‌ها، Excel، پشتیبان‌گیری و مهاجرت پایگاه داده هستند.
 
 ## ساختار مخزن
@@ -76,8 +85,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 | `src-tauri/src/vouchers/` | اعتبارسنجی، ذخیره، حذف، انتقال و گزارش‌های سند |
 | `src-tauri/src/report/` | قالب‌بندی و محاسبات گزارش‌های چاپی |
 | `src-tauri/src/excel/` | ورود و خروجی Excel |
-| `scripts/` | ابزارهای بررسی و آزمون |
-| `tests/` | آزمون‌های واحد فرانت‌اند |
+| `scripts/` | ابزارهای بررسی، آزمون و سرور استاتیک UI |
+| `tests/` | آزمون‌های واحد فرانت‌اند (`tests/e2e/` آزمون‌های Playwright) |
 | `Docs/` | مستندات و گزارش بررسی فنی |
 
 ## معماری
@@ -128,12 +137,14 @@ SQLite (فایل پایگاه دادهٔ کاربر)
 
 ## CI
 
-workflow در `.github/workflows/ci.yml` دو مرحله دارد:
+workflow در `.github/workflows/ci.yml` سه مرحله دارد:
 
 1. **verify**: نصب قطعی وابستگی‌ها با `npm ci`، بررسی نحوی JavaScript، آزمون‌های
    واحد فرانت‌اند، بررسی قالب‌بندی Rust، Clippy و آزمون‌های Rust.
-2. **desktop-build**: ساخت واقعی برنامهٔ Windows با Tauri، بررسی وجود نصاب NSIS
-   و انتشار آن به‌عنوان Artifact.
+2. **ui-e2e**: نصب Chromium و اجرای آزمون‌های واقعی مرورگر با Playwright؛ در صورت
+   شکست، گزارش و trace آزمون‌ها به‌عنوان Artifact آپلود می‌شود.
+3. **desktop-build**: پس از موفقیت دو مرحلهٔ قبل، ساخت واقعی برنامهٔ Windows با
+   Tauri، بررسی وجود نصاب NSIS و انتشار آن به‌عنوان Artifact.
 
 ## مستندات بیشتر
 
