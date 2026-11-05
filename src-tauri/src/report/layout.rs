@@ -114,7 +114,13 @@ pub(crate) fn period(report_from: &str, report_to: &str) -> String {
     }
 }
 
-pub(crate) fn page(title: &str, body: &str, meta: &ReportMeta, landscape: bool, file_name: &str) -> PrintDoc {
+pub(crate) fn page(
+    title: &str,
+    body: &str,
+    meta: &ReportMeta,
+    landscape: bool,
+    file_name: &str,
+) -> PrintDoc {
     let base_style = portable_base_style();
     let (width, height, page_css) = if landscape {
         (

@@ -63,7 +63,9 @@ fn validate_reorganization_operation(operation: &str) -> Result<(), String> {
 
 fn read_reorganization_snapshot(conn: &Connection) -> Result<ReorganizationSnapshot, String> {
     let vouchers = conn
-        .prepare("SELECT id, number, date, type, description, is_temporary FROM vouchers ORDER BY id")
+        .prepare(
+            "SELECT id, number, date, type, description, is_temporary FROM vouchers ORDER BY id",
+        )
         .map_err(db::db_error)?
         .query_map([], |row| {
             Ok(ReorganizationVoucher {
@@ -221,7 +223,9 @@ fn build_reorganization_plan(
     if do_sort {
         // Permanent documents reserve their numbers and are excluded from sorting.
         // Temporary documents are assigned the next free positive number in date order.
-        let reserved_numbers: HashSet<i64> = snapshot.vouchers.iter()
+        let reserved_numbers: HashSet<i64> = snapshot
+            .vouchers
+            .iter()
             .filter(|voucher| !voucher.is_temporary)
             .map(|voucher| voucher.number)
             .collect();
@@ -240,14 +244,16 @@ fn build_reorganization_plan(
         let mut next_number = 1_i64;
         for (voucher, date) in remaining {
             while reserved_numbers.contains(&next_number) {
-                next_number = next_number.checked_add(1)
+                next_number = next_number
+                    .checked_add(1)
                     .ok_or_else(|| "شماره سند بعدی از محدوده مجاز خارج است.".to_string())?;
             }
             if next_number > MAX_VOUCHER_NUMBER {
                 return Err("تعداد اسناد از محدوده شماره‌گذاری مجاز بیشتر است.".to_string());
             }
             let new_number = next_number;
-            next_number = next_number.checked_add(1)
+            next_number = next_number
+                .checked_add(1)
                 .ok_or_else(|| "شماره سند بعدی از محدوده مجاز خارج است.".to_string())?;
             if voucher.number != new_number {
                 let change = VoucherNumberChange {

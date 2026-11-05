@@ -29,6 +29,7 @@ function trialRequest() {
   return {
     from: f.from || '',
     to: f.to || '',
+    scope: normalizeReportScope(f.scope),
     accountFrom: f.accountFrom || '',
     accountTo: f.accountTo || '',
     showZero: true,
@@ -41,6 +42,7 @@ function trialPrintRequest() {
   return {
     from: f.from || '',
     to: f.to || '',
+    scope: normalizeReportScope(f.scope),
     accountFrom: f.accountFrom || '',
     accountTo: f.accountTo || '',
     showZero: Boolean(f.showZero),
@@ -426,6 +428,12 @@ function trialFilterPanelMarkup() {
           inputmode="numeric" dir="ltr" value="${esc(f.to || '')}" placeholder="۱۴۰۵/۱۲/۲۹" />
       </div>
       <div class="tbp-filter-field">
+        <label class="tbp-filter-lbl" for="tbpScope">محدوده اسناد:</label>
+        <select id="tbpScope" name="scope" class="tbp-filter-sel">
+          ${REPORT_SCOPES.map((scope) => `<option value="${scope.value}"${scope.value === normalizeReportScope(f.scope) ? ' selected' : ''}>${esc(scope.label)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="tbp-filter-field">
         <label class="tbp-filter-lbl" for="tbpAccountFrom">از کد:</label>
         <input id="tbpAccountFrom" name="accountFrom" class="tbp-filter-inp" type="text"
           inputmode="numeric" dir="ltr" value="${esc(f.accountFrom || '')}" placeholder="ابتدای بازه" />
@@ -740,6 +748,7 @@ function trialApplyFilter() {
   f.to = padJalaliDate(String(data.get('to') || ''));
   f.accountFrom = digitsOnly(String(data.get('accountFrom') || ''));
   f.accountTo = digitsOnly(String(data.get('accountTo') || ''));
+  f.scope = normalizeReportScope(data.get('scope'));
   f.balanceType = TRIAL_BALANCE_TYPES.includes(String(data.get('balanceType')))
     ? String(data.get('balanceType'))
     : 'شش ستونی';

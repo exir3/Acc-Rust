@@ -9,7 +9,10 @@ use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksh
 
 /// Asks for a path and writes the voucher as an `.xlsx` file.
 /// `Ok(None)` means the user closed the save dialog.
-pub fn export_voucher(input: &VoucherInput, accounts: &[db::Account]) -> Result<Option<String>, String> {
+pub fn export_voucher(
+    input: &VoucherInput,
+    accounts: &[db::Account],
+) -> Result<Option<String>, String> {
     if input.lines.len() > MAX_IMPORT_LINES {
         return Err(format!(
             "تعداد ردیف‌های خروجی نمی‌تواند بیشتر از {} باشد.",
@@ -80,7 +83,11 @@ pub fn export_voucher(input: &VoucherInput, accounts: &[db::Account]) -> Result<
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
-pub(crate) fn write_sheet(worksheet: &mut Worksheet, input: &VoucherInput, accounts: &[db::Account]) -> Result<(), String> {
+pub(crate) fn write_sheet(
+    worksheet: &mut Worksheet,
+    input: &VoucherInput,
+    accounts: &[db::Account],
+) -> Result<(), String> {
     let title = if input.number.unwrap_or(0) > 0 {
         format!(
             "سند حسابداری شماره {}",
@@ -177,9 +184,16 @@ pub(crate) fn write_sheet(worksheet: &mut Worksheet, input: &VoucherInput, accou
         .map_err(xlsx_error)?;
 
     let header_row = 4u32;
-    for (col, label) in ["ردیف", "کد حساب", "کد تفصیلی ۱", "شرح", "بدهکار", "بستانکار"]
-        .iter()
-        .enumerate()
+    for (col, label) in [
+        "ردیف",
+        "کد حساب",
+        "کد تفصیلی ۱",
+        "شرح",
+        "بدهکار",
+        "بستانکار",
+    ]
+    .iter()
+    .enumerate()
     {
         worksheet
             .write_string_with_format(header_row, col as u16, *label, &header_format)
@@ -203,7 +217,12 @@ pub(crate) fn write_sheet(worksheet: &mut Worksheet, input: &VoucherInput, accou
             let detail = accounts
                 .iter()
                 .find(|account| account.code == detail1_code && account.level == 3)
-                .ok_or_else(|| format!("حساب تفصیلی {} در فهرست حساب‌ها پیدا نشد.", db::to_fa_digits(detail1_code)))?;
+                .ok_or_else(|| {
+                    format!(
+                        "حساب تفصیلی {} در فهرست حساب‌ها پیدا نشد.",
+                        db::to_fa_digits(detail1_code)
+                    )
+                })?;
             if detail.parent_code != line.account_code {
                 return Err(format!(
                     "تفصیلی {} فرزند مستقیم حساب پایه {} نیست.",
@@ -248,4 +267,3 @@ pub(crate) fn write_sheet(worksheet: &mut Worksheet, input: &VoucherInput, accou
         .map_err(xlsx_error)?;
     Ok(())
 }
-

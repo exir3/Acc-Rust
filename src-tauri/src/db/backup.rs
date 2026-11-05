@@ -1,17 +1,19 @@
 //! Backup, restore and backup-file validation.
 
-use rusqlite::{
-    backup::Backup, params, Connection, OpenFlags, OptionalExtension,
-};
+use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::db::audit;
 use crate::db::common::{
     db_error, to_fa_digits, BULK_DELETE_SNAPSHOT_KEY, BULK_DELETE_SNAPSHOT_VALUE,
     CURRENT_SCHEMA_VERSION,
 };
 use crate::db::model::Database;
-use crate::db::schema::{apply_base_schema, apply_schema_migrations, ensure_voucher_account_pair_guards, table_exists};
+use crate::db::schema::{
+    apply_base_schema, apply_schema_migrations, ensure_permanent_voucher_guards,
+    ensure_voucher_account_pair_guards, table_exists,
+};
 use crate::vouchers::MAX_VOUCHER_NUMBER;
 
 impl Database {
@@ -124,6 +126,15 @@ impl Database {
                         )
                         .map_err(db_error)?;
                 }
+                audit::log(
+                    target,
+                    "restore",
+                    "database",
+                    None,
+                    None,
+                    None,
+                    &format!("بازیابی پایگاه داده از «{}».", source_path.display()),
+                )?;
                 Ok(())
             });
             if let Err(error) = restore_result {
@@ -157,13 +168,18 @@ impl Database {
     }
 }
 
-const SCHEMA_TRIGGERS: [&str; 6] = [
+const SCHEMA_TRIGGERS: [&str; 11] = [
     "vouchers_positive_number_insert",
     "vouchers_positive_number_update",
     "voucher_lines_valid_insert",
     "voucher_lines_valid_update",
     "voucher_lines_account_pair_insert",
     "voucher_lines_account_pair_update",
+    "vouchers_permanent_update",
+    "vouchers_permanent_delete",
+    "voucher_lines_permanent_insert",
+    "voucher_lines_permanent_update",
+    "voucher_lines_permanent_delete",
 ];
 
 /// `SCHEMA` uses `CREATE TRIGGER IF NOT EXISTS`, so a restored database could
@@ -175,7 +191,8 @@ fn reset_schema_triggers(conn: &Connection) -> Result<(), String> {
             .map_err(db_error)?;
     }
     apply_base_schema(conn)?;
-    ensure_voucher_account_pair_guards(conn)
+    ensure_voucher_account_pair_guards(conn)?;
+    ensure_permanent_voucher_guards(conn)
 }
 
 pub(crate) fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
@@ -217,7 +234,12 @@ fn validate_backup_connection_with_options(
                                         'voucher_lines_valid_insert',
                                         'voucher_lines_valid_update',
                                         'voucher_lines_account_pair_insert',
-                                        'voucher_lines_account_pair_update'
+                                        'voucher_lines_account_pair_update',
+                                        'vouchers_permanent_update',
+                                        'vouchers_permanent_delete',
+                                        'voucher_lines_permanent_insert',
+                                        'voucher_lines_permanent_update',
+                                        'voucher_lines_permanent_delete'
                                 )
                             LIMIT 1",
             [],
@@ -371,9 +393,7 @@ fn validate_backup_connection_with_options(
           WHERE type NOT IN ('دارایی', 'بدهی', 'سرمایه', 'درآمد', 'هزینه', 'سایر')
           LIMIT 1",
     )? {
-        return Err(format!(
-            "نوع گروه «{code}» در فایل پشتیبان معتبر نیست."
-        ));
+        return Err(format!("نوع گروه «{code}» در فایل پشتیبان معتبر نیست."));
     }
     if let Some(name) = backup_first_text(
         conn,
@@ -406,11 +426,18 @@ fn validate_backup_connection_with_options(
     }
     if let Some(code) = backup_first_text(
         conn,
-        &format!("SELECT code FROM accounts
+        &format!(
+            "SELECT code FROM accounts
           WHERE level NOT BETWEEN 1 AND {}
              OR is_postable NOT IN (0, 1)
              OR nature NOT IN ('debtor', 'creditor', 'dual')
-          LIMIT 1", if version_number < 5 { 4 } else { 3 }),
+          LIMIT 1",
+            if !(5..9).contains(&version_number) {
+                4
+            } else {
+                3
+            }
+        ),
     )? {
         return Err(format!(
             "سطح، ماهیت یا وضعیت ثبت حساب «{code}» در فایل پشتیبان معتبر نیست."
@@ -498,9 +525,7 @@ fn validate_backup_connection_with_options(
              OR account_code GLOB '*[^0-9]*'
           LIMIT 1",
     )? {
-        return Err(format!(
-            "کد حساب ردیف {line} در فایل پشتیبان معتبر نیست."
-        ));
+        return Err(format!("کد حساب ردیف {line} در فایل پشتیبان معتبر نیست."));
     }
     if let Some(line) = backup_first_text(
         conn,
@@ -522,7 +547,24 @@ fn validate_backup_connection_with_options(
             "مبلغ، شماره ردیف یا شرح ردیف {line} در فایل پشتیبان معتبر نیست."
         ));
     }
-    let account_reference_check = if version_number >= 5 {
+    let account_reference_check = if version_number >= 9 {
+        "SELECT CAST(l.id AS TEXT)
+           FROM voucher_lines l
+           LEFT JOIN accounts a ON a.id = l.account_id AND a.code = l.account_code
+           LEFT JOIN accounts d ON d.code = l.detail1_code
+          WHERE NOT (
+                  l.legacy_level4_pending = 1
+                  AND l.account_id IS NULL
+                  AND EXISTS (
+                      SELECT 1 FROM accounts legacy
+                       WHERE legacy.code = l.account_code AND legacy.level = 4
+                  )
+                )
+            AND (a.id IS NULL OR a.level NOT IN (1,2) OR a.is_postable = 0
+              OR (l.detail1_code IS NOT NULL AND l.detail1_code <> '' AND
+                  (d.id IS NULL OR d.level <> 3 OR a.level <> 2 OR d.parent_code <> a.code OR d.group_code <> a.group_code)))
+          LIMIT 1"
+    } else if version_number >= 5 {
         "SELECT CAST(l.id AS TEXT)
            FROM voucher_lines l
            LEFT JOIN accounts a ON a.id = l.account_id AND a.code = l.account_code

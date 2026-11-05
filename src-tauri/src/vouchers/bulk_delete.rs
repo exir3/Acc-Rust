@@ -1,6 +1,6 @@
 //! Previewing and deleting vouchers by date or number range.
 
-use crate::db::{self, Database};
+use crate::db::{self, audit, Database};
 use crate::vouchers::model::{
     BulkVoucherDeleteDateRange, BulkVoucherDeleteInput, BulkVoucherDeleteNumberRange,
     BulkVoucherDeletePreview, BulkVoucherDeleteResult, BulkVoucherDeleteSample,
@@ -37,6 +37,7 @@ struct BulkVoucherDeleteTarget {
     description: String,
     updated_at: String,
     is_temporary: bool,
+    fiscal_year_status: String,
 }
 
 fn parse_bulk_delete_scope(
@@ -79,7 +80,11 @@ fn read_bulk_delete_targets(
     conn: &Connection,
     scope: &BulkVoucherDeleteScope,
 ) -> Result<Vec<BulkVoucherDeleteTarget>, String> {
-    const COLUMNS: &str = "SELECT id, number, date, type, description, updated_at, is_temporary FROM vouchers";
+    const COLUMNS: &str =
+        "SELECT v.id, v.number, v.date, v.type, v.description, v.updated_at, v.is_temporary,
+                COALESCE(f.status, '')
+           FROM vouchers v
+           LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id";
     // Read one row beyond the cap so an oversized range is rejected without
     // loading the whole ledger into memory.
     let limit = MAX_BULK_DELETE_TARGETS + 1;
@@ -92,12 +97,15 @@ fn read_bulk_delete_targets(
             description: row.get(4)?,
             updated_at: row.get(5)?,
             is_temporary: row.get::<_, i64>(6)? != 0,
+            fiscal_year_status: row.get(7)?,
         })
     };
 
     match scope {
         BulkVoucherDeleteScope::All => conn
-            .prepare(&format!("{COLUMNS} ORDER BY number, id LIMIT {limit}"))
+            .prepare(&format!(
+                "{COLUMNS} ORDER BY v.number, v.id LIMIT {limit}"
+            ))
             .map_err(db::db_error)?
             .query_map([], read_row)
             .map_err(db::db_error)?
@@ -105,7 +113,7 @@ fn read_bulk_delete_targets(
             .map_err(db::db_error),
         BulkVoucherDeleteScope::DateRange { from, to } => conn
             .prepare(&format!(
-                "{COLUMNS} WHERE date >= ?1 AND date <= ?2 ORDER BY number, id LIMIT {limit}"
+                "{COLUMNS} WHERE v.date >= ?1 AND v.date <= ?2 ORDER BY v.number, v.id LIMIT {limit}"
             ))
             .map_err(db::db_error)?
             .query_map(params![from, to], read_row)
@@ -114,7 +122,7 @@ fn read_bulk_delete_targets(
             .map_err(db::db_error),
         BulkVoucherDeleteScope::NumberRange { from, to } => conn
             .prepare(&format!(
-                "{COLUMNS} WHERE number >= ?1 AND number <= ?2 ORDER BY number, id LIMIT {limit}"
+                "{COLUMNS} WHERE v.number >= ?1 AND v.number <= ?2 ORDER BY v.number, v.id LIMIT {limit}"
             ))
             .map_err(db::db_error)?
             .query_map(params![from, to], read_row)
@@ -140,6 +148,13 @@ fn bulk_delete_sample(target: &BulkVoucherDeleteTarget) -> BulkVoucherDeleteSamp
         display_date: target.date.clone(),
         description: target.description.clone(),
     }
+}
+
+/// A voucher can be deleted only when it is temporary and its fiscal year is
+/// still open. A closed/final year keeps every voucher as a historical record.
+fn is_deletable(target: &BulkVoucherDeleteTarget) -> bool {
+    target.is_temporary
+        && (target.fiscal_year_status.is_empty() || target.fiscal_year_status == "open")
 }
 
 fn bulk_delete_targets_error(count: usize) -> String {
@@ -194,12 +209,20 @@ impl Database {
             check_bulk_delete_limit(&targets)?;
             let plan_token = bulk_delete_fingerprint(&scope, &targets);
             let timestamp = local_timestamp(conn)?;
-            let deletable_count = targets.iter().filter(|target| target.is_temporary).count();
+            let deletable_count = targets.iter().filter(|target| is_deletable(target)).count();
             let locked_count = targets.len() - deletable_count;
-            let deletable_sample = targets.iter().filter(|target| target.is_temporary)
-                .take(20).map(bulk_delete_sample).collect();
-            let locked_sample = targets.iter().filter(|target| !target.is_temporary)
-                .take(20).map(bulk_delete_sample).collect();
+            let deletable_sample = targets
+                .iter()
+                .filter(|target| is_deletable(target))
+                .take(20)
+                .map(bulk_delete_sample)
+                .collect();
+            let locked_sample = targets
+                .iter()
+                .filter(|target| !is_deletable(target))
+                .take(20)
+                .map(bulk_delete_sample)
+                .collect();
             Ok(BulkVoucherDeletePreview {
                 scope: scope.as_str().to_string(),
                 plan_token,
@@ -298,8 +321,14 @@ impl Database {
             if bulk_delete_fingerprint(&scope, &targets) != token {
                 return Err("اسناد پس از پیش‌نمایش تغییر کرده‌اند؛ پیش‌نمایش جدید بگیرید.".to_string());
             }
-            let locked_count = targets.iter().filter(|target| !target.is_temporary).count();
-            let deletable: Vec<_> = targets.iter().filter(|target| target.is_temporary).collect();
+            let locked_count = targets
+                .iter()
+                .filter(|target| !is_deletable(target))
+                .count();
+            let deletable: Vec<_> = targets
+                .iter()
+                .filter(|target| is_deletable(target))
+                .collect();
             for target in &deletable {
                 tx.execute(
                     "DELETE FROM vouchers WHERE id = ?1 AND is_temporary = 1",
@@ -308,6 +337,21 @@ impl Database {
                 .map_err(db::db_error)?;
             }
             let deleted_count = deletable.len();
+            if deleted_count > 0 {
+                audit::log(
+                    &tx,
+                    "delete",
+                    "voucher",
+                    None,
+                    None,
+                    None,
+                    &format!(
+                        "حذف گروهی {} سند در محدوده {}.",
+                        db::to_fa_digits(deleted_count),
+                        scope.as_str()
+                    ),
+                )?;
+            }
             let timestamp = local_timestamp(&tx)?;
             tx.commit().map_err(db::db_error)?;
             let message = if deleted_count == 0 {

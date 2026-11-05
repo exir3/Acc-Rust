@@ -1,7 +1,7 @@
 //! Hierarchical trial balance with opening, period and closing amounts.
 
 use crate::db::{self, Database};
-use crate::vouchers::model::{TrialBalanceReport, TrialBalanceRow};
+use crate::vouchers::model::{ReportScope, TrialBalanceReport, TrialBalanceRow};
 use crate::vouchers::validation::{
     check_range, checked_add, checked_neg, checked_sub, checked_sum, normalize_filter_date,
 };
@@ -145,18 +145,41 @@ impl Database {
         show_zero: bool,
         multi_level: bool,
     ) -> Result<TrialBalanceReport, String> {
+        self.get_trial_balance_filtered_scoped(
+            from,
+            to,
+            account_from,
+            account_to,
+            show_zero,
+            multi_level,
+            ReportScope::Working,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_trial_balance_filtered_scoped(
+        &self,
+        from: &str,
+        to: &str,
+        account_from: &str,
+        account_to: &str,
+        show_zero: bool,
+        multi_level: bool,
+        scope: ReportScope,
+    ) -> Result<TrialBalanceReport, String> {
         let from = normalize_filter_date(from, "تاریخ شروع")?;
         let to = normalize_filter_date(to, "تاریخ پایان")?;
         check_range(&from, &to)?;
         let code_from = normalize_code_filter(account_from);
         let code_to = normalize_code_filter(account_to);
         let has_code_range = !code_from.is_empty() || !code_to.is_empty();
+        let scope_sql = scope.sql();
 
         self.with_conn(|conn| {
             // Aggregate in SQLite so only one row per account crosses into Rust.
             // Parent accounts are rolled up from these raw amounts below.
             let mut stmt = conn
-                .prepare(
+                .prepare(&format!(
                     "SELECT a.code, a.name, g.name, a.level, COALESCE(a.parent_code, ''),
                             COALESCE(SUM(CASE WHEN ?1 <> '' AND v.date < ?1
                                               THEN l.debit END), 0) AS opening_debit,
@@ -171,10 +194,10 @@ impl Database {
                        FROM accounts a
                        JOIN account_groups g ON g.code = a.group_code
                        LEFT JOIN voucher_lines l ON COALESCE(NULLIF(l.detail1_code, ''), l.account_code) = a.code
-                       LEFT JOIN vouchers v ON v.id = l.voucher_id
+                       LEFT JOIN vouchers v ON v.id = l.voucher_id AND {scope_sql}
                       GROUP BY a.code
-                      ORDER BY a.code",
-                )
+                      ORDER BY a.code"
+                ))
                 .map_err(db::db_error)?;
 
             let raw = stmt

@@ -5,8 +5,8 @@ use tauri::{AppHandle, Emitter, State, WebviewWindow};
 use crate::commands::state::{
     lock, notify_accounts_changed, notify_vouchers_changed, require_window, AppState,
 };
-use crate::vouchers::{self, VoucherInput};
 use crate::excel;
+use crate::vouchers::{self, VoucherInput};
 
 /* ── Vouchers ───────────────────────────────────────────────── */
 
@@ -55,7 +55,10 @@ pub(crate) fn list_vouchers(
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::VoucherList, String> {
-    require_window(&window, &["main", "voucher", "voucher-list", "trial-balance"])?;
+    require_window(
+        &window,
+        &["main", "voucher", "voucher-list", "trial-balance"],
+    )?;
     state.database.list_vouchers_page(
         &from,
         &to,
@@ -126,7 +129,9 @@ pub(crate) fn set_voucher_permanent(
     state: State<'_, AppState>,
 ) -> Result<vouchers::Voucher, String> {
     require_window(&window, &["main", "voucher"])?;
-    let permanent = state.database.set_voucher_permanent(id, expected_updated_at.as_deref())?;
+    let permanent = state
+        .database
+        .set_voucher_permanent(id, expected_updated_at.as_deref())?;
     notify_vouchers_changed(&app);
     Ok(permanent)
 }

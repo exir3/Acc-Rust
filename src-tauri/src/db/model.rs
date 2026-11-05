@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::vouchers::{
-    DEFAULT_JOURNAL_PAGE_SIZE, DEFAULT_VOUCHER_PAGE_SIZE, MAX_AMOUNT, MAX_DESCRIPTION,
-    MAX_LINE_DESCRIPTION, MAX_LINES, MAX_PAGE_SIZE, MAX_VOUCHER_NUMBER,
+    DEFAULT_JOURNAL_PAGE_SIZE, DEFAULT_VOUCHER_PAGE_SIZE, MAX_AMOUNT, MAX_DESCRIPTION, MAX_LINES,
+    MAX_LINE_DESCRIPTION, MAX_PAGE_SIZE, MAX_VOUCHER_NUMBER,
 };
 
 /// Account-group types accepted by the form and the database constraint.
@@ -38,7 +38,6 @@ pub const ACCOUNT_GROUP_SECTIONS: [&str; 14] = [
 /// Level 4 is retained in the physical schema only to read older databases; it is not creatable.
 pub const MAX_ACCOUNT_LEVEL: i64 = 3;
 
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountGroup {
@@ -49,6 +48,9 @@ pub struct AccountGroup {
     pub group_type: String,
     pub default_section: String,
     pub account_count: i64,
+    /// Voucher lines posted to accounts of this group. Used to require an
+    /// explicit confirmation before a change that would reclassify history.
+    pub posted_line_count: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -144,6 +146,79 @@ pub struct Settings {
     pub limits: Limits,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FiscalYear {
+    pub id: i64,
+    pub title: String,
+    pub start_date: String,
+    pub end_date: String,
+    pub status: String,
+    pub voucher_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FiscalYearList {
+    pub years: Vec<FiscalYear>,
+    pub database_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLogEntry {
+    pub id: i64,
+    pub action: String,
+    pub entity_type: String,
+    pub entity_id: Option<i64>,
+    pub before_value: Option<String>,
+    pub after_value: Option<String>,
+    pub details: String,
+    pub app_version: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLogList {
+    pub entries: Vec<AuditLogEntry>,
+    pub total: i64,
+    pub database_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyLevel4Account {
+    pub code: String,
+    pub name: String,
+    pub parent_code: String,
+    pub line_count: i64,
+    /// True when the level-3 parent and its level-2 base form a sound pair.
+    pub convertible: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyLevel4Analysis {
+    pub account_count: i64,
+    pub line_count: i64,
+    pub voucher_count: i64,
+    pub convertible_line_count: i64,
+    pub ambiguous_line_count: i64,
+    pub accounts: Vec<LegacyLevel4Account>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyLevel4MigrationResult {
+    pub converted_lines: i64,
+    pub pending_lines: i64,
+    pub removed_accounts: i64,
+    pub backup_path: String,
+}
+
 /// Holds the single write connection. SQLite access is cheap and the forms
 /// have very little traffic, so one mutex-guarded connection keeps ordering
 /// guarantees simple.
@@ -198,4 +273,3 @@ impl NewAccount {
         self
     }
 }
-

@@ -5,6 +5,7 @@
   "version": "5.0.0",
   "identifier": "ir.hesabdari.software",
   "build": {
+    "beforeBuildCommand": "npm run check:js",
     "frontendDist": "../ui"
   },
   "app": {

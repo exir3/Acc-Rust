@@ -2,10 +2,12 @@
 
 use crate::db::{self, Database};
 use crate::vouchers::accounting::{
-    account_activities, classify_activity, AccountActivity, AccountClass,
+    account_activities, classify_activity, section_of, AccountActivity, AccountClass,
+    StatementSection,
 };
 use crate::vouchers::model::{
-    AmountRow, BalanceSheetReport, IncomeStatementReport, CLOSING_FINAL, CLOSING_TEMPORARY,
+    AmountRow, BalanceSheetReport, IncomeStatementReport, ReportScope, CLOSING_FINAL,
+    CLOSING_TEMPORARY,
 };
 use crate::vouchers::validation::{
     check_range, checked_add, checked_neg, checked_sub, checked_sum, normalize_date,
@@ -18,6 +20,15 @@ impl Database {
         from: &str,
         to: &str,
     ) -> Result<IncomeStatementReport, String> {
+        self.get_income_statement_scoped(from, to, ReportScope::Working)
+    }
+
+    pub fn get_income_statement_scoped(
+        &self,
+        from: &str,
+        to: &str,
+        scope: ReportScope,
+    ) -> Result<IncomeStatementReport, String> {
         let from = normalize_filter_date(from, "تاریخ شروع")?;
         let to = normalize_filter_date(to, "تاریخ پایان")?;
         check_range(&from, &to)?;
@@ -25,19 +36,33 @@ impl Database {
         self.with_conn(|conn| {
             // Closing vouchers move income and expenses to equity; leaving
             // them in would show every closed period as having no activity.
-            let activities =
-                account_activities(conn, &from, &to, false, &[CLOSING_TEMPORARY, CLOSING_FINAL])?;
+            let activities = account_activities(
+                conn,
+                &from,
+                &to,
+                false,
+                &[CLOSING_TEMPORARY, CLOSING_FINAL],
+                scope,
+            )?;
             build_income_statement(from, to, activities)
         })
     }
 
     pub fn get_balance_sheet(&self, as_of: &str) -> Result<BalanceSheetReport, String> {
+        self.get_balance_sheet_scoped(as_of, ReportScope::Working)
+    }
+
+    pub fn get_balance_sheet_scoped(
+        &self,
+        as_of: &str,
+        scope: ReportScope,
+    ) -> Result<BalanceSheetReport, String> {
         let as_of = normalize_date(as_of, "تاریخ ترازنامه")?;
         self.with_conn(|conn| {
             // A final closing voucher without a later opening voucher zeroes
             // every balance-sheet account, so the statement is prepared from
             // the books before it. `account_activities` applies that rule.
-            let activities = account_activities(conn, "", &as_of, true, &[])?;
+            let activities = account_activities(conn, "", &as_of, true, &[], scope)?;
             build_balance_sheet(as_of, activities)
         })
     }
@@ -55,6 +80,8 @@ fn build_income_statement(
     let mut expenses = Vec::new();
     let mut non_operating_revenues = Vec::new();
     let mut non_operating_expenses = Vec::new();
+    let mut finance_costs = Vec::new();
+    let mut income_taxes = Vec::new();
 
     for activity in activities {
         let net = checked_sub(
@@ -65,6 +92,76 @@ fn build_income_statement(
         if net == 0 {
             continue;
         }
+
+        let section = section_of(&activity.default_section);
+        if matches!(section, Some(StatementSection::Memorandum)) {
+            continue;
+        }
+        match section {
+            Some(StatementSection::OtherOperating) | Some(StatementSection::OtherNonOperating) => {
+                let other_operating = matches!(section, Some(StatementSection::OtherOperating));
+                let amount = if net < 0 {
+                    checked_neg(net, "مبلغ درآمد گروه‌های سایر")?
+                } else {
+                    net
+                };
+                let row = AmountRow {
+                    account_code: activity.account_code,
+                    account_name: activity.account_name,
+                    amount,
+                };
+                match (other_operating, net < 0) {
+                    (true, true) => other_operating_revenues.push(row),
+                    (true, false) => other_operating_expenses.push(row),
+                    (false, true) => non_operating_revenues.push(row),
+                    (false, false) => non_operating_expenses.push(row),
+                }
+                continue;
+            }
+            Some(StatementSection::Revenue) => {
+                revenues.push(AmountRow {
+                    account_code: activity.account_code,
+                    account_name: activity.account_name,
+                    amount: checked_neg(net, "مبلغ درآمد")?,
+                });
+                continue;
+            }
+            Some(StatementSection::Cogs) => {
+                cogs.push(AmountRow {
+                    account_code: activity.account_code,
+                    account_name: activity.account_name,
+                    amount: net,
+                });
+                continue;
+            }
+            Some(StatementSection::SellingExpense) | Some(StatementSection::AdminExpense) => {
+                expenses.push(AmountRow {
+                    account_code: activity.account_code,
+                    account_name: activity.account_name,
+                    amount: net,
+                });
+                continue;
+            }
+            Some(StatementSection::FinanceCost) => {
+                finance_costs.push(AmountRow {
+                    account_code: activity.account_code,
+                    account_name: activity.account_name,
+                    amount: net,
+                });
+                continue;
+            }
+            Some(StatementSection::IncomeTax) => {
+                income_taxes.push(AmountRow {
+                    account_code: activity.account_code,
+                    account_name: activity.account_name,
+                    amount: net,
+                });
+                continue;
+            }
+            // Balance-sheet sections are skipped below by classification.
+            Some(_) | None => {}
+        }
+
         if activity.group_code == db::OTHER_OPERATING_GROUP_CODE
             || activity.group_code == db::OTHER_NON_OPERATING_GROUP_CODE
         {
@@ -144,6 +241,10 @@ fn build_income_statement(
         non_operating_expenses.iter().map(|r| r.amount),
         "جمع هزینه‌های غیرعملیاتی",
     )?;
+    let finance_cost_total =
+        checked_sum(finance_costs.iter().map(|r| r.amount), "جمع هزینه‌های مالی")?;
+    let income_tax_total =
+        checked_sum(income_taxes.iter().map(|r| r.amount), "جمع مالیات بر درآمد")?;
     let gross_profit = checked_sub(revenue_total, cogs_total, "سود ناخالص")?;
     let operating_profit = checked_sub(
         checked_add(
@@ -158,15 +259,20 @@ fn build_income_statement(
         )?,
         "سود عملیاتی",
     )?;
-    let net_profit = checked_sub(
+    let profit_before_tax = checked_sub(
         checked_add(
             operating_profit,
             non_operating_revenue_total,
             "سود پیش از هزینه‌های غیرعملیاتی",
         )?,
-        non_operating_expense_total,
-        "سود خالص",
+        checked_add(
+            non_operating_expense_total,
+            finance_cost_total,
+            "هزینه‌های غیرعملیاتی و مالی",
+        )?,
+        "سود پیش از مالیات",
     )?;
+    let net_profit = checked_sub(profit_before_tax, income_tax_total, "سود خالص")?;
     Ok(IncomeStatementReport {
         from,
         to,
@@ -184,8 +290,13 @@ fn build_income_statement(
         non_operating_revenue_total,
         non_operating_expenses,
         non_operating_expense_total,
+        finance_costs,
+        finance_cost_total,
+        income_taxes,
+        income_tax_total,
         gross_profit,
         operating_profit,
+        profit_before_tax,
         net_profit,
     })
 }
@@ -229,6 +340,7 @@ fn build_balance_sheet(
                 )?
             }
             AccountClass::Expense => expenses = checked_add(expenses, net, "جمع هزینه ترازنامه")?,
+            AccountClass::Memorandum => {}
         }
     }
 

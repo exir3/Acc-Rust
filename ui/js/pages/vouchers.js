@@ -66,9 +66,14 @@ function renderVouchers(report) {
   ${loadMoreBar('vouchers', shown, matched, state.listOffsets.vouchers)}`;
 }
 
+function listPageStep(kind) {
+  if (kind === 'journal') return JOURNAL_PAGE_SIZE;
+  if (kind === 'ledger') return LEDGER_PAGE_SIZE;
+  return VOUCHER_PAGE_SIZE;
+}
+
 function loadMoreBar(kind, shown, total, offset) {
   if (!total) return '';
-  const step = kind === 'journal' ? JOURNAL_PAGE_SIZE : VOUCHER_PAGE_SIZE;
   const hasPrev = offset > 0;
   const hasNext = offset + shown < total;
   if (!hasPrev && !hasNext) return '';
@@ -135,7 +140,7 @@ function bindListPager(root) {
   root.querySelectorAll('[data-page-prev]').forEach((button) => {
     button.addEventListener('click', () => {
       const kind = button.dataset.pagePrev;
-      const step = kind === 'journal' ? JOURNAL_PAGE_SIZE : VOUCHER_PAGE_SIZE;
+      const step = listPageStep(kind);
       state.listOffsets[kind] = Math.max(0, (state.listOffsets[kind] || 0) - step);
       navigate(state.page, { force: true });
     });
@@ -143,7 +148,7 @@ function bindListPager(root) {
   root.querySelectorAll('[data-page-next]').forEach((button) => {
     button.addEventListener('click', () => {
       const kind = button.dataset.pageNext;
-      const step = kind === 'journal' ? JOURNAL_PAGE_SIZE : VOUCHER_PAGE_SIZE;
+      const step = listPageStep(kind);
       state.listOffsets[kind] = (state.listOffsets[kind] || 0) + step;
       navigate(state.page, { force: true });
     });

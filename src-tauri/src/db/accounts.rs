@@ -2,6 +2,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
+use crate::db::audit;
 use crate::db::common::{db_error, normalize_code, to_fa_digits};
 use crate::db::model::{
     Account, AccountGroup, AccountGroupList, AccountList, BulkAccountDeleteFailure,
@@ -118,6 +119,15 @@ impl Database {
             )
             .map_err(db_error)?;
             let group = fetch_group(&tx, tx.last_insert_rowid())?;
+            audit::log(
+                &tx,
+                "create",
+                "account_group",
+                Some(group.id),
+                None,
+                Some(&serde_json::to_string(&group).map_err(|error| error.to_string())?),
+                "",
+            )?;
             tx.commit().map_err(db_error)?;
             Ok(group)
         })
@@ -131,6 +141,22 @@ impl Database {
         group_type: &str,
         default_section: &str,
     ) -> Result<AccountGroup, String> {
+        self.update_account_group_confirmed(id, code, name, group_type, default_section, false)
+    }
+
+    /// Updates a group. When the group already has posted voucher lines, a
+    /// change to `type` or `default_section` would silently reclassify
+    /// historical reports, so it is rejected unless the caller confirms.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_account_group_confirmed(
+        &self,
+        id: i64,
+        code: &str,
+        name: &str,
+        group_type: &str,
+        default_section: &str,
+        confirm_reclassification: bool,
+    ) -> Result<AccountGroup, String> {
         if id <= 0 {
             return Err("شناسه گروه حساب نامعتبر است.".to_string());
         }
@@ -143,19 +169,49 @@ impl Database {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(db_error)?;
-            let existing_code = tx
+            let existing = tx
                 .query_row(
-                    "SELECT code FROM account_groups WHERE id = ?1",
+                    "SELECT code, type, default_section FROM account_groups WHERE id = ?1",
                     params![id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(db_error)?;
-            let existing_code = existing_code.ok_or_else(|| "گروه حساب یافت نشد.".to_string())?;
+            let (existing_code, existing_type, existing_section) =
+                existing.ok_or_else(|| "گروه حساب یافت نشد.".to_string())?;
             if existing_code != code {
                 return Err("تغییر کد گروه حساب مجاز نیست.".to_string());
             }
 
+            let classification_changed =
+                existing_type != group_type || existing_section != default_section;
+            if classification_changed && !confirm_reclassification {
+                let posted_line_count: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*)
+                           FROM voucher_lines l
+                           JOIN accounts a
+                             ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
+                          WHERE a.group_code = ?1",
+                        params![code],
+                        |row| row.get(0),
+                    )
+                    .map_err(db_error)?;
+                if posted_line_count > 0 {
+                    return Err(format!(
+                        "این گروه {} ردیف سند ثبت‌شده دارد. تغییر نوع یا بخش پیش‌فرض، گزارش‌های تاریخی را بازطبقه‌بندی می‌کند؛ برای ادامه، تغییر را تأیید کنید.",
+                        to_fa_digits(posted_line_count)
+                    ));
+                }
+            }
+
+            let before_group = fetch_group(&tx, id)?;
             tx.execute(
                 "UPDATE account_groups
                     SET name = ?1, type = ?2, default_section = ?3,
@@ -165,6 +221,15 @@ impl Database {
             )
             .map_err(db_error)?;
             let group = fetch_group(&tx, id)?;
+            audit::log(
+                &tx,
+                "update",
+                "account_group",
+                Some(id),
+                Some(&serde_json::to_string(&before_group).map_err(|error| error.to_string())?),
+                Some(&serde_json::to_string(&group).map_err(|error| error.to_string())?),
+                "",
+            )?;
             tx.commit().map_err(db_error)?;
             Ok(group)
         })
@@ -214,8 +279,18 @@ impl Database {
                 ));
             }
 
+            let before_group = fetch_group(&tx, id)?;
             tx.execute("DELETE FROM account_groups WHERE id = ?1", params![id])
                 .map_err(db_error)?;
+            audit::log(
+                &tx,
+                "delete",
+                "account_group",
+                Some(id),
+                Some(&serde_json::to_string(&before_group).map_err(|error| error.to_string())?),
+                None,
+                "",
+            )?;
             tx.commit().map_err(db_error)?;
             Ok(())
         })
@@ -289,7 +364,10 @@ impl Database {
     /// Creates a group of accounts in one transaction. If any account in the
     /// batch fails validation or insertion, none of them is saved. This keeps
     /// an imported hierarchy level from being left behind half-created.
-    pub fn create_accounts_atomic(&self, accounts: Vec<NewAccount>) -> Result<Vec<Account>, String> {
+    pub fn create_accounts_atomic(
+        &self,
+        accounts: Vec<NewAccount>,
+    ) -> Result<Vec<Account>, String> {
         if accounts.is_empty() {
             return Ok(Vec::new());
         }
@@ -313,7 +391,20 @@ impl Database {
                 .map_err(db_error)?;
             let mut created = Vec::with_capacity(normalized.len());
             for account in &normalized {
-                created.push(insert_account(&tx, account)?);
+                let created_account = insert_account(&tx, account)?;
+                audit::log(
+                    &tx,
+                    "create",
+                    "account",
+                    Some(created_account.id),
+                    None,
+                    Some(
+                        &serde_json::to_string(&created_account)
+                            .map_err(|error| error.to_string())?,
+                    ),
+                    "",
+                )?;
+                created.push(created_account);
             }
             tx.commit().map_err(db_error)?;
             Ok(created)
@@ -449,6 +540,7 @@ impl Database {
 
             let postable = level <= 2;
 
+            let before_account = fetch_account(&tx, id)?;
             tx.execute(
                 "UPDATE accounts
                     SET name = ?1, group_code = ?2, nature = ?3,
@@ -499,6 +591,18 @@ impl Database {
             }
 
             let updated = fetch_account(&tx, id)?;
+            audit::log(
+                &tx,
+                "update",
+                "account",
+                Some(id),
+                Some(
+                    &serde_json::to_string(&before_account)
+                        .map_err(|error| error.to_string())?,
+                ),
+                Some(&serde_json::to_string(&updated).map_err(|error| error.to_string())?),
+                "",
+            )?;
             tx.commit().map_err(db_error)?;
             Ok(updated)
         })
@@ -511,7 +615,11 @@ impl Database {
             return Err("شناسه حساب نامعتبر است.".to_string());
         }
         self.with_conn(|conn| {
-            let updated = conn
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(db_error)?;
+            let before = fetch_account(&tx, id)?;
+            let updated = tx
                 .execute(
                     "UPDATE accounts
                         SET is_active = ?1, updated_at = datetime('now', 'localtime')
@@ -522,7 +630,22 @@ impl Database {
             if updated == 0 {
                 return Err("حساب یافت نشد.".to_string());
             }
-            fetch_account(conn, id)
+            let account = fetch_account(&tx, id)?;
+            audit::log(
+                &tx,
+                "status",
+                "account",
+                Some(id),
+                Some(&serde_json::to_string(&before).map_err(|error| error.to_string())?),
+                Some(&serde_json::to_string(&account).map_err(|error| error.to_string())?),
+                if is_active {
+                    "حساب فعال شد."
+                } else {
+                    "حساب غیرفعال شد."
+                },
+            )?;
+            tx.commit().map_err(db_error)?;
+            Ok(account)
         })
     }
 
@@ -535,7 +658,17 @@ impl Database {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(db_error)?;
+            let before = fetch_account(&tx, id)?;
             delete_account_tx(&tx, id)?;
+            audit::log(
+                &tx,
+                "delete",
+                "account",
+                Some(id),
+                Some(&serde_json::to_string(&before).map_err(|error| error.to_string())?),
+                None,
+                "",
+            )?;
             tx.commit().map_err(db_error)?;
             Ok(())
         })
@@ -564,16 +697,27 @@ impl Database {
                     .optional()
                     .map_err(db_error)?;
                 match delete_account_tx(&tx, id) {
-                    Ok(()) => deleted_count += 1,
+                    Ok(()) => {
+                        if let Some((code, name)) = &label {
+                            audit::log(
+                                &tx,
+                                "delete",
+                                "account",
+                                Some(id),
+                                Some(
+                                    &serde_json::json!({ "code": code, "name": name }).to_string(),
+                                ),
+                                None,
+                                "",
+                            )?;
+                        }
+                        deleted_count += 1;
+                    }
                     Err(error) => {
                         let (code, name) = label.unwrap_or_else(|| {
                             ("—".to_string(), format!("شناسه {}", to_fa_digits(id)))
                         });
-                        blocked.push(BulkAccountDeleteFailure {
-                            code,
-                            name,
-                            error,
-                        });
+                        blocked.push(BulkAccountDeleteFailure { code, name, error });
                     }
                 }
             }
@@ -590,7 +734,11 @@ fn list_groups(conn: &Connection) -> Result<Vec<AccountGroup>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT g.id, g.code, g.name, g.type, g.default_section, g.created_at, g.updated_at,
-                    (SELECT COUNT(*) FROM accounts a WHERE a.group_code = g.code)
+                    (SELECT COUNT(*) FROM accounts a WHERE a.group_code = g.code),
+                    (SELECT COUNT(*) FROM voucher_lines l
+                       JOIN accounts a
+                         ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
+                      WHERE a.group_code = g.code)
                FROM account_groups g
               ORDER BY CAST(g.code AS INTEGER), g.code",
         )
@@ -619,7 +767,11 @@ fn list_accounts(conn: &mut Connection) -> Result<Vec<Account>, String> {
 fn fetch_group(conn: &Connection, id: i64) -> Result<AccountGroup, String> {
     conn.query_row(
         "SELECT g.id, g.code, g.name, g.type, g.default_section, g.created_at, g.updated_at,
-                (SELECT COUNT(*) FROM accounts a WHERE a.group_code = g.code)
+                (SELECT COUNT(*) FROM accounts a WHERE a.group_code = g.code),
+                (SELECT COUNT(*) FROM voucher_lines l
+                   JOIN accounts a
+                     ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
+                  WHERE a.group_code = g.code)
            FROM account_groups g
           WHERE g.id = ?1",
         params![id],
@@ -658,6 +810,7 @@ fn row_to_group(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountGroup> {
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
         account_count: row.get(7)?,
+        posted_line_count: row.get(8)?,
     })
 }
 

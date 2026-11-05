@@ -143,6 +143,7 @@ function bindChrome() {
   window.addEventListener('vouchers-changed', () => {
     state.listOffsets.vouchers = 0;
     state.listOffsets.journal = 0;
+    state.listOffsets.ledger = 0;
     if (voucherPages.has(state.page)) void navigate(state.page, { force: true });
   });
   if (typeof eventApi?.listen === 'function') {

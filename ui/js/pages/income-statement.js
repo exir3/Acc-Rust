@@ -9,7 +9,7 @@ PAGES.income = {
   ],
   load: async () => {
     const f = state.filters.income;
-    return invoke('get_income_statement', { from: f.from, to: f.to });
+    return invoke('get_income_statement', { from: f.from, to: f.to, scope: normalizeReportScope(f.scope) });
   },
   render: renderIncomeStatement,
   bind: bindFilterOnly,
@@ -27,6 +27,7 @@ function incomeFilterBar() {
       <label for="isTo">تا تاریخ</label>
       <input id="isTo" class="input" name="to" data-date type="text" inputmode="numeric" value="${esc(f.to)}" placeholder="۱۴۰۵/۱۲/۲۹" />
     </div>
+    ${reportScopeField('income', 'isScope')}
     <button class="btn btn-primary" type="submit">${icon('i-search')}<span>محاسبه صورت</span></button>
     <button class="btn" type="button" data-reset>${icon('i-refresh')}<span>بازنشانی</span></button>
   </form>`;
@@ -44,6 +45,8 @@ function renderIncomeStatement(report) {
     <div class="kpi"><span>سایر هزینه‌های عملیاتی</span><strong>${money(report.otherOperatingExpenseTotal)}</strong></div>
     <div class="kpi"><span>درآمدهای غیرعملیاتی</span><strong>${money(report.nonOperatingRevenueTotal)}</strong></div>
     <div class="kpi"><span>هزینه‌های غیرعملیاتی</span><strong>${money(report.nonOperatingExpenseTotal)}</strong></div>
+    <div class="kpi"><span>هزینه‌های مالی</span><strong>${money(report.financeCostTotal)}</strong></div>
+    <div class="kpi"><span>مالیات بر درآمد</span><strong>${money(report.incomeTaxTotal)}</strong></div>
     <div class="kpi"><span>سود (زیان) ناخالص</span><strong>${money(report.grossProfit)}</strong></div>
     <div class="kpi" data-tone="${net >= 0n ? 'ok' : 'danger'}"><span>سود (زیان) خالص</span><strong>${money(net)}</strong></div>
   </div>
@@ -69,6 +72,9 @@ function renderIncomeStatement(report) {
   <div class="card" style="margin-top:12px">
     ${incomeSection('هزینه‌های عملیاتی', report.expenses, report.expenseTotal, 'i-bank')}
   </div>
+  <div class="card" style="margin-top:12px">
+    <div class="report-total-line"><span>سود (زیان) عملیاتی</span><span class="money">${money(report.operatingProfit)}</span></div>
+  </div>
   <div class="report-layout" style="margin-top:12px">
     <div class="card">
       ${incomeSection('درآمدهای غیرعملیاتی', report.nonOperatingRevenues, report.nonOperatingRevenueTotal, 'i-trend')}
@@ -77,8 +83,16 @@ function renderIncomeStatement(report) {
       ${incomeSection('هزینه‌های غیرعملیاتی', report.nonOperatingExpenses, report.nonOperatingExpenseTotal, 'i-bank')}
     </div>
   </div>
+  <div class="report-layout" style="margin-top:12px">
+    <div class="card">
+      ${incomeSection('هزینه‌های مالی', report.financeCosts, report.financeCostTotal, 'i-bank')}
+    </div>
+    <div class="card">
+      ${incomeSection('مالیات بر درآمد', report.incomeTaxes, report.incomeTaxTotal, 'i-bank')}
+    </div>
+  </div>
   <div class="card" style="margin-top:12px">
-    <div class="report-total-line"><span>سود (زیان) عملیاتی</span><span class="money">${money(report.operatingProfit)}</span></div>
+    <div class="report-total-line"><span>سود (زیان) پیش از مالیات</span><span class="money">${money(report.profitBeforeTax)}</span></div>
     <div class="report-total-line net"><span>سود (زیان) خالص دوره</span><span class="money">${money(net)}</span></div>
   </div>`;
 }

@@ -17,7 +17,7 @@ function filterAccountPicker(term) {
   const row = apTarget?.closest?.('tr') || null;
   const baseCode = digitsOnly(row?.querySelector('.vf-code-input')?.value || '');
   const currentCode = digitsOnly(apTarget?.value || '');
-  const savedException = (account) => account.isActive !== false ||
+  const savedException = (account) => accountChainActive(account) ||
     (apMode === 'detail'
       ? digitsOnly(row?.dataset.savedDetail1 || '') === digitsOnly(account.code)
       : voucherAlreadyUsesAccount(account.code));
@@ -93,13 +93,14 @@ function renderAccountPickerRows(resetIndex = true) {
     row.className = 'ap-row';
     if (i === apIndex) row.classList.add('selected');
     if (apMode !== 'detail' && !account.isPostable) row.classList.add('not-postable');
-    if (account.isActive === false) row.classList.add('inactive');
+    const effectivelyActive = accountChainActive(account);
+    if (!effectivelyActive) row.classList.add('inactive');
     row.setAttribute('role', 'row');
     row.tabIndex = -1;
     row.dataset.pickerIndex = String(i);
     row.setAttribute('aria-selected', i === apIndex ? 'true' : 'false');
-    row.title = account.isActive === false
-      ? 'این حساب غیرفعال است و فقط برای ردیف‌های ذخیره‌شدهٔ همین سند قابل استفاده است'
+    row.title = !effectivelyActive
+      ? 'این حساب یا یکی از والدین آن غیرفعال است و فقط برای ردیف‌های ذخیره‌شدهٔ همین سند قابل استفاده است'
       : apMode === 'detail'
         ? `${account.code} — ${account.name}`
         : account.isPostable
@@ -232,8 +233,8 @@ function chooseAccountPickerRow() {
     }
     const savedSameDetail = !!row?.dataset.lineId
       && digitsOnly(row.dataset.savedDetail1 || '') === digitsOnly(account.code);
-    if (account.isActive === false && !savedSameDetail) {
-      toast('حساب تفصیلی غیرفعال است و برای ردیف جدید قابل استفاده نیست.', 'error');
+    if (!accountChainActive(account) && !savedSameDetail) {
+      toast('حساب تفصیلی یا یکی از والدین آن غیرفعال است و برای ردیف جدید قابل استفاده نیست.', 'error');
       return;
     }
   } else {

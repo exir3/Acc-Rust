@@ -30,14 +30,15 @@ pub use model::{
     AmountRow, BalanceSheetReport, BulkVoucherDeleteDateRange, BulkVoucherDeleteInput,
     BulkVoucherDeleteNumberRange, BulkVoucherDeletePreview, BulkVoucherDeleteResult,
     BulkVoucherDeleteSample, IncomeStatementReport, JournalReport, JournalRow, LedgerReport,
-    LedgerRow, TrialBalanceReport, TrialBalanceRow, Voucher, VoucherCounters, VoucherInput,
-    VoucherLine, VoucherLineInput, VoucherList, VoucherMergePreview, VoucherNumberChange,
-    VoucherReorganizationPreview, VoucherReorganizationResult, VoucherSummary,
+    LedgerRow, ReportScope, TrialBalanceReport, TrialBalanceRow, Voucher, VoucherCounters,
+    VoucherInput, VoucherLine, VoucherLineInput, VoucherList, VoucherMergePreview,
+    VoucherNumberChange, VoucherReorganizationPreview, VoucherReorganizationResult, VoucherSummary,
     VoucherTransferInput, VoucherTransferResult, DEFAULT_JOURNAL_PAGE_SIZE,
     DEFAULT_VOUCHER_PAGE_SIZE, MAX_AMOUNT, MAX_BULK_DELETE_TARGETS, MAX_PAGE_SIZE,
     MAX_VOUCHER_NUMBER, VOUCHER_TYPES,
 };
 pub(crate) use model::{MAX_DESCRIPTION, MAX_LINES, MAX_LINE_DESCRIPTION};
+pub(crate) use validation::normalize_date;
 pub use validation::{format_amount, normalize_filter_date, validate_voucher_date};
 
 #[cfg(test)]

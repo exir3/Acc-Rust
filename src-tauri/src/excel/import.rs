@@ -3,7 +3,7 @@
 use crate::db;
 use crate::excel::accounts::account_nature;
 use crate::excel::common::*;
-use crate::excel::model::{BulkVoucherImport, BulkImportColumns, ImportedAccount};
+use crate::excel::model::{BulkImportColumns, BulkVoucherImport, ImportedAccount};
 use crate::vouchers::{VoucherInput, VoucherLineInput, MAX_VOUCHER_NUMBER};
 use calamine::{open_workbook_auto, Data, Reader};
 use std::collections::{BTreeMap, HashMap};
@@ -55,9 +55,7 @@ pub(crate) fn find_columns(range: &calamine::Range<Data>) -> Option<(usize, Impo
         let columns = ImportColumns {
             account_code: headers
                 .iter()
-                .position(|header| {
-                    header == "کد حساب" || header == "کدحساب" || header == "کد"
-                })
+                .position(|header| header == "کد حساب" || header == "کدحساب" || header == "کد")
                 .or_else(|| {
                     let matches: Vec<usize> = headers
                         .iter()
@@ -72,13 +70,26 @@ pub(crate) fn find_columns(range: &calamine::Range<Data>) -> Option<(usize, Impo
                     }
                 }),
             detail1_code: find(&[
-                "کد تفصیلی ۱", "کد تفصیلی 1", "کد تفصیلی",
-                "کد تفضیلی ۱", "کد تفضیلی 1", "کد تفضیلی",
-            ]).or_else(|| {
+                "کد تفصیلی ۱",
+                "کد تفصیلی 1",
+                "کد تفصیلی",
+                "کد تفضیلی ۱",
+                "کد تفضیلی 1",
+                "کد تفضیلی",
+            ])
+            .or_else(|| {
                 // سازگاری با فایل‌های قدیمی فقط وقتی عنوان ستون دقیقاً
                 // «تفصیلی ۱» است؛ عنوان/نام تفصیلی را به‌اشتباه کد فرض نکن.
                 headers.iter().position(|header| {
-                    matches!(header.as_str(), "تفصیلی ۱" | "تفصیلی 1" | "تفضیلی ۱" | "تفضیلی 1" | "تفصیلی1" | "تفضیلی1")
+                    matches!(
+                        header.as_str(),
+                        "تفصیلی ۱"
+                            | "تفصیلی 1"
+                            | "تفضیلی ۱"
+                            | "تفضیلی 1"
+                            | "تفصیلی1"
+                            | "تفضیلی1"
+                    )
                 })
             }),
             description: find(&["شرح"]),
@@ -93,7 +104,9 @@ pub(crate) fn find_columns(range: &calamine::Range<Data>) -> Option<(usize, Impo
     None
 }
 
-pub(crate) fn find_bulk_columns(range: &calamine::Range<Data>) -> Option<(usize, BulkImportColumns)> {
+pub(crate) fn find_bulk_columns(
+    range: &calamine::Range<Data>,
+) -> Option<(usize, BulkImportColumns)> {
     for (row_index, row) in range.rows().enumerate().take(HEADER_SCAN_ROWS) {
         let headers: Vec<String> = row
             .iter()
@@ -347,7 +360,8 @@ pub(crate) fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, Stri
         }
         match parse_bulk_voucher_sheet(path, &sheet_name, &range) {
             Ok(import) => return Ok(import),
-            Err(error) if error == "در فایل اکسل هیچ ردیف سندی پیدا نشد." => {
+            Err(error) if error == "در فایل اکسل هیچ ردیف سندی پیدا نشد." =>
+            {
                 // Skip an empty template tab, but never skip a malformed data
                 // tab and silently import a different worksheet instead.
                 empty_matching_sheet = Some(format!("کاربرگ «{sheet_name}» خالی است."));
@@ -357,7 +371,9 @@ pub(crate) fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, Stri
     }
 
     if let Some(error) = empty_matching_sheet {
-        return Err(format!("{error} در سایر کاربرگ‌ها نیز داده قابل ورود پیدا نشد."));
+        return Err(format!(
+            "{error} در سایر کاربرگ‌ها نیز داده قابل ورود پیدا نشد."
+        ));
     }
     Err("در هیچ‌یک از کاربرگ‌های فایل، ستون‌های لازم برای ورود دسته‌جمعی اسناد پیدا نشد. ستون‌های شماره سند، تاریخ، کد و عنوان کل، کد و عنوان معین، بدهکار و بستانکار الزامی هستند. در صورت وجود ستون کد تفصیلی ۱، عنوان تفصیلی ۱ نیز باید وجود داشته باشد.".to_string())
 }
@@ -423,12 +439,13 @@ pub(crate) fn parse_bulk_voucher_sheet(
                 )
             })?
         } else {
-            let parsed = cell_voucher_number(&read(row, columns.voucher_number)).map_err(|error| {
-                format!(
-                    "شماره سند ردیف {} اکسل: {error}",
-                    db::to_fa_digits(excel_row)
-                )
-            })?;
+            let parsed =
+                cell_voucher_number(&read(row, columns.voucher_number)).map_err(|error| {
+                    format!(
+                        "شماره سند ردیف {} اکسل: {error}",
+                        db::to_fa_digits(excel_row)
+                    )
+                })?;
             if parsed <= 0 || parsed > MAX_VOUCHER_NUMBER {
                 return Err(format!(
                     "شماره سند ردیف {} اکسل باید بین ۱ و {} باشد.",
@@ -883,4 +900,3 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
     }
     Ok(Some(lines))
 }
-

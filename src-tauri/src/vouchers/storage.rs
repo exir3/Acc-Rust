@@ -1,9 +1,9 @@
 //! Voucher persistence: paging, reading, saving, deleting and numbering.
 
-use crate::db::{self, Database};
+use crate::db::{self, audit, Database};
 use crate::vouchers::model::{
-    Voucher, VoucherCounters, VoucherInput, VoucherLineInput, VoucherList, MAX_AMOUNT, MAX_DESCRIPTION,
-    MAX_LINES, MAX_LINE_DESCRIPTION, MAX_VOUCHER_NUMBER, TOUCHED_AT,
+    Voucher, VoucherCounters, VoucherInput, VoucherLineInput, VoucherList, MAX_AMOUNT,
+    MAX_DESCRIPTION, MAX_LINES, MAX_LINE_DESCRIPTION, MAX_VOUCHER_NUMBER, TOUCHED_AT,
 };
 use crate::vouchers::query::{
     count, fetch_voucher_by_id, fetch_voucher_by_number, list_vouchers, page_window, search_terms,
@@ -11,8 +11,8 @@ use crate::vouchers::query::{
 };
 use crate::vouchers::validation::{
     assert_voucher_type_matches_lines, check_range, format_amount, normalize_date,
-    normalize_filter_date, validate_description, normalize_voucher_line_accounts, validate_voucher_line_accounts,
-    validate_voucher_type,
+    normalize_filter_date, normalize_voucher_line_accounts, validate_description,
+    validate_voucher_line_accounts, validate_voucher_type,
 };
 use rusqlite::{params, OptionalExtension};
 
@@ -197,7 +197,11 @@ impl Database {
             let account_code = db::normalize_code(&line.account_code);
             let line_description =
                 validate_description(&line.description, "شرح ردیف", MAX_LINE_DESCRIPTION)?;
-            let detail1_code = line.detail1_code.as_deref().map(db::normalize_code).filter(|v| !v.is_empty());
+            let detail1_code = line
+                .detail1_code
+                .as_deref()
+                .map(db::normalize_code)
+                .filter(|v| !v.is_empty());
             let blank = account_code.is_empty()
                 && detail1_code.is_none()
                 && line_description.is_empty()
@@ -300,13 +304,19 @@ impl Database {
 
             let existing = if id > 0 {
                 tx.query_row(
-                    "SELECT number, updated_at, is_temporary FROM vouchers WHERE id = ?1",
+                    "SELECT v.number, v.updated_at, v.is_temporary, COALESCE(f.status, '')
+                       FROM vouchers v
+                       LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id
+                      WHERE v.id = ?1",
                     params![id],
-                    |row| Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)? != 0,
-                    )),
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)? != 0,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(db::db_error)?
@@ -316,10 +326,23 @@ impl Database {
             if id > 0 && existing.is_none() {
                 return Err("سند حسابداری یافت نشد.".to_string());
             }
-            if existing.as_ref().is_some_and(|(_, _, is_temporary)| !*is_temporary) {
+            // A voucher already sitting in a closed/final year must not be
+            // edited, even when its new date would fall in an open year.
+            if let Some((_, _, _, year_status)) = existing.as_ref() {
+                if !year_status.is_empty() && year_status != "open" {
+                    return Err(
+                        "سند در سال مالی بسته یا نهایی قرار دارد و قابل تغییر نیست.".to_string()
+                    );
+                }
+            }
+            let fiscal_year_id = db::ensure_open_period(&tx, &date)?;
+            if existing
+                .as_ref()
+                .is_some_and(|(_, _, is_temporary, _)| !*is_temporary)
+            {
                 return Err("این سند دائمی است و قابل ویرایش نیست.".to_string());
             }
-            if let (Some(expected), Some((_, current, _))) =
+            if let (Some(expected), Some((_, current, _, _))) =
                 (expected_updated_at.as_deref(), existing.as_ref())
             {
                 if expected != current {
@@ -329,7 +352,7 @@ impl Database {
                 }
             }
 
-            let existing_number = existing.as_ref().map(|(number, _, _)| *number);
+            let existing_number = existing.as_ref().map(|(number, _, _, _)| *number);
             let number = match (requested_number, existing_number) {
                 (number, _) if number > 0 => number,
                 (_, Some(current_number)) => current_number,
@@ -366,20 +389,20 @@ impl Database {
                         &format!(
                             "UPDATE vouchers
                                 SET number = ?1, date = ?2, type = ?3, description = ?4,
-                                    updated_at = {TOUCHED_AT}
-                              WHERE id = ?5 AND updated_at = ?6"
+                                    fiscal_year_id = ?5, updated_at = {TOUCHED_AT}
+                              WHERE id = ?6 AND updated_at = ?7"
                         ),
-                        params![number, date, voucher_type, description, id, expected],
+                        params![number, date, voucher_type, description, fiscal_year_id, id, expected],
                     )
                 } else {
                     tx.execute(
                         &format!(
                             "UPDATE vouchers
                                 SET number = ?1, date = ?2, type = ?3, description = ?4,
-                                    updated_at = {TOUCHED_AT}
-                              WHERE id = ?5"
+                                    fiscal_year_id = ?5, updated_at = {TOUCHED_AT}
+                              WHERE id = ?6"
                         ),
-                        params![number, date, voucher_type, description, id],
+                        params![number, date, voucher_type, description, fiscal_year_id, id],
                     )
                 }
                 .map_err(db::db_error)?;
@@ -396,9 +419,9 @@ impl Database {
                 id
             } else {
                 tx.execute(
-                    "INSERT INTO vouchers (number, date, type, description)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![number, date, voucher_type, description],
+                    "INSERT INTO vouchers (number, date, type, description, fiscal_year_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![number, date, voucher_type, description, fiscal_year_id],
                 )
                 .map_err(db::db_error)?;
                 tx.last_insert_rowid()
@@ -434,6 +457,24 @@ impl Database {
                 ).map_err(db::db_error)?;
             }
 
+            let after = serde_json::json!({
+                "number": number,
+                "date": date,
+                "type": voucher_type,
+                "description": description,
+                "fiscalYearId": fiscal_year_id,
+                "lineCount": lines.len(),
+            });
+            audit::log(
+                &tx,
+                if id > 0 { "update" } else { "create" },
+                "voucher",
+                Some(voucher_id),
+                None,
+                Some(&after.to_string()),
+                "",
+            )?;
+
             tx.commit().map_err(db::db_error)?;
             fetch_voucher_by_id(conn, voucher_id)
         })
@@ -459,9 +500,18 @@ impl Database {
             let tx = conn.transaction().map_err(db::db_error)?;
             let current = tx
                 .query_row(
-                    "SELECT updated_at, is_temporary FROM vouchers WHERE id = ?1",
+                    "SELECT v.updated_at, v.is_temporary, COALESCE(f.status, '')
+                       FROM vouchers v
+                       LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id
+                      WHERE v.id = ?1",
                     params![id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)? != 0,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(db::db_error)?
@@ -469,6 +519,11 @@ impl Database {
 
             if !current.1 {
                 return Err("این سند قبلاً دائمی شده است.".to_string());
+            }
+            if !current.2.is_empty() && current.2 != "open" {
+                return Err(
+                    "سند در سال مالی بسته یا نهایی قرار دارد و قابل تغییر نیست.".to_string()
+                );
             }
             if current.0 != expected {
                 return Err("سند پس از باز شدن تغییر کرده است؛ دوباره بارگذاری کنید.".to_string());
@@ -487,6 +542,16 @@ impl Database {
                 return Err("دائمی‌کردن سند انجام نشد؛ سند را دوباره بارگذاری کنید.".to_string());
             }
 
+            audit::log(
+                &tx,
+                "finalize",
+                "voucher",
+                Some(id),
+                Some("{\"isTemporary\":true}"),
+                Some("{\"isTemporary\":false}"),
+                "",
+            )?;
+
             tx.commit().map_err(db::db_error)?;
             fetch_voucher_by_id(conn, id)
         })
@@ -502,19 +567,36 @@ impl Database {
             .ok_or_else(|| "نسخه سند مشخص نیست؛ سند را دوباره بارگذاری کنید.".to_string())?
             .to_string();
         self.with_conn(move |conn| {
-            let current = conn
+            let tx = conn.transaction().map_err(db::db_error)?;
+            let current = tx
                 .query_row(
-                    "SELECT updated_at, is_temporary FROM vouchers WHERE id = ?1",
+                    "SELECT v.updated_at, v.is_temporary, COALESCE(f.status, ''), v.number, v.date
+                       FROM vouchers v
+                       LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id
+                      WHERE v.id = ?1",
                     params![id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)? != 0,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(db::db_error)?;
-            let Some((current, is_temporary)) = current else {
+            let Some((current, is_temporary, year_status, number, date)) = current else {
                 return Err("سند حسابداری یافت نشد.".to_string());
             };
             if !is_temporary {
                 return Err("این سند دائمی است و قابل حذف نیست.".to_string());
+            }
+            if !year_status.is_empty() && year_status != "open" {
+                return Err(
+                    "سند در سال مالی بسته یا نهایی قرار دارد و قابل حذف نیست.".to_string(),
+                );
             }
             if current != expected {
                 return Err(
@@ -522,7 +604,7 @@ impl Database {
                         .to_string(),
                 );
             }
-            let affected = conn
+            let affected = tx
                 .execute(
                     "DELETE FROM vouchers WHERE id = ?1 AND updated_at = ?2",
                     params![id, expected],
@@ -534,6 +616,16 @@ impl Database {
                         .to_string(),
                 );
             }
+            audit::log(
+                &tx,
+                "delete",
+                "voucher",
+                Some(id),
+                Some(&serde_json::json!({ "number": number, "date": date }).to_string()),
+                None,
+                "",
+            )?;
+            tx.commit().map_err(db::db_error)?;
             Ok(())
         })
     }

@@ -167,8 +167,8 @@ function validateDraft(draft) {
     const savedAccountMatches = !!savedLine
       && digitsOnly(savedLine.accountCode) === line.accountCode
       && digitsOnly(savedLine.detail1Code || '') === digitsOnly(line.detail1Code || '');
-    if (!savedAccountMatches && account.isActive === false) {
-      return `حساب «${account.name}» غیرفعال است و برای ردیف جدید سند قابل انتخاب نیست.`;
+    if (!savedAccountMatches && !accountChainActive(account)) {
+      return `حساب «${account.name}» یا یکی از والدین آن غیرفعال است و برای ردیف جدید سند قابل انتخاب نیست.`;
     }
     if (!savedAccountMatches && (![1, 2].includes(Number(account.level)) || !account.isPostable)) {
       return `حساب پایه «${account.name}» باید از سطح کل یا معینِ قابل ثبت باشد.`;
@@ -180,8 +180,8 @@ function validateDraft(draft) {
           || String(detail.groupCode) !== String(account.groupCode)) {
         return `تفصیلی ردیف ${rowNo} باید فرزند مستقیم همان حساب معین باشد.`;
       }
-      if (detail.isActive === false && !savedAccountMatches) {
-        return `حساب تفصیلی «${detail.name}» غیرفعال است و برای ردیف جدید قابل استفاده نیست.`;
+      if (!accountChainActive(detail) && !savedAccountMatches) {
+        return `حساب تفصیلی «${detail.name}» یا یکی از والدین آن غیرفعال است و برای ردیف جدید قابل استفاده نیست.`;
       }
     }
     if (!line.debit && !line.credit) return `مبلغ ردیف ${rowNo} را وارد کنید.`;

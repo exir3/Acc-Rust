@@ -14,9 +14,12 @@
 //! keeps stable command-facing names while the persisted voucher model evolves.
 
 mod accounts;
+pub(crate) mod audit;
 mod backup;
 mod common;
 mod connection;
+mod fiscal_years;
+mod legacy;
 mod model;
 mod schema;
 mod settings;
@@ -26,10 +29,14 @@ pub(crate) use backup::{prune_backup_files, prune_restore_safety_files};
 pub use common::{normalize_digits, DB_FILE_NAME};
 pub use connection::initialize;
 pub use model::{
-    Account, AccountGroup, AccountGroupList, AccountList, BulkAccountDeleteFailure,
-    BulkAccountDeleteResult, Database, Limits, NewAccount, Settings, ACCOUNT_GROUP_SECTIONS,
-    ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES, MAX_ACCOUNT_LEVEL,
+    Account, AccountGroup, AccountGroupList, AccountList, AuditLogEntry, AuditLogList,
+    BulkAccountDeleteFailure, BulkAccountDeleteResult, Database, FiscalYear, FiscalYearList,
+    LegacyLevel4Account, LegacyLevel4Analysis, LegacyLevel4MigrationResult, Limits, NewAccount,
+    Settings, ACCOUNT_GROUP_SECTIONS, ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES, MAX_ACCOUNT_LEVEL,
 };
+
+pub(crate) use fiscal_years::ensure_open_period;
+pub(crate) use legacy::legacy_migration_backup_path;
 
 pub(crate) use common::{
     db_error, normalize_code, to_fa_digits, OTHER_NON_OPERATING_GROUP_CODE,

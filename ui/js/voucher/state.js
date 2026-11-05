@@ -45,9 +45,26 @@ function accountAllowedForNewLine(account, row = null) {
   // pass the normal active/postable checks.
   const savedRow = !!row && !!row.dataset.lineId
     && row.dataset.savedAccount === digitsOnly(account.code);
-  const activeOk = account.isActive !== false || savedRow;
+  // An inactive ancestor makes every descendant unusable for a new line,
+  // even when the leaf itself still says it is active.
+  const activeOk = savedRow || accountChainActive(account);
   const postableOk = account.isPostable || (Number(account.level) > 3 && savedRow);
   return activeOk && postableOk;
+}
+
+/// True when the account and every ancestor up to the root are active.
+function accountChainActive(account) {
+  if (!account) return false;
+  const seen = new Set();
+  let current = account;
+  while (current) {
+    if (current.isActive === false) return false;
+    const parentCode = digitsOnly(current.parentCode || '');
+    if (!parentCode || seen.has(parentCode)) break;
+    seen.add(parentCode);
+    current = accountForCode(parentCode);
+  }
+  return true;
 }
 
 function levelLabel(level) {

@@ -13,14 +13,14 @@ PAGES.balance = {
           toast('تاریخ ترازنامه معتبر نیست؛ آن را اصلاح کنید.', 'error');
           return;
         }
-        printWithFeedback('open_balance_sheet_preview', { asOf });
+        printWithFeedback('open_balance_sheet_preview', { asOf, scope: normalizeReportScope(state.filters.balance.scope) });
       },
     },
     { label: 'به‌روزرسانی', icon: 'i-refresh', onClick: () => navigate('balance', { force: true }) },
   ],
   load: async () => {
     const f = state.filters.balance;
-    return invoke('get_balance_sheet', { asOf: f.asOf });
+    return invoke('get_balance_sheet', { asOf: f.asOf, scope: normalizeReportScope(f.scope) });
   },
   render: renderBalanceSheet,
   bind: bindFilterOnly,
@@ -34,6 +34,7 @@ function balanceFilterBar() {
       <label for="bsDate">تا تاریخ</label>
       <input id="bsDate" class="input" name="asOf" data-date type="text" inputmode="numeric" value="${esc(f.asOf)}" placeholder="۱۴۰۵/۱۲/۲۹" />
     </div>
+    ${reportScopeField('balance', 'bsScope')}
     <button class="btn btn-primary" type="submit">${icon('i-search')}<span>محاسبه ترازنامه</span></button>
     <button class="btn" type="button" data-reset>${icon('i-refresh')}<span>بازنشانی</span></button>
   </form>`;

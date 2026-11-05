@@ -171,14 +171,14 @@ function updateRowAccount(row, final = false) {
 
   if (input) {
     input.title = account
-      ? `${account.code} — ${account.name}${accountAllowedForNewLine(account, row) ? '' : account.isActive === false ? ' (غیرفعال)' : ' (قابل ثبت نیست)'}`
+      ? `${account.code} — ${account.name}${accountAllowedForNewLine(account, row) ? '' : !accountChainActive(account) ? ' (غیرفعال)' : ' (قابل ثبت نیست)'}`
       : 'برای انتخاب حساب پایه Space یا F4 را بزنید';
     if (accountAllowedForNewLine(account, row)) input.classList.remove('is-invalid');
     else if (!code) input.classList.remove('is-invalid');
     else if (final) input.classList.add('is-invalid');
   }
   if (detailInput) {
-    const validDetail = !!detail && (detail.isActive !== false ||
+    const validDetail = !!detail && (accountChainActive(detail) ||
       (row.dataset.lineId && row.dataset.savedDetail1 === detailCode));
     detailInput.title = detail
       ? `${detail.code} — ${detail.name}${validDetail ? '' : ' (غیرفعال یا نامعتبر)'}`

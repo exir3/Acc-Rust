@@ -54,17 +54,19 @@ pub(crate) fn update_account_group(
     name: String,
     group_type: String,
     default_section: Option<String>,
+    confirm_reclassification: Option<bool>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::AccountGroup, String> {
     require_window(&window, &["main", "account-groups"])?;
-    let group = state.database.update_account_group(
+    let group = state.database.update_account_group_confirmed(
         id,
         &code,
         &name,
         &group_type,
         default_section.as_deref().unwrap_or(""),
+        confirm_reclassification.unwrap_or(false),
     )?;
     notify_accounts_changed(&app);
     Ok(group)
@@ -119,7 +121,10 @@ pub(crate) fn create_account(
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
-    require_window(&window, &["main", "voucher", "account-groups", "account-definition"])?;
+    require_window(
+        &window,
+        &["main", "voucher", "account-groups", "account-definition"],
+    )?;
     let account = state.database.create_account_active(
         &code,
         &name,

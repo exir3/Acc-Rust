@@ -191,11 +191,17 @@ fn assert_active_account(
         if !seen.insert(current.clone()) {
             return Err("چرخه‌ای در سلسله‌مراتب حساب‌ها شناسایی شد.".to_string());
         }
-        let row = accounts
-            .get(&current)
-            .ok_or_else(|| format!("حساب {} یا یکی از والدهای آن یافت نشد.", db::to_fa_digits(&current)))?;
+        let row = accounts.get(&current).ok_or_else(|| {
+            format!(
+                "حساب {} یا یکی از والدهای آن یافت نشد.",
+                db::to_fa_digits(&current)
+            )
+        })?;
         if row.is_active == 0 {
-            return Err(format!("حساب «{}» یا یکی از حساب‌های بالاتر آن غیرفعال است.", row.name));
+            return Err(format!(
+                "حساب «{}» یا یکی از حساب‌های بالاتر آن غیرفعال است.",
+                row.name
+            ));
         }
         if row.parent_code.is_empty() {
             if row.level != 1 {
@@ -204,7 +210,10 @@ fn assert_active_account(
             break;
         }
         let parent = accounts.get(&row.parent_code).ok_or_else(|| {
-            format!("حساب بالاتر {} یافت نشد.", db::to_fa_digits(&row.parent_code))
+            format!(
+                "حساب بالاتر {} یافت نشد.",
+                db::to_fa_digits(&row.parent_code)
+            )
         })?;
         if parent.level != row.level - 1 || parent.group_code != row.group_code {
             return Err(format!(
@@ -226,9 +235,16 @@ pub(crate) fn normalize_voucher_line_accounts(
     let mut codes = Vec::with_capacity(lines.len() * 2);
     for (index, line) in lines.iter_mut().enumerate() {
         line.account_code = db::normalize_code(&line.account_code);
-        let explicit_detail = line.detail1_code.as_deref().map(db::normalize_code).unwrap_or_default();
+        let explicit_detail = line
+            .detail1_code
+            .as_deref()
+            .map(db::normalize_code)
+            .unwrap_or_default();
         if line.account_code.is_empty() {
-            return Err(format!("کد حساب ردیف {} الزامی است.", db::to_fa_digits(index + 1)));
+            return Err(format!(
+                "کد حساب ردیف {} الزامی است.",
+                db::to_fa_digits(index + 1)
+            ));
         }
         codes.push(line.account_code.clone());
         if !explicit_detail.is_empty() {
@@ -238,19 +254,36 @@ pub(crate) fn normalize_voucher_line_accounts(
     let accounts = load_voucher_accounts(conn, &codes)?;
 
     for (index, line) in lines.iter_mut().enumerate() {
-        let explicit_detail = line.detail1_code.as_deref().map(db::normalize_code).unwrap_or_default();
-        let account = accounts
-            .get(&line.account_code)
-            .ok_or_else(|| format!("حساب ردیف {} با کد {} یافت نشد.", db::to_fa_digits(index + 1), db::to_fa_digits(&line.account_code)))?;
+        let explicit_detail = line
+            .detail1_code
+            .as_deref()
+            .map(db::normalize_code)
+            .unwrap_or_default();
+        let account = accounts.get(&line.account_code).ok_or_else(|| {
+            format!(
+                "حساب ردیف {} با کد {} یافت نشد.",
+                db::to_fa_digits(index + 1),
+                db::to_fa_digits(&line.account_code)
+            )
+        })?;
         if account.level == 3 {
             if !explicit_detail.is_empty() {
-                return Err(format!("ردیف {} هم حساب سطح ۳ و هم تفصیلی جداگانه دارد؛ حساب پایه را انتخاب کنید.", db::to_fa_digits(index + 1)));
+                return Err(format!(
+                    "ردیف {} هم حساب سطح ۳ و هم تفصیلی جداگانه دارد؛ حساب پایه را انتخاب کنید.",
+                    db::to_fa_digits(index + 1)
+                ));
             }
             let Some(parent) = accounts.get(&account.parent_code) else {
-                return Err(format!("تفصیلی ردیف {} والد معتبر ندارد.", db::to_fa_digits(index + 1)));
+                return Err(format!(
+                    "تفصیلی ردیف {} والد معتبر ندارد.",
+                    db::to_fa_digits(index + 1)
+                ));
             };
             if parent.level != 2 || parent.group_code != account.group_code {
-                return Err(format!("تفصیلی ردیف {} باید فرزند مستقیم یک حساب معین از همان گروه باشد.", db::to_fa_digits(index + 1)));
+                return Err(format!(
+                    "تفصیلی ردیف {} باید فرزند مستقیم یک حساب معین از همان گروه باشد.",
+                    db::to_fa_digits(index + 1)
+                ));
             }
             line.detail1_code = Some(line.account_code.clone());
             line.account_code = account.parent_code.clone();
@@ -286,10 +319,17 @@ fn validate_base_detail_pair(
             || detail_row.parent_code != base_code
             || detail_row.group_code != base.group_code
         {
-            return Err(format!("تفصیلی {} باید از سطح ۳ و فرزند مستقیم معین {} از همان گروه باشد.", db::to_fa_digits(detail), db::to_fa_digits(base_code)));
+            return Err(format!(
+                "تفصیلی {} باید از سطح ۳ و فرزند مستقیم معین {} از همان گروه باشد.",
+                db::to_fa_digits(detail),
+                db::to_fa_digits(base_code)
+            ));
         }
         if detail_row.is_active == 0 {
-            return Err(format!("حساب تفصیلی {} غیرفعال است.", db::to_fa_digits(detail)));
+            return Err(format!(
+                "حساب تفصیلی {} غیرفعال است.",
+                db::to_fa_digits(detail)
+            ));
         }
         assert_active_account(accounts, detail)?;
     }
@@ -318,30 +358,54 @@ pub(crate) fn validate_voucher_line_accounts(
         .collect::<Vec<_>>();
     let accounts = load_voucher_accounts(conn, &codes)?;
 
-    let saved_lines: BTreeMap<i64, (String, Option<String>)> = if let Some(id) = voucher_id.filter(|id| *id > 0) {
+    let saved_lines: BTreeMap<i64, (String, Option<String>)> = if let Some(id) =
+        voucher_id.filter(|id| *id > 0)
+    {
         let mut statement = conn.prepare("SELECT id, account_code, NULLIF(detail1_code,'') FROM voucher_lines WHERE voucher_id = ?1").map_err(db::db_error)?;
-        let rows = statement.query_map(params![id], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
+        let rows = statement
+            .query_map(params![id], |row| {
+                Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))
+            })
             .map_err(db::db_error)?
             .collect::<rusqlite::Result<BTreeMap<_, _>>>()
             .map_err(db::db_error)?;
         rows
-    } else { BTreeMap::new() };
+    } else {
+        BTreeMap::new()
+    };
 
     let mut used_line_ids = HashSet::with_capacity(lines.len());
     for (index, line) in lines.iter().enumerate() {
         let base = db::normalize_code(&line.account_code);
-        let detail = line.detail1_code.as_deref().map(db::normalize_code).filter(|v| !v.is_empty());
-        if base.is_empty() { return Err(format!("کد حساب ردیف {} الزامی است.", db::to_fa_digits(index + 1))); }
+        let detail = line
+            .detail1_code
+            .as_deref()
+            .map(db::normalize_code)
+            .filter(|v| !v.is_empty());
+        if base.is_empty() {
+            return Err(format!(
+                "کد حساب ردیف {} الزامی است.",
+                db::to_fa_digits(index + 1)
+            ));
+        }
         let saved_line = match line.id {
             Some(line_id) => {
-                if !used_line_ids.insert(line_id) { return Err(format!("شناسه ردیف ذخیره‌شده در ردیف {} تکرار شده است؛ سند را دوباره بارگذاری کنید.", db::to_fa_digits(index + 1))); }
-                let saved_pair = saved_lines.get(&line_id).ok_or_else(|| format!("ردیف {} به این سند تعلق ندارد؛ سند را دوباره بارگذاری کنید.", db::to_fa_digits(index + 1)))?;
+                if !used_line_ids.insert(line_id) {
+                    return Err(format!("شناسه ردیف ذخیره‌شده در ردیف {} تکرار شده است؛ سند را دوباره بارگذاری کنید.", db::to_fa_digits(index + 1)));
+                }
+                let saved_pair = saved_lines.get(&line_id).ok_or_else(|| {
+                    format!(
+                        "ردیف {} به این سند تعلق ندارد؛ سند را دوباره بارگذاری کنید.",
+                        db::to_fa_digits(index + 1)
+                    )
+                })?;
                 (saved_pair.0 == base && saved_pair.1 == detail).then_some(saved_pair)
             }
             None => None,
         };
         if saved_line.is_none() {
-            validate_base_detail_pair(&accounts, &base, detail.as_deref()).map_err(|error| format!("ردیف {}: {error}", db::to_fa_digits(index + 1)))?;
+            validate_base_detail_pair(&accounts, &base, detail.as_deref())
+                .map_err(|error| format!("ردیف {}: {error}", db::to_fa_digits(index + 1)))?;
         }
     }
     Ok(())
@@ -367,7 +431,11 @@ pub(crate) fn assert_voucher_type_matches_lines(
     };
 
     for line in lines {
-        let effective_code = line.detail1_code.as_deref().filter(|v| !v.is_empty()).unwrap_or(&line.account_code);
+        let effective_code = line
+            .detail1_code
+            .as_deref()
+            .filter(|v| !v.is_empty())
+            .unwrap_or(&line.account_code);
         let class = account_class_for_type_rule(conn, effective_code)?;
         if forbidden.contains(&class) {
             return Err(format!(

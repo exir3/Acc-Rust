@@ -2,11 +2,16 @@
 
 use tauri::{AppHandle, State, WebviewWindow};
 
-use crate::commands::state::{
-    lock, report_meta, require_preview_window, require_window, AppState,
-};
+use crate::commands::state::{lock, report_meta, require_preview_window, require_window, AppState};
 use crate::commands::windows::show_preview_window;
 use crate::report;
+use crate::vouchers::ReportScope;
+
+/// Official is the safe default for printed statements; temporary vouchers are
+/// included only when the caller explicitly asks for a working report.
+fn report_scope(scope: Option<String>) -> Result<ReportScope, String> {
+    ReportScope::parse(scope.as_deref().unwrap_or("official"))
+}
 
 /* ── Print preview ──────────────────────────────────────────── */
 
@@ -15,12 +20,15 @@ pub(crate) fn open_journal_preview(
     from: String,
     to: String,
     search: String,
+    scope: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher"])?;
-    let report = state.database.get_journal(&from, &to, &search)?;
+    let report = state
+        .database
+        .get_journal_scoped(&from, &to, &search, report_scope(scope)?)?;
     let meta = report_meta(&state)?;
     show_preview_window(&app, report::journal_print_doc(&report, &meta))
 }
@@ -30,20 +38,26 @@ pub(crate) fn open_ledger_preview(
     account_code: String,
     from: String,
     to: String,
+    scope: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher"])?;
-    let report = state.database.get_ledger(&account_code, &from, &to)?;
+    let report =
+        state
+            .database
+            .get_ledger_scoped(&account_code, &from, &to, report_scope(scope)?)?;
     let meta = report_meta(&state)?;
     show_preview_window(&app, report::ledger_print_doc(&report, &meta))
 }
 
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn open_trial_balance_preview(
     from: String,
     to: String,
+    scope: Option<String>,
     account_from: Option<String>,
     account_to: Option<String>,
     show_zero: Option<bool>,
@@ -57,13 +71,14 @@ pub(crate) fn open_trial_balance_preview(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher", "trial-balance"])?;
-    let report = state.database.get_trial_balance_filtered(
+    let report = state.database.get_trial_balance_filtered_scoped(
         &from,
         &to,
         account_from.as_deref().unwrap_or(""),
         account_to.as_deref().unwrap_or(""),
         show_zero.unwrap_or(false),
         multi_level.unwrap_or(true),
+        report_scope(scope)?,
     )?;
     let mut meta = report_meta(&state)?;
     meta.show_print_date_time = show_print_date_time.unwrap_or(true);
@@ -84,12 +99,15 @@ pub(crate) fn open_trial_balance_preview(
 pub(crate) fn open_income_statement_preview(
     from: String,
     to: String,
+    scope: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher"])?;
-    let report = state.database.get_income_statement(&from, &to)?;
+    let report = state
+        .database
+        .get_income_statement_scoped(&from, &to, report_scope(scope)?)?;
     let meta = report_meta(&state)?;
     show_preview_window(&app, report::income_statement_print_doc(&report, &meta))
 }
@@ -97,12 +115,15 @@ pub(crate) fn open_income_statement_preview(
 #[tauri::command(async)]
 pub(crate) fn open_balance_sheet_preview(
     as_of: String,
+    scope: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher"])?;
-    let report = state.database.get_balance_sheet(&as_of)?;
+    let report = state
+        .database
+        .get_balance_sheet_scoped(&as_of, report_scope(scope)?)?;
     let meta = report_meta(&state)?;
     let document = report::balance_sheet_print_doc(&report, &meta)?;
     show_preview_window(&app, document)
@@ -142,6 +163,7 @@ pub(crate) fn save_report_html(
     default_name: String,
     html: String,
     window: WebviewWindow,
+    state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     require_preview_window(&window)?;
     let Some(picked) = rfd::FileDialog::new()
@@ -157,5 +179,8 @@ pub(crate) fn save_report_html(
         path.push_str(".html");
     }
     std::fs::write(&path, html).map_err(|e| format!("ذخیره فایل ناموفق بود: {e}"))?;
+    if let Ok(canonical) = std::fs::canonicalize(&path) {
+        lock(&state.report_files).insert(canonical);
+    }
     Ok(Some(path))
 }

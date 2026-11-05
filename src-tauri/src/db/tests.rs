@@ -4,11 +4,13 @@ use super::*;
 use crate::db::backup::{
     prune_backup_files, prune_restore_safety_files, validate_backup_connection,
 };
-use crate::db::common::{BULK_DELETE_SNAPSHOT_KEY, LEGACY_DB_FILE_NAME, LEGACY_IDENTIFIER};
+use crate::db::common::{
+    BULK_DELETE_SNAPSHOT_KEY, CURRENT_SCHEMA_VERSION, LEGACY_DB_FILE_NAME, LEGACY_IDENTIFIER,
+};
 use crate::db::connection::migrate_legacy_database;
 use crate::vouchers::{
-    DEFAULT_JOURNAL_PAGE_SIZE, DEFAULT_VOUCHER_PAGE_SIZE, MAX_AMOUNT, MAX_DESCRIPTION,
-    MAX_LINE_DESCRIPTION, MAX_LINES, MAX_PAGE_SIZE, MAX_VOUCHER_NUMBER,
+    DEFAULT_JOURNAL_PAGE_SIZE, DEFAULT_VOUCHER_PAGE_SIZE, MAX_AMOUNT, MAX_DESCRIPTION, MAX_LINES,
+    MAX_LINE_DESCRIPTION, MAX_PAGE_SIZE, MAX_VOUCHER_NUMBER,
 };
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
@@ -29,15 +31,7 @@ mod tests {
         db.create_account("9901", "کل با کد سفارشی", 1, "1", "debtor", "", true)
             .unwrap();
         let child = db
-            .create_account(
-                "881122",
-                "معین با کد مستقل",
-                2,
-                "1",
-                "debtor",
-                "9901",
-                true,
-            )
+            .create_account("881122", "معین با کد مستقل", 2, "1", "debtor", "9901", true)
             .unwrap();
 
         assert_eq!(child.parent_code, "9901");
@@ -311,7 +305,8 @@ mod tests {
             "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
              VALUES (?1, 1, '110201001', 750, 0), (?1, 2, '410101', 0, 750)",
             params![voucher_id],
-        ).unwrap();
+        )
+        .unwrap();
         drop(old);
 
         let db = file_database(&active_path);
@@ -347,8 +342,7 @@ mod tests {
             )
             .map_err(db_error)?;
             let voucher_id = conn.last_insert_rowid();
-            insert_test_line(conn, voucher_id, 1, "110101", None, 100, 0)
-            .map_err(db_error)?;
+            insert_test_line(conn, voucher_id, 1, "110101", None, 100, 0).map_err(db_error)?;
             Ok(())
         })
         .unwrap();
@@ -510,14 +504,14 @@ mod tests {
         )
         .unwrap();
         let voucher_id = conn.last_insert_rowid();
-        insert_test_line(&conn, voucher_id, 1, "110101", None, 1000, 0)
-        .unwrap();
+        insert_test_line(&conn, voucher_id, 1, "110101", None, 1000, 0).unwrap();
         assert!(validate_backup_connection(&conn)
             .unwrap_err()
             .contains("تراز"));
         conn.execute("DELETE FROM voucher_lines", []).unwrap();
 
-        conn.execute("DROP TRIGGER voucher_lines_account_pair_insert", []).unwrap();
+        conn.execute("DROP TRIGGER voucher_lines_account_pair_insert", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO voucher_lines
                 (voucher_id, row_no, account_id, account_code, detail1_code, debit, credit)
@@ -743,9 +737,7 @@ mod tests {
             .create_account("99301", "معین آزمایشی", 2, "1", "debtor", "993", true)
             .unwrap();
 
-        let result = db
-            .delete_accounts_bulk(vec![parent.id, child.id])
-            .unwrap();
+        let result = db.delete_accounts_bulk(vec![parent.id, child.id]).unwrap();
         assert_eq!(result.deleted_count, 1);
         assert_eq!(result.blocked.len(), 1);
         assert_eq!(result.blocked[0].code, "993");
@@ -832,7 +824,9 @@ mod tests {
             .find(|account| {
                 account.level == 1
                     && account.group_code == "1"
-                    && all_accounts.iter().any(|child| child.parent_code == account.code)
+                    && all_accounts
+                        .iter()
+                        .any(|child| child.parent_code == account.code)
             })
             .unwrap()
             .clone();
@@ -840,14 +834,8 @@ mod tests {
             .create_account_group("90", "گروه مقصد آزمون", &root.group_type, "")
             .unwrap();
 
-        db.update_account(
-            root.id,
-            &root.name,
-            &target_group.code,
-            &root.nature,
-            "",
-        )
-        .unwrap();
+        db.update_account(root.id, &root.name, &target_group.code, &root.nature, "")
+            .unwrap();
 
         let accounts = db.list_accounts().unwrap().accounts;
         let mut branch = vec![root.code.clone()];
@@ -896,7 +884,15 @@ mod tests {
 
         // The caller flag is ignored: WebApp forces is_postable for levels 1 and 2.
         let subsidiary = db
-            .create_account("99501", "معین همیشه قابل ثبت", 2, "1", "debtor", "995", false)
+            .create_account(
+                "99501",
+                "معین همیشه قابل ثبت",
+                2,
+                "1",
+                "debtor",
+                "995",
+                false,
+            )
             .unwrap();
         assert!(subsidiary.is_postable);
 
@@ -997,11 +993,13 @@ mod tests {
             )
             .unwrap();
         let account_code: String = conn
-            .query_row("SELECT code FROM accounts WHERE code = '110101'", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT code FROM accounts WHERE code = '110101'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!(version, "6");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION.to_string());
         // The unused legacy column is no longer part of the schema or migrations.
         assert_eq!(legacy_column_count, 0);
         assert_eq!(account_code, "110101");
@@ -1037,8 +1035,14 @@ mod tests {
         })
         .unwrap();
 
-        let updated_group = db
+        let error = db
             .update_account_group(group.id, &group.code, &group.name, "بدهی", "")
+            .unwrap_err();
+        assert!(error.contains("ردیف سند ثبت‌شده"));
+
+        // An explicit confirmation still lets the operator reclassify.
+        let updated_group = db
+            .update_account_group_confirmed(group.id, &group.code, &group.name, "بدهی", "", true)
             .unwrap();
         assert_eq!(updated_group.group_type, "بدهی");
 
@@ -1124,8 +1128,7 @@ mod tests {
             )
             .map_err(db_error)?;
             let id = conn.last_insert_rowid();
-            insert_test_line(conn, id, 1, &account.code, None, 1000, 0)
-            .map_err(db_error)?;
+            insert_test_line(conn, id, 1, &account.code, None, 1000, 0).map_err(db_error)?;
             Ok(())
         })
         .unwrap();
@@ -1196,31 +1199,42 @@ mod tests {
             "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
              VALUES (?1, 1, '110201001', 750, 0)",
             params![voucher_id],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
              VALUES (?1, 2, '410101', 0, 750)",
             params![voucher_id],
-        ).unwrap();
+        )
+        .unwrap();
 
         apply_schema_migrations(&mut conn).unwrap();
         let rows: Vec<(String, Option<String>, i64, i64)> = {
             let mut stmt = conn.prepare(
                 "SELECT account_code, detail1_code, debit, credit FROM voucher_lines WHERE voucher_id=?1 ORDER BY row_no"
             ).unwrap();
-            stmt.query_map(params![voucher_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
-                .unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
+            stmt.query_map(params![voucher_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
         };
-        assert_eq!(rows[0], ("110201".to_string(), Some("110201001".to_string()), 750, 0));
+        assert_eq!(
+            rows[0],
+            ("110201".to_string(), Some("110201001".to_string()), 750, 0)
+        );
         assert_eq!(rows[1], ("410101".to_string(), None, 0, 750));
-        let fk_issues: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)
-        ).unwrap();
+        let fk_issues: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(fk_issues, 0);
     }
 
     #[test]
-    fn schema_v5_refuses_level4_data_without_mutating_the_v4_database() {
+    fn schema_v9_preserves_level4_data_as_pending_without_losing_totals() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         apply_base_schema(&conn).unwrap();
@@ -1241,26 +1255,147 @@ mod tests {
             "INSERT INTO voucher_lines (voucher_id, row_no, account_code, debit, credit)
              VALUES (?1, 1, '110201001001', 1000, 0)",
             params![voucher_id],
-        ).unwrap();
+        )
+        .unwrap();
 
-        let error = apply_schema_migrations(&mut conn).unwrap_err();
-        assert!(error.contains("سطح ۴"));
-        let version: String = conn.query_row(
-            "SELECT value FROM app_meta WHERE key='schema_version'", [], |row| row.get(0)
-        ).unwrap();
-        let level4_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM accounts WHERE level=4", [], |row| row.get(0)
-        ).unwrap();
-        let line_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM voucher_lines WHERE voucher_id=?1", params![voucher_id], |row| row.get(0)
-        ).unwrap();
-        let has_account_id: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('voucher_lines') WHERE name='account_id'", [], |row| row.get(0)
-        ).unwrap();
-        assert_eq!(version, "4");
+        apply_schema_migrations(&mut conn).unwrap();
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key='schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let level4_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM accounts WHERE level=4", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let (line_count, account_id, pending, account_code): (i64, Option<i64>, i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(account_id), MAX(legacy_level4_pending), MAX(account_code)
+                   FROM voucher_lines WHERE voucher_id=?1",
+                params![voucher_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION.to_string());
         assert_eq!(level4_count, 1);
         assert_eq!(line_count, 1);
-        assert_eq!(has_account_id, 0);
+        assert_eq!(account_id, None);
+        assert_eq!(pending, 1);
+        assert_eq!(account_code, "110201001001");
+    }
+
+    #[test]
+    fn reopening_does_not_recreate_a_deleted_fiscal_year() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        apply_base_schema(&conn).unwrap();
+        seed_default_groups(&mut conn).unwrap();
+        seed_default_accounts(&mut conn).unwrap();
+        seed_default_settings(&conn).unwrap();
+
+        // The upgrade turns the textual default year into a real period.
+        apply_schema_migrations(&mut conn).unwrap();
+        let years: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fiscal_years", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(years, 1);
+
+        // Deleting an empty year is an explicit operator action; the next
+        // launch must not silently recreate it from the display setting.
+        conn.execute("DELETE FROM fiscal_years", []).unwrap();
+        apply_schema_migrations(&mut conn).unwrap();
+        let years: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fiscal_years", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(years, 0);
+    }
+
+    #[test]
+    fn explicit_level4_migration_converts_convertible_lines_and_removes_account() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-level4-migration-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = file_database(&dir.join("hesabdari.sqlite3"));
+
+        let voucher_id = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO accounts
+                        (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
+                     VALUES ('110201001001', 'تفصیلی سطح چهار قدیمی', 4, '1', 'debtor', '110201001', 'حساب تفصیلی', 1)",
+                    [],
+                )
+                .map_err(db_error)?;
+                conn.execute(
+                    "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'سند حسابداری عادی')",
+                    [],
+                )
+                .map_err(db_error)?;
+                let voucher_id = conn.last_insert_rowid();
+                conn.execute(
+                    "INSERT INTO voucher_lines
+                        (voucher_id, row_no, account_id, account_code, legacy_level4_pending, debit, credit)
+                     VALUES (?1, 1, NULL, '110201001001', 1, 1000, 0)",
+                    params![voucher_id],
+                )
+                .map_err(db_error)?;
+                conn.execute(
+                    "INSERT INTO voucher_lines
+                        (voucher_id, row_no, account_id, account_code, legacy_level4_pending, debit, credit)
+                     SELECT ?1, 2, id, code, 0, 0, 1000 FROM accounts WHERE code = '110101'",
+                    params![voucher_id],
+                )
+                .map_err(db_error)?;
+                Ok(voucher_id)
+            })
+            .unwrap();
+
+        let analysis = db.analyze_legacy_level4().unwrap();
+        assert_eq!(analysis.account_count, 1);
+        assert_eq!(analysis.line_count, 1);
+        assert_eq!(analysis.convertible_line_count, 1);
+        assert_eq!(analysis.ambiguous_line_count, 0);
+
+        let backup = dir.join("backup.sqlite3");
+        let result = db.apply_legacy_level4_migration(&backup).unwrap();
+        assert_eq!(result.converted_lines, 1);
+        assert_eq!(result.pending_lines, 0);
+        assert_eq!(result.removed_accounts, 1);
+        assert!(backup.is_file());
+
+        db.with_conn(|conn| {
+            let (account_code, detail1, pending, account_id): (
+                String,
+                Option<String>,
+                i64,
+                Option<i64>,
+            ) = conn
+                .query_row(
+                    "SELECT account_code, detail1_code, legacy_level4_pending, account_id
+                       FROM voucher_lines WHERE voucher_id=?1",
+                    params![voucher_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(db_error)?;
+            assert_eq!(account_code, "110201");
+            assert_eq!(detail1.as_deref(), Some("110201001"));
+            assert_eq!(pending, 0);
+            assert!(account_id.is_some());
+            let level4: i64 = conn
+                .query_row("SELECT COUNT(*) FROM accounts WHERE level=4", [], |row| {
+                    row.get(0)
+                })
+                .map_err(db_error)?;
+            assert_eq!(level4, 0);
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -1281,7 +1416,7 @@ mod tests {
             .map_err(db_error)?;
             let voucher_id = conn.last_insert_rowid();
             insert_test_line(conn, voucher_id, 1, "110201", Some("110201001"), 1000, 0)
-            .map_err(db_error)?;
+                .map_err(db_error)?;
             Ok(())
         })
         .unwrap();
@@ -1315,22 +1450,14 @@ mod tests {
             )
             .map_err(db_error)?;
             let voucher_id = conn.last_insert_rowid();
-            insert_test_line(conn, voucher_id, 1, "110201", None, 1000, 0)
-                .map_err(db_error)?;
-            insert_test_line(conn, voucher_id, 2, "410101", None, 0, 1000)
-                .map_err(db_error)?;
+            insert_test_line(conn, voucher_id, 1, "110201", None, 1000, 0).map_err(db_error)?;
+            insert_test_line(conn, voucher_id, 2, "410101", None, 0, 1000).map_err(db_error)?;
             Ok(())
         })
         .unwrap();
 
         let error = db
-            .update_account(
-                base.id,
-                &base.name,
-                &base.group_code,
-                &base.nature,
-                "1103",
-            )
+            .update_account(base.id, &base.name, &base.group_code, &base.nature, "1103")
             .unwrap_err();
         assert!(error.contains("اسناد ثبت‌شده"));
     }

@@ -6,7 +6,7 @@ pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
 /// `CURRENT_SCHEMA_VERSION`. Keeping the two constants separate is intentional:
 /// a fresh database must still run the v5 voucher-pair migration.
 pub(crate) const BASE_SCHEMA_VERSION: i64 = 4;
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 8;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 9;
 // A pre-delete snapshot must preserve legacy vouchers exactly as they existed,
 // even when an old document already violates the current balancing rules.
 pub(crate) const BULK_DELETE_SNAPSHOT_KEY: &str = "backup_snapshot_kind";
@@ -26,8 +26,7 @@ pub(crate) fn db_error(error: rusqlite::Error) -> String {
     // SQLite raises this when SUM() of integer columns leaves i64. The
     // numbers are not corrupted, but the raw English message is unhelpful.
     if error.to_string().contains("integer overflow") {
-        return "جمع مبالغ از محدوده عددی مجاز بیشتر است؛ بازه گزارش را کوچک‌تر کنید."
-            .to_string();
+        return "جمع مبالغ از محدوده عددی مجاز بیشتر است؛ بازه گزارش را کوچک‌تر کنید.".to_string();
     }
     if error.to_string().contains("voucher is permanent") {
         return "این سند دائمی است و تغییر، حذف یا انتقال ردیف‌های آن مجاز نیست.".to_string();

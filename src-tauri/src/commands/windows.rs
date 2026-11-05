@@ -120,7 +120,10 @@ pub(crate) fn open_voucher_window(
 
 /// Opens (or focuses) the voucher list in its own native OS window.
 #[tauri::command(async)]
-pub(crate) fn open_voucher_list_window(app: AppHandle, caller: WebviewWindow) -> Result<(), String> {
+pub(crate) fn open_voucher_list_window(
+    app: AppHandle,
+    caller: WebviewWindow,
+) -> Result<(), String> {
     require_window(&caller, &["main"])?;
     if let Some(window) = app.get_webview_window("voucher-list") {
         let _ = window.unminimize();
@@ -129,17 +132,14 @@ pub(crate) fn open_voucher_list_window(app: AppHandle, caller: WebviewWindow) ->
         return Ok(());
     }
 
-    let mut builder = WebviewWindowBuilder::new(
-        &app,
-        "voucher-list",
-        WebviewUrl::App("index.html".into()),
-    )
-    .title("لیست اسناد حسابداری")
-    .decorations(true)
-    .resizable(true)
-    .maximizable(false)
-    .minimizable(false)
-    .initialization_script("window.__IS_VOUCHER_LIST_POPUP__ = true;");
+    let mut builder =
+        WebviewWindowBuilder::new(&app, "voucher-list", WebviewUrl::App("index.html".into()))
+            .title("لیست اسناد حسابداری")
+            .decorations(true)
+            .resizable(true)
+            .maximizable(false)
+            .minimizable(false)
+            .initialization_script("window.__IS_VOUCHER_LIST_POPUP__ = true;");
 
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
@@ -168,7 +168,10 @@ pub(crate) fn open_voucher_list_window(app: AppHandle, caller: WebviewWindow) ->
 
 /// Opens (or focuses) the trial-balance report in its own native OS window.
 #[tauri::command(async)]
-pub(crate) fn open_trial_balance_window(app: AppHandle, caller: WebviewWindow) -> Result<(), String> {
+pub(crate) fn open_trial_balance_window(
+    app: AppHandle,
+    caller: WebviewWindow,
+) -> Result<(), String> {
     require_window(&caller, &["main"])?;
     if let Some(window) = app.get_webview_window("trial-balance") {
         let _ = window.unminimize();
@@ -177,17 +180,14 @@ pub(crate) fn open_trial_balance_window(app: AppHandle, caller: WebviewWindow) -
         return Ok(());
     }
 
-    let mut builder = WebviewWindowBuilder::new(
-        &app,
-        "trial-balance",
-        WebviewUrl::App("index.html".into()),
-    )
-    .title("تراز آزمایشی")
-    .decorations(true)
-    .resizable(true)
-    .maximizable(false)
-    .minimizable(false)
-    .initialization_script("window.__IS_TRIAL_BALANCE_POPUP__ = true;");
+    let mut builder =
+        WebviewWindowBuilder::new(&app, "trial-balance", WebviewUrl::App("index.html".into()))
+            .title("تراز آزمایشی")
+            .decorations(true)
+            .resizable(true)
+            .maximizable(false)
+            .minimizable(false)
+            .initialization_script("window.__IS_TRIAL_BALANCE_POPUP__ = true;");
 
     if let Ok(Some(monitor)) = app.primary_monitor() {
         let logical = monitor.size().to_logical::<f64>(monitor.scale_factor());
@@ -216,7 +216,10 @@ pub(crate) fn open_trial_balance_window(app: AppHandle, caller: WebviewWindow) -
 
 /// Called once by the voucher window to learn which voucher it should open.
 #[tauri::command]
-pub(crate) fn take_voucher_request(window: WebviewWindow, state: State<'_, AppState>) -> Option<i64> {
+pub(crate) fn take_voucher_request(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Option<i64> {
     if require_window(&window, &["voucher"]).is_err() {
         return None;
     }
@@ -273,7 +276,10 @@ pub(crate) fn open_account_groups_window(
 }
 
 #[tauri::command(async)]
-pub(crate) fn open_account_definition_window(app: AppHandle, caller: WebviewWindow) -> Result<(), String> {
+pub(crate) fn open_account_definition_window(
+    app: AppHandle,
+    caller: WebviewWindow,
+) -> Result<(), String> {
     require_window(&caller, &["main"])?;
     if let Some(window) = app.get_webview_window("account-definition") {
         let _ = window.unminimize();
@@ -322,7 +328,10 @@ pub(crate) fn open_account_definition_window(app: AppHandle, caller: WebviewWind
 /// window, with the same frame and classic accounting-form styling as the
 /// account-definition form.
 #[tauri::command(async)]
-pub(crate) fn open_bulk_voucher_delete_window(app: AppHandle, caller: WebviewWindow) -> Result<(), String> {
+pub(crate) fn open_bulk_voucher_delete_window(
+    app: AppHandle,
+    caller: WebviewWindow,
+) -> Result<(), String> {
     require_window(&caller, &["main"])?;
     if let Some(window) = app.get_webview_window("bulk-voucher-delete") {
         let _ = window.unminimize();

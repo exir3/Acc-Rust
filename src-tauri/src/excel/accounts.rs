@@ -39,7 +39,9 @@ pub(crate) struct AccountImportColumns {
     level3_nature: Option<usize>,
 }
 
-pub(crate) fn find_account_columns(range: &calamine::Range<Data>) -> Option<(usize, AccountImportColumns)> {
+pub(crate) fn find_account_columns(
+    range: &calamine::Range<Data>,
+) -> Option<(usize, AccountImportColumns)> {
     for (row_index, row) in range.rows().enumerate().take(HEADER_SCAN_ROWS) {
         let headers: Vec<String> = row
             .iter()
@@ -338,14 +340,10 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                 let has_code = !cell_text(&account_code_cells[level_index]).is_empty();
                 let has_name = !raw_name.trim().is_empty();
                 if has_code && !has_name {
-                    return Err(format!(
-                        "کد سطح {level} وارد شده اما عنوان آن خالی است."
-                    ));
+                    return Err(format!("کد سطح {level} وارد شده اما عنوان آن خالی است."));
                 }
                 if has_name && !has_code {
-                    return Err(format!(
-                        "عنوان سطح {level} وارد شده اما کد آن خالی است."
-                    ));
+                    return Err(format!("عنوان سطح {level} وارد شده اما کد آن خالی است."));
                 }
             }
             let mut parent_code = String::new();

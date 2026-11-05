@@ -28,11 +28,20 @@ PAGES.ledger = {
       f.accountCode = first.code;
     }
     if (!f.accountCode) return { accounts, report: null };
-    const report = await invoke('get_ledger', {
-      accountCode: f.accountCode,
-      from: f.from,
-      to: f.to,
-    });
+    const report = await loadPagedList(
+      'ledger',
+      LEDGER_PAGE_SIZE,
+      (offset) => invoke('get_ledger', {
+        accountCode: f.accountCode,
+        from: f.from,
+        to: f.to,
+        scope: normalizeReportScope(f.scope),
+        offset,
+        limit: LEDGER_PAGE_SIZE,
+      }),
+      (page) => page.rowCount ?? page.rows.length,
+      (page) => page.rows,
+    );
     return { accounts, report };
   },
   render: renderLedger,
@@ -67,6 +76,7 @@ function renderLedger(data) {
       <label for="lgTo">تا تاریخ</label>
       <input id="lgTo" class="input" name="to" data-date type="text" inputmode="numeric" value="${esc(f.to)}" placeholder="۱۴۰۵/۱۲/۲۹" />
     </div>
+    ${reportScopeField('ledger', 'lgScope')}
     <button class="btn btn-primary" type="submit">${icon('i-search')}<span>نمایش گردش</span></button>
     <button class="btn" type="button" data-reset>${icon('i-refresh')}<span>بازنشانی</span></button>
   </form>`;
@@ -134,11 +144,13 @@ function renderLedger(data) {
       </table>
     </div>
     ${report.rows.length ? '' : '<div class="note" style="margin-top:10px">در این بازه گردشی برای این حساب ثبت نشده است.</div>'}
-  </div>`;
+  </div>
+  ${loadMoreBar('ledger', report.rows.length, report.rowCount ?? report.rows.length, state.listOffsets.ledger)}`;
 }
 
 function bindLedger(root) {
   // [data-go] buttons are wired once by bindPageCommon.
   bindVoucherRowActions(root);
+  bindListPager(root);
 }
 

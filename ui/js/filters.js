@@ -14,11 +14,12 @@ function defaultFilters() {
   const from = year ? `${year}/01/01` : '';
   return {
     vouchers: { from, to: today, search: '' },
-    journal: { from, to: today, search: '' },
-    ledger: { accountCode: '', from, to: today },
+    journal: { from, to: today, search: '', scope: 'official' },
+    ledger: { accountCode: '', from, to: today, scope: 'official' },
     trial: {
       from,
       to: today,
+      scope: 'official',
       accountFrom: '',
       accountTo: '',
       showZero: true,
@@ -28,9 +29,32 @@ function defaultFilters() {
       showAccountName: true,
       showPrintDateTime: true,
     },
-    income: { from, to: today },
-    balance: { asOf: today },
+    income: { from, to: today, scope: 'official' },
+    balance: { asOf: today, scope: 'official' },
   };
+}
+
+/* ── Report scope (official / working / temporary) ─────────── */
+
+const REPORT_SCOPES = [
+  { value: 'official', label: 'رسمی', hint: 'فقط اسناد دائمی' },
+  { value: 'working', label: 'کاری', hint: 'اسناد دائمی و موقت' },
+  { value: 'temporary', label: 'فقط موقت', hint: 'فقط اسناد موقت' },
+];
+
+function normalizeReportScope(value) {
+  const text = String(value ?? '').trim();
+  return REPORT_SCOPES.some((scope) => scope.value === text) ? text : 'official';
+}
+
+function reportScopeField(filterKey, id, label = 'محدوده اسناد') {
+  const group = state.filters[filterKey] || {};
+  const selected = normalizeReportScope(group.scope);
+  const options = REPORT_SCOPES.map((scope) => `<option value="${scope.value}" title="${esc(scope.hint)}"${scope.value === selected ? ' selected' : ''}>${esc(scope.label)}</option>`).join('');
+  return `<div class="field">
+      <label for="${id}">${label}</label>
+      <select id="${id}" class="input" name="scope">${options}</select>
+    </div>`;
 }
 
 function filterValue(key, name) {

@@ -6,9 +6,9 @@ use crate::vouchers::model::{
     MAX_VOUCHER_NUMBER,
 };
 use crate::vouchers::validation::{
-    assert_voucher_type_matches_lines, checked_sum,
-    normalize_date, normalize_voucher_line_accounts, validate_description,
-    validate_voucher_line_accounts, validate_voucher_type,
+    assert_voucher_type_matches_lines, checked_sum, normalize_date,
+    normalize_voucher_line_accounts, validate_description, validate_voucher_line_accounts,
+    validate_voucher_type,
 };
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
@@ -29,10 +29,15 @@ impl Database {
             .vouchers
             .iter()
             .flat_map(|voucher| voucher.lines.iter())
-            .flat_map(|line| [
-                db::normalize_code(&line.account_code),
-                line.detail1_code.as_deref().map(db::normalize_code).unwrap_or_default(),
-            ])
+            .flat_map(|line| {
+                [
+                    db::normalize_code(&line.account_code),
+                    line.detail1_code
+                        .as_deref()
+                        .map(db::normalize_code)
+                        .unwrap_or_default(),
+                ]
+            })
             .filter(|code| !code.is_empty())
             .collect();
         let numbers: Vec<i64> = import
@@ -285,7 +290,11 @@ impl Database {
                 lines.push(VoucherLineInput {
                     id: line.id,
                     account_code,
-                    detail1_code: line.detail1_code.as_deref().map(db::normalize_code).filter(|v| !v.is_empty()),
+                    detail1_code: line
+                        .detail1_code
+                        .as_deref()
+                        .map(db::normalize_code)
+                        .filter(|v| !v.is_empty()),
                     description: line_description,
                     debit: line.debit,
                     credit: line.credit,

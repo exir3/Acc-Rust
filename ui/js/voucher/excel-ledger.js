@@ -170,6 +170,7 @@ async function loadAccountLedger() {
       accountCode: account.code,
       from,
       to,
+      scope: 'working',
     });
     if (request !== state.ledger.request) return;
     state.ledger.report = report;
@@ -337,7 +338,7 @@ async function printAccountLedger() {
   const { account, from, to, report } = state.ledger;
   if (!account || !report || !invoke) return;
   try {
-    await invoke('open_ledger_preview', { accountCode: account.code, from, to });
+    await invoke('open_ledger_preview', { accountCode: account.code, from, to, scope: 'working' });
   } catch (error) {
     toast(errorText(error), 'error');
   }

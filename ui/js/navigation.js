@@ -33,6 +33,7 @@ async function navigate(page, { force = false } = {}) {
   if (state.page !== page) {
     state.listOffsets.vouchers = 0;
     state.listOffsets.journal = 0;
+    state.listOffsets.ledger = 0;
   }
   state.page = page;
 

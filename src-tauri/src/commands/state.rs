@@ -1,6 +1,7 @@
 //! Shared application state and window/notification helpers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
@@ -39,6 +40,9 @@ pub struct AppState {
     pub(crate) reorganization_preview: Mutex<Option<(String, String)>>,
     /// Bulk-delete preview token awaiting explicit confirmation.
     pub(crate) bulk_delete_preview: Mutex<Option<String>>,
+    /// Report files this session wrote, canonicalized. `open_path` may not
+    /// open anything outside this allowlist.
+    pub(crate) report_files: Mutex<HashSet<PathBuf>>,
 }
 
 pub(crate) fn report_meta(state: &State<'_, AppState>) -> Result<report::ReportMeta, String> {

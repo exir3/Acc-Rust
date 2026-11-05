@@ -2,7 +2,9 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::db::common::{db_error, to_fa_digits, BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION};
+use crate::db::common::{
+    db_error, normalize_digits, to_fa_digits, BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION,
+};
 
 const SCHEMA: &str = r#"
     CREATE TABLE IF NOT EXISTS app_meta (
@@ -110,6 +112,39 @@ const SCHEMA: &str = r#"
     END;
 "#;
 
+/// Reference tables that are also created by the additive migrations. Keeping
+/// the DDL in one place means a restored v4 database and a fresh database end
+/// up with exactly the same fiscal-year and audit-history structures.
+pub(crate) const REFERENCE_SCHEMA: &str = r#"
+    CREATE TABLE IF NOT EXISTS fiscal_years (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        title      TEXT NOT NULL,
+        start_date TEXT NOT NULL,
+        end_date   TEXT NOT NULL,
+        status     TEXT NOT NULL DEFAULT 'open'
+                   CHECK(status IN ('open', 'closed', 'final')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_fiscal_years_range ON fiscal_years(start_date, end_date);
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        action       TEXT NOT NULL,
+        entity_type  TEXT NOT NULL,
+        entity_id    INTEGER,
+        before_value TEXT,
+        after_value  TEXT,
+        details      TEXT NOT NULL DEFAULT '',
+        app_version  TEXT NOT NULL,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
+"#;
+
 /// Creates the base tables and records the version they physically match.
 ///
 /// The base schema is intentionally pinned to `BASE_SCHEMA_VERSION`; the
@@ -119,6 +154,7 @@ const SCHEMA: &str = r#"
 /// pass through exactly the same migration path.
 pub(crate) fn apply_base_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(SCHEMA).map_err(db_error)?;
+    conn.execute_batch(REFERENCE_SCHEMA).map_err(db_error)?;
     conn.execute(
         "INSERT OR IGNORE INTO app_meta(key, value) VALUES ('schema_version', ?1)",
         params![BASE_SCHEMA_VERSION.to_string()],
@@ -353,25 +389,13 @@ pub(crate) fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String
 }
 
 /// Safely converts legacy voucher rows into (base account, optional detail-1).
-/// This migration deliberately refuses to touch any level-4 data: the operator
-/// must archive/resolve that legacy data explicitly before upgrading.
+///
+/// Legacy level-4 accounts cannot be represented by the current posting
+/// model. They are preserved untouched: the line keeps its original
+/// `account_code`, gets `account_id = NULL` and `legacy_level4_pending = 1`.
+/// The explicit migration tool can resolve them later without ever deleting
+/// the original data implicitly.
 fn migrate_voucher_account_pairs(conn: &Connection) -> Result<(), String> {
-    let level4: i64 = conn
-        .query_row("SELECT COUNT(*) FROM accounts WHERE level > 3", [], |r| r.get(0))
-        .map_err(db_error)?;
-    let legacy_refs: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM voucher_lines l JOIN accounts a ON a.code = l.account_code WHERE a.level > 3",
-            [], |r| r.get(0),
-        )
-        .map_err(db_error)?;
-    if level4 > 0 || legacy_refs > 0 {
-        return Err(format!(
-            "ارتقای پایگاه داده به نسخه ۵ متوقف شد؛ {} حساب سطح ۴ یا بالاتر و {} ردیف سند مرتبط وجود دارد. برای حفظ سوابق، ابتدا نسخه پشتیبان تهیه و این داده‌های قدیمی را به‌صورت آگاهانه تعیین تکلیف کنید؛ هیچ داده‌ای حذف نشده است.",
-            to_fa_digits(level4.to_string()), to_fa_digits(legacy_refs.to_string())
-        ));
-    }
-
     let orphaned: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM voucher_lines l LEFT JOIN accounts a ON a.code = l.account_code WHERE a.id IS NULL",
@@ -402,7 +426,8 @@ fn migrate_voucher_account_pairs(conn: &Connection) -> Result<(), String> {
         let mut stmt = conn
             .prepare("SELECT v.id, COUNT(l.id), COALESCE(SUM(l.debit),0), COALESCE(SUM(l.credit),0) FROM vouchers v LEFT JOIN voucher_lines l ON l.voucher_id=v.id GROUP BY v.id ORDER BY v.id")
             .map_err(db_error)?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .map_err(db_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(db_error)?;
@@ -411,20 +436,34 @@ fn migrate_voucher_account_pairs(conn: &Connection) -> Result<(), String> {
 
     let columns = table_columns(conn, "voucher_lines")?;
     if !columns.iter().any(|c| c == "account_id") {
-        conn.execute("ALTER TABLE voucher_lines ADD COLUMN account_id INTEGER REFERENCES accounts(id)", [])
-            .map_err(db_error)?;
+        conn.execute(
+            "ALTER TABLE voucher_lines ADD COLUMN account_id INTEGER REFERENCES accounts(id)",
+            [],
+        )
+        .map_err(db_error)?;
     }
     if !columns.iter().any(|c| c == "detail1_code") {
         conn.execute("ALTER TABLE voucher_lines ADD COLUMN detail1_code TEXT REFERENCES accounts(code) ON UPDATE CASCADE", [])
             .map_err(db_error)?;
     }
+    if !columns.iter().any(|c| c == "legacy_level4_pending") {
+        conn.execute(
+            "ALTER TABLE voucher_lines ADD COLUMN legacy_level4_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_level4_pending IN (0, 1))",
+            [],
+        )
+        .map_err(db_error)?;
+    }
 
     conn.execute_batch(
-        "DROP TABLE IF EXISTS temp._voucher_line_account_map;\n         CREATE TEMP TABLE _voucher_line_account_map AS\n         SELECT l.id AS line_id,\n                CASE WHEN a.level = 3 THEN p.id ELSE a.id END AS base_id,\n                CASE WHEN a.level = 3 THEN p.code ELSE a.code END AS base_code,\n                CASE WHEN a.level = 3 THEN a.code ELSE NULL END AS detail_code\n           FROM voucher_lines l\n           JOIN accounts a ON a.code = l.account_code\n           LEFT JOIN accounts p ON p.code = a.parent_code;\n         UPDATE voucher_lines\n            SET account_id = (SELECT base_id FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id),\n                account_code = (SELECT base_code FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id),\n                detail1_code = (SELECT detail_code FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id);"
+        "DROP TABLE IF EXISTS temp._voucher_line_account_map;\n         CREATE TEMP TABLE _voucher_line_account_map AS\n         SELECT l.id AS line_id,\n                CASE WHEN a.level = 4 THEN NULL\n                     WHEN a.level = 3 THEN p.id\n                     ELSE a.id END AS base_id,\n                CASE WHEN a.level = 3 THEN p.code ELSE a.code END AS base_code,\n                CASE WHEN a.level = 3 THEN a.code ELSE NULL END AS detail_code,\n                CASE WHEN a.level = 4 THEN 1 ELSE 0 END AS pending\n           FROM voucher_lines l\n           JOIN accounts a ON a.code = l.account_code\n           LEFT JOIN accounts p ON p.code = a.parent_code;\n         UPDATE voucher_lines\n            SET account_id = (SELECT base_id FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id),\n                account_code = (SELECT base_code FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id),\n                detail1_code = (SELECT detail_code FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id),\n                legacy_level4_pending = (SELECT pending FROM _voucher_line_account_map m WHERE m.line_id = voucher_lines.id);"
     ).map_err(db_error)?;
 
     let unmapped: i64 = conn
-        .query_row("SELECT COUNT(*) FROM voucher_lines WHERE account_id IS NULL", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM voucher_lines WHERE account_id IS NULL AND legacy_level4_pending = 0",
+            [],
+            |r| r.get(0),
+        )
         .map_err(db_error)?;
     if unmapped > 0 {
         return Err(format!(
@@ -436,14 +475,18 @@ fn migrate_voucher_account_pairs(conn: &Connection) -> Result<(), String> {
     // In the WebApp posting model, level 1 and 2 remain postable even when
     // they have descendants. A detail-1 row is stored separately and does not
     // cause the parent to become a non-postable heading.
-    conn.execute("UPDATE accounts SET is_postable = 1 WHERE level IN (1, 2)", [])
-        .map_err(db_error)?;
+    conn.execute(
+        "UPDATE accounts SET is_postable = 1 WHERE level IN (1, 2)",
+        [],
+    )
+    .map_err(db_error)?;
 
     let after: Vec<(i64, i64, i64, i64)> = {
         let mut stmt = conn
             .prepare("SELECT v.id, COUNT(l.id), COALESCE(SUM(l.debit),0), COALESCE(SUM(l.credit),0) FROM vouchers v LEFT JOIN voucher_lines l ON l.voucher_id=v.id GROUP BY v.id ORDER BY v.id")
             .map_err(db_error)?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
             .map_err(db_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(db_error)?;
@@ -460,7 +503,7 @@ fn migrate_voucher_account_pairs(conn: &Connection) -> Result<(), String> {
 /// Enforces base/detail consistency for every new or updated voucher line.
 pub(crate) fn ensure_voucher_account_pair_guards(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_voucher_lines_account_id ON voucher_lines(account_id);\n         CREATE INDEX IF NOT EXISTS idx_voucher_lines_detail1_code ON voucher_lines(detail1_code);\n         DROP TRIGGER IF EXISTS voucher_lines_account_pair_insert;\n         DROP TRIGGER IF EXISTS voucher_lines_account_pair_update;\n         CREATE TRIGGER voucher_lines_account_pair_insert\n         BEFORE INSERT ON voucher_lines\n         WHEN NEW.account_id IS NULL\n           OR NOT EXISTS (SELECT 1 FROM accounts b WHERE b.id=NEW.account_id AND b.code=NEW.account_code AND b.level IN (1,2))\n           OR (NEW.detail1_code IS NOT NULL AND NEW.detail1_code <> '' AND NOT EXISTS (\n                SELECT 1 FROM accounts d JOIN accounts b ON b.id=NEW.account_id\n                 WHERE d.code=NEW.detail1_code AND d.level=3 AND b.level=2\n                   AND d.parent_code=b.code AND d.group_code=b.group_code))\n         BEGIN SELECT RAISE(ABORT, 'invalid base/detail account pair'); END;\n         CREATE TRIGGER voucher_lines_account_pair_update\n         BEFORE UPDATE OF account_id, account_code, detail1_code ON voucher_lines\n         WHEN NEW.account_id IS NULL\n           OR NOT EXISTS (SELECT 1 FROM accounts b WHERE b.id=NEW.account_id AND b.code=NEW.account_code AND b.level IN (1,2))\n           OR (NEW.detail1_code IS NOT NULL AND NEW.detail1_code <> '' AND NOT EXISTS (\n                SELECT 1 FROM accounts d JOIN accounts b ON b.id=NEW.account_id\n                 WHERE d.code=NEW.detail1_code AND d.level=3 AND b.level=2\n                   AND d.parent_code=b.code AND d.group_code=b.group_code))\n         BEGIN SELECT RAISE(ABORT, 'invalid base/detail account pair'); END;"
+        "CREATE INDEX IF NOT EXISTS idx_voucher_lines_account_id ON voucher_lines(account_id);\n         CREATE INDEX IF NOT EXISTS idx_voucher_lines_detail1_code ON voucher_lines(detail1_code);\n         DROP TRIGGER IF EXISTS voucher_lines_account_pair_insert;\n         DROP TRIGGER IF EXISTS voucher_lines_account_pair_update;\n         CREATE TRIGGER voucher_lines_account_pair_insert\n         BEFORE INSERT ON voucher_lines\n         WHEN NOT (NEW.legacy_level4_pending = 1 AND NEW.account_id IS NULL)\n          AND (NEW.account_id IS NULL\n           OR NOT EXISTS (SELECT 1 FROM accounts b WHERE b.id=NEW.account_id AND b.code=NEW.account_code AND b.level IN (1,2))\n           OR (NEW.detail1_code IS NOT NULL AND NEW.detail1_code <> '' AND NOT EXISTS (\n                SELECT 1 FROM accounts d JOIN accounts b ON b.id=NEW.account_id\n                 WHERE d.code=NEW.detail1_code AND d.level=3 AND b.level=2\n                   AND d.parent_code=b.code AND d.group_code=b.group_code)))\n         BEGIN SELECT RAISE(ABORT, 'invalid base/detail account pair'); END;\n         CREATE TRIGGER voucher_lines_account_pair_update\n         BEFORE UPDATE OF account_id, account_code, detail1_code ON voucher_lines\n         WHEN NOT (NEW.legacy_level4_pending = 1 AND NEW.account_id IS NULL)\n          AND (NEW.account_id IS NULL\n           OR NOT EXISTS (SELECT 1 FROM accounts b WHERE b.id=NEW.account_id AND b.code=NEW.account_code AND b.level IN (1,2))\n           OR (NEW.detail1_code IS NOT NULL AND NEW.detail1_code <> '' AND NOT EXISTS (\n                SELECT 1 FROM accounts d JOIN accounts b ON b.id=NEW.account_id\n                 WHERE d.code=NEW.detail1_code AND d.level=3 AND b.level=2\n                   AND d.parent_code=b.code AND d.group_code=b.group_code)))\n         BEGIN SELECT RAISE(ABORT, 'invalid base/detail account pair'); END;"
     ).map_err(db_error)
 }
 
@@ -492,9 +535,107 @@ pub(crate) fn ensure_permanent_voucher_guards(conn: &Connection) -> Result<(), S
          CREATE TRIGGER voucher_lines_permanent_delete
          BEFORE DELETE ON voucher_lines
          WHEN EXISTS (SELECT 1 FROM vouchers v WHERE v.id = OLD.voucher_id AND v.is_temporary = 0)
-         BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;"
+         BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;",
     )
     .map_err(db_error)
+}
+
+/// Gives existing vouchers a fiscal-year link without changing their numbers
+/// or meaning. Missing standard Jalali years are created only during the
+/// upgrade to the fiscal-year schema, so deleting an empty year is not undone
+/// on the next launch. Each voucher is linked to any configured year that
+/// already covers its date.
+fn backfill_fiscal_years(conn: &Connection, create_missing_years: bool) -> Result<(), String> {
+    let mut years: Vec<i32> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT substr(date, 1, 4) FROM vouchers WHERE length(date) >= 8")
+            .map_err(db_error)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(db_error)?;
+        for row in rows {
+            if let Ok(year) = row.map_err(db_error)?.parse::<i32>() {
+                years.push(year);
+            }
+        }
+    }
+    if table_exists(conn, "settings")? {
+        let setting: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'fiscal_year'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_error)?;
+        if let Some(text) = setting {
+            let digits: String = normalize_digits(&text)
+                .chars()
+                .filter(|ch| ch.is_ascii_digit())
+                .take(4)
+                .collect();
+            if digits.len() == 4 {
+                if let Ok(year) = digits.parse::<i32>() {
+                    years.push(year);
+                }
+            }
+        }
+    }
+    years.sort_unstable();
+    years.dedup();
+    if !create_missing_years {
+        years.clear();
+    }
+
+    for year in years {
+        if !(1..=3177).contains(&year) {
+            continue;
+        }
+        let start = format!("{year:04}/01/01");
+        let end = format!(
+            "{year:04}/12/{:02}",
+            if jalali_calendar::is_leap_year(year) {
+                30
+            } else {
+                29
+            }
+        );
+        // Never create a partially overlapping year: the automatic range is a
+        // convenience for legacy data, not a reason to make period lookup
+        // ambiguous. A custom range that already touches it wins.
+        let overlapping: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM fiscal_years
+                  WHERE start_date <= ?2 AND end_date >= ?1",
+                params![start, end],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if overlapping == 0 {
+            conn.execute(
+                "INSERT INTO fiscal_years (title, start_date, end_date, status)
+                 VALUES (?1, ?2, ?3, 'open')",
+                params![format!("سال مالی {}", to_fa_digits(year)), start, end],
+            )
+            .map_err(db_error)?;
+        }
+    }
+
+    if table_exists(conn, "vouchers")? {
+        conn.execute(
+            "UPDATE vouchers
+                SET fiscal_year_id = (
+                    SELECT f.id FROM fiscal_years f
+                     WHERE vouchers.date BETWEEN f.start_date AND f.end_date
+                     ORDER BY f.id LIMIT 1
+                )
+              WHERE fiscal_year_id IS NULL",
+            [],
+        )
+        .map_err(db_error)?;
+    }
+    Ok(())
 }
 
 /// Applies additive schema changes and upgrades the recorded version.
@@ -519,6 +660,7 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
     // DDL and the version marker must move together. If any step fails, the
     // transaction is rolled back instead of leaving a half-applied migration.
     let tx = conn.transaction().map_err(db_error)?;
+    tx.execute_batch(REFERENCE_SCHEMA).map_err(db_error)?;
     if table_exists(&tx, "accounts")? {
         let account_columns = table_columns(&tx, "accounts")?;
         if !account_columns.iter().any(|column| column == "is_active") {
@@ -542,6 +684,19 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
             .map_err(db_error)?;
         }
     }
+    if table_exists(&tx, "voucher_lines")? {
+        let line_columns = table_columns(&tx, "voucher_lines")?;
+        if !line_columns
+            .iter()
+            .any(|column| column == "legacy_level4_pending")
+        {
+            tx.execute(
+                "ALTER TABLE voucher_lines ADD COLUMN legacy_level4_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_level4_pending IN (0, 1))",
+                [],
+            )
+            .map_err(db_error)?;
+        }
+    }
     if version < 5 {
         migrate_voucher_account_pairs(&tx)?;
     }
@@ -550,14 +705,32 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
     // silently locks historical accounting records.
     if table_exists(&tx, "vouchers")? {
         let voucher_columns = table_columns(&tx, "vouchers")?;
-        if !voucher_columns.iter().any(|column| column == "is_temporary") {
+        if !voucher_columns
+            .iter()
+            .any(|column| column == "is_temporary")
+        {
             tx.execute(
                 "ALTER TABLE vouchers ADD COLUMN is_temporary INTEGER NOT NULL DEFAULT 1 CHECK(is_temporary IN (0, 1))",
                 [],
             )
             .map_err(db_error)?;
         }
+        if !voucher_columns
+            .iter()
+            .any(|column| column == "fiscal_year_id")
+        {
+            tx.execute(
+                "ALTER TABLE vouchers ADD COLUMN fiscal_year_id INTEGER REFERENCES fiscal_years(id)",
+                [],
+            )
+            .map_err(db_error)?;
+        }
     }
+
+    // Give every existing voucher a fiscal-year link by its date. The tool
+    // creates an open year only where no configured year covers the date, so
+    // historical documents never end up in a locked or missing period.
+    backfill_fiscal_years(&tx, version < CURRENT_SCHEMA_VERSION)?;
 
     // Persist request fingerprints so a retry after a lost response returns
     // the already-created or already-updated voucher instead of writing twice.
@@ -567,8 +740,9 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
             payload_signature TEXT NOT NULL,
             voucher_id INTEGER NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
-        );"
-    ).map_err(db_error)?;
+        );",
+    )
+    .map_err(db_error)?;
 
     // Re-create guards on every open, including after a database restore.
     ensure_voucher_account_pair_guards(&tx)?;

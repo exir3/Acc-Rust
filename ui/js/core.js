@@ -32,6 +32,7 @@ const APP_VERSION = '۵.۰';
 // Fallbacks; `loadSettings` replaces them with the backend limits.
 let VOUCHER_PAGE_SIZE = 200;
 let JOURNAL_PAGE_SIZE = 500;
+let LEDGER_PAGE_SIZE = 500;
 
 const state = {
   page: 'workspace',
@@ -41,8 +42,10 @@ const state = {
   accountsLoaded: false,
   groupsLoaded: false,
   databasePath: '',
+  fiscalYears: [],
+  legacyLevel4: null,
   filters: {},
-  listOffsets: { vouchers: 0, journal: 0 },
+  listOffsets: { vouchers: 0, journal: 0, ledger: 0 },
   accountFilters: { search: '', group: '', level: '' },
   accountDrillPath: [],
   voucherCount: 0,

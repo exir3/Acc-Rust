@@ -3,7 +3,7 @@
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::commands::state::{
-    notify_accounts_changed, require_main_or_preview_window, require_window, AppState,
+    lock, notify_accounts_changed, require_main_or_preview_window, require_window, AppState,
 };
 use crate::commands::windows::open_external;
 use crate::db;
@@ -80,9 +80,14 @@ pub(crate) fn retry_database(
 }
 
 /// Opens a report the user saved from the preview window. The webview may
-/// only ask for an existing HTML file, never for an arbitrary program.
+/// only ask for an HTML file this session wrote through `save_report_html`,
+/// never for an arbitrary program or file.
 #[tauri::command]
-pub(crate) fn open_path(path: String, window: WebviewWindow) -> Result<(), String> {
+pub(crate) fn open_path(
+    path: String,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     require_main_or_preview_window(&window)?;
     let target = std::path::Path::new(&path);
     let is_html = target
@@ -93,5 +98,124 @@ pub(crate) fn open_path(path: String, window: WebviewWindow) -> Result<(), Strin
     if !is_html || !target.is_file() {
         return Err("فقط فایل HTML ذخیره‌شده از گزارش‌ها قابل باز شدن است.".to_string());
     }
+    let canonical = std::fs::canonicalize(target)
+        .map_err(|_| "فقط فایل HTML ذخیره‌شده از گزارش‌ها قابل باز شدن است.".to_string())?;
+    if !lock(&state.report_files).contains(&canonical) {
+        return Err("فقط فایل HTML ذخیره‌شده از گزارش‌ها قابل باز شدن است.".to_string());
+    }
     open_external(&path)
+}
+
+/* ── Fiscal years ───────────────────────────────────────────── */
+
+#[tauri::command(async)]
+pub(crate) fn list_fiscal_years(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::FiscalYearList, String> {
+    require_window(&window, &["main"])?;
+    state.database.list_fiscal_years()
+}
+
+#[tauri::command(async)]
+pub(crate) fn create_fiscal_year(
+    title: String,
+    start_date: String,
+    end_date: String,
+    status: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::FiscalYear, String> {
+    require_window(&window, &["main"])?;
+    state.database.create_fiscal_year(
+        &title,
+        &start_date,
+        &end_date,
+        status.as_deref().unwrap_or("open"),
+    )
+}
+
+#[tauri::command(async)]
+pub(crate) fn update_fiscal_year(
+    id: i64,
+    title: String,
+    start_date: String,
+    end_date: String,
+    status: String,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::FiscalYear, String> {
+    require_window(&window, &["main"])?;
+    state
+        .database
+        .update_fiscal_year(id, &title, &start_date, &end_date, &status)
+}
+
+#[tauri::command(async)]
+pub(crate) fn set_fiscal_year_status(
+    id: i64,
+    status: String,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::FiscalYear, String> {
+    require_window(&window, &["main"])?;
+    state.database.set_fiscal_year_status(id, &status)
+}
+
+#[tauri::command(async)]
+pub(crate) fn delete_fiscal_year(
+    id: i64,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main"])?;
+    state.database.delete_fiscal_year(id)
+}
+
+/* ── Audit history ─────────────────────────────────────────── */
+
+#[tauri::command(async)]
+pub(crate) fn get_audit_logs(
+    limit: Option<i64>,
+    offset: Option<i64>,
+    entity_type: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::AuditLogList, String> {
+    require_window(&window, &["main"])?;
+    state
+        .database
+        .list_audit_logs(limit, offset, entity_type.as_deref())
+}
+
+/* ── Legacy level-4 migration ──────────────────────────────── */
+
+#[tauri::command(async)]
+pub(crate) fn analyze_legacy_level4(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::LegacyLevel4Analysis, String> {
+    require_window(&window, &["main"])?;
+    state.database.analyze_legacy_level4()
+}
+
+/// Runs the explicit level-4 conversion. The caller must confirm; the
+/// migration writes and validates its own backup before changing any row.
+#[tauri::command(async)]
+pub(crate) fn apply_legacy_level4_migration(
+    confirm: bool,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::LegacyLevel4MigrationResult, String> {
+    require_window(&window, &["main"])?;
+    if !confirm {
+        return Err("برای اجرای مهاجرت سطح ۴، تأیید صریح لازم است.".to_string());
+    }
+    let database_path = std::path::PathBuf::from(state.database.path_string());
+    let backup_path = db::legacy_migration_backup_path(&database_path);
+    let result = state.database.apply_legacy_level4_migration(&backup_path)?;
+    notify_accounts_changed(&app);
+    let _ = app.emit("database-restored", ());
+    Ok(result)
 }

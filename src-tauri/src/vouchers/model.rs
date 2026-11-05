@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize, Serializer};
 
 pub use crate::limits::MAX_AMOUNT;
-pub(crate) use crate::limits::{MAX_DESCRIPTION, MAX_LINE_DESCRIPTION, MAX_LINES};
+pub(crate) use crate::limits::{MAX_DESCRIPTION, MAX_LINES, MAX_LINE_DESCRIPTION};
 
 pub(crate) fn serialize_exact_amount<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -33,6 +33,40 @@ pub const MAX_VOUCHER_NUMBER: i64 = 9_007_199_254_740_991;
 pub const DEFAULT_VOUCHER_PAGE_SIZE: i64 = 200;
 pub const DEFAULT_JOURNAL_PAGE_SIZE: i64 = 500;
 pub const MAX_PAGE_SIZE: i64 = 2000;
+
+/// Which vouchers an accounting report includes.
+///
+/// - `Official` is the default for official statements: only permanent
+///   (finalized) vouchers.
+/// - `Working` shows both permanent and temporary vouchers, matching the
+///   pre-existing report behavior.
+/// - `Temporary` shows only temporary vouchers for review work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportScope {
+    Official,
+    Working,
+    Temporary,
+}
+
+impl ReportScope {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "official" => Ok(Self::Official),
+            "working" => Ok(Self::Working),
+            "temporary" => Ok(Self::Temporary),
+            _ => Err("دامنه گزارش انتخاب‌شده معتبر نیست.".to_string()),
+        }
+    }
+
+    /// SQL predicate for the `vouchers` alias `v`.
+    pub(crate) fn sql(self) -> &'static str {
+        match self {
+            Self::Official => "v.is_temporary = 0",
+            Self::Working => "1 = 1",
+            Self::Temporary => "v.is_temporary = 1",
+        }
+    }
+}
 
 /// SQL expression for the new `updated_at` of a voucher. It is strictly
 /// greater than the current value even when two writes happen in the same
@@ -386,6 +420,8 @@ pub struct LedgerReport {
     pub closing_debit: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub closing_credit: i64,
+    /// Number of ledger rows in the whole period, before paging.
+    pub row_count: i64,
     pub rows: Vec<LedgerRow>,
 }
 
@@ -466,10 +502,18 @@ pub struct IncomeStatementReport {
     pub non_operating_expenses: Vec<AmountRow>,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub non_operating_expense_total: i64,
+    pub finance_costs: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub finance_cost_total: i64,
+    pub income_taxes: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub income_tax_total: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub gross_profit: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub operating_profit: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub profit_before_tax: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub net_profit: i64,
 }

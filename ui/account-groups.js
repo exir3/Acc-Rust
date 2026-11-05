@@ -94,6 +94,7 @@ function normalizeGroup(raw) {
     type: TYPES.includes(raw && raw.type) ? raw.type : String((raw && raw.type) ?? ''),
     defaultSection: SECTIONS.includes(raw && raw.defaultSection) ? raw.defaultSection : '',
     accountCount: Math.max(0, Number(raw && raw.accountCount) || 0),
+    postedLineCount: Math.max(0, Number(raw && raw.postedLineCount) || 0),
   };
 }
 
@@ -507,7 +508,49 @@ async function save() {
   const defaultSection = SECTIONS.includes(state.form.defaultSection)
     ? state.form.defaultSection
     : '';
+  const classificationChanged = !wasNew
+    && (editingGroup.type !== type
+      || (editingGroup.defaultSection || '') !== defaultSection);
 
+  if (classificationChanged && Number(editingGroup.postedLineCount) > 0) {
+    openConfirm({
+      title: 'تأیید بازطبقه‌بندی گروه',
+      message: `این گروه ${toFaDigits(editingGroup.postedLineCount)} ردیف سند ثبت‌شده دارد. تغییر نوع یا بخش پیش‌فرض، این ردیف‌ها را در گزارش‌های تاریخی بازطبقه‌بندی می‌کند. ادامه می‌دهید؟`,
+      confirmLabel: 'تأیید و ذخیره',
+      tone: 'warn',
+      onConfirm: () => persistGroup({
+        wasNew,
+        editingGroup,
+        code,
+        name,
+        type,
+        defaultSection,
+        confirmReclassification: true,
+      }),
+    });
+    return;
+  }
+
+  await persistGroup({
+    wasNew,
+    editingGroup,
+    code,
+    name,
+    type,
+    defaultSection,
+    confirmReclassification: false,
+  });
+}
+
+async function persistGroup({
+  wasNew,
+  editingGroup,
+  code,
+  name,
+  type,
+  defaultSection,
+  confirmReclassification,
+}) {
   state.saving = true;
   clearError();
   render();
@@ -532,6 +575,7 @@ async function save() {
         name,
         groupType: type,
         defaultSection,
+        confirmReclassification,
       }));
       if (!Number.isFinite(saved.id) || saved.id <= 0) {
         throw new Error('پاسخ نامعتبر از پایگاه داده دریافت شد.');

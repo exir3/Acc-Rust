@@ -2,6 +2,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::db::audit;
 use crate::db::common::{db_error, today_jalali};
 use crate::db::model::{Database, Limits, Settings};
 use crate::db::schema::DEFAULT_SETTINGS;
@@ -35,15 +36,30 @@ impl Database {
                     .chars()
                     .all(|ch| ch.is_numeric() || matches!(ch, '/' | '-' | ' ' | '\u{200c}')))
         {
-            return Err(
-                "عنوان سال مالی باید فقط شامل رقم و جداکننده‌های / یا - باشد.".to_string(),
-            );
+            return Err("عنوان سال مالی باید فقط شامل رقم و جداکننده‌های / یا - باشد.".to_string());
         }
 
         self.with_conn(|conn| {
             let tx = conn.transaction().map_err(db_error)?;
+            let before = serde_json::json!({
+                "companyName": get_setting(&tx, "company_name")?,
+                "fiscalYear": get_setting(&tx, "fiscal_year")?,
+            });
             set_setting(&tx, "company_name", &company_name)?;
             set_setting(&tx, "fiscal_year", fiscal_year)?;
+            let after = serde_json::json!({
+                "companyName": &company_name,
+                "fiscalYear": fiscal_year,
+            });
+            audit::log(
+                &tx,
+                "update",
+                "settings",
+                None,
+                Some(&before.to_string()),
+                Some(&after.to_string()),
+                "",
+            )?;
             tx.commit().map_err(db_error)?;
             Ok(Settings {
                 company_name,

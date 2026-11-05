@@ -42,9 +42,12 @@ pub fn income_statement_print_doc(report: &IncomeStatementReport, meta: &ReportM
 {other_operating_revenues}
 {other_operating_expenses}
 {expenses}
+<div class="rpt-total"><span>سود (زیان) عملیاتی</span><span>{operating}</span></div>
 {non_operating_revenues}
 {non_operating_expenses}
-<div class="rpt-total"><span>سود (زیان) عملیاتی</span><span>{operating}</span></div>
+{finance_costs}
+<div class="rpt-total"><span>سود (زیان) پیش از مالیات</span><span>{before_tax}</span></div>
+{income_taxes}
 <div class="rpt-total net"><span>سود (زیان) خالص دوره</span><span>{net}</span></div>"#,
         head = head("صورت سود و زیان", meta, &period(&report.from, &report.to)),
         revenues = section("درآمدها", &report.revenues, report.revenue_total),
@@ -70,8 +73,19 @@ pub fn income_statement_print_doc(report: &IncomeStatementReport, meta: &ReportM
             &report.non_operating_expenses,
             report.non_operating_expense_total
         ),
+        finance_costs = section(
+            "هزینه‌های مالی",
+            &report.finance_costs,
+            report.finance_cost_total
+        ),
+        income_taxes = section(
+            "مالیات بر درآمد",
+            &report.income_taxes,
+            report.income_tax_total
+        ),
         gross = money(report.gross_profit),
         operating = money(report.operating_profit),
+        before_tax = money(report.profit_before_tax),
         net = money(report.net_profit),
     );
 

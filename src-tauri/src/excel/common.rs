@@ -6,8 +6,8 @@ use calamine::Data;
 use rust_xlsxwriter::{Format, Worksheet, XlsxError};
 use std::path::Path;
 
-pub(crate) use crate::limits::{MAX_AMOUNT, MAX_LINE_DESCRIPTION};
 pub(crate) use crate::limits::MAX_LINES as MAX_IMPORT_LINES;
+pub(crate) use crate::limits::{MAX_AMOUNT, MAX_LINE_DESCRIPTION};
 pub(crate) const HEADER_SCAN_ROWS: usize = 30;
 pub(crate) const MAX_BULK_IMPORT_ROWS: usize = 300_000;
 pub(crate) const MAX_BULK_IMPORT_COLUMNS: usize = 40;
@@ -182,7 +182,12 @@ pub(crate) fn cell_text(cell: &Data) -> String {
 pub(crate) fn gregorian_to_jalali_date(year: u32, month: u32, day: u32) -> Result<String, String> {
     let jalali = jalali_calendar::JalaliDate::from_gregorian(year as i32, month, day)
         .map_err(|_| "تاریخ میلادی فایل اکسل معتبر یا قابل تبدیل نیست.".to_string())?;
-    let value = format!("{:04}/{:02}/{:02}", jalali.year(), jalali.month(), jalali.day());
+    let value = format!(
+        "{:04}/{:02}/{:02}",
+        jalali.year(),
+        jalali.month(),
+        jalali.day()
+    );
     crate::vouchers::validate_voucher_date(&value)
 }
 
@@ -216,11 +221,8 @@ pub(crate) fn parse_bulk_voucher_date_number(value: f64) -> Result<String, Strin
     // Numeric cells without a date number format are ambiguous. Excel serials
     // in the normal modern-date range are supported using the 1900 date system.
     if (20_000.0..=2_958_465.999_999).contains(&value) {
-        let excel_date = calamine::ExcelDateTime::new(
-            value,
-            calamine::ExcelDateTimeType::DateTime,
-            false,
-        );
+        let excel_date =
+            calamine::ExcelDateTime::new(value, calamine::ExcelDateTimeType::DateTime, false);
         let (year, month, day, _, _, _, _) = excel_date.to_ymd_hms_milli();
         return gregorian_to_jalali_date(year as u32, month as u32, day as u32);
     }
@@ -280,10 +282,20 @@ pub(crate) fn normalize_imported_voucher_type(input: &str) -> Result<String, Str
     }
     let aliases = [
         (&["عادی", "سندعادی"][..], crate::vouchers::VOUCHER_TYPES[0]),
-        (&["افتتاحیه", "سندافتتاحیه"][..], crate::vouchers::VOUCHER_TYPES[1]),
-        (&["اختتامیه", "سنداختتامیه"][..], crate::vouchers::VOUCHER_TYPES[2]),
         (
-            &["بستن حسابهای موقت", "بستن حساب‌های موقت", "سند بستن حسابهای موقت"][..],
+            &["افتتاحیه", "سندافتتاحیه"][..],
+            crate::vouchers::VOUCHER_TYPES[1],
+        ),
+        (
+            &["اختتامیه", "سنداختتامیه"][..],
+            crate::vouchers::VOUCHER_TYPES[2],
+        ),
+        (
+            &[
+                "بستن حسابهای موقت",
+                "بستن حساب‌های موقت",
+                "سند بستن حسابهای موقت",
+            ][..],
             crate::vouchers::VOUCHER_TYPES[3],
         ),
     ];
@@ -292,7 +304,10 @@ pub(crate) fn normalize_imported_voucher_type(input: &str) -> Result<String, Str
             return Ok(canonical.to_string());
         }
     }
-    Err(format!("نوع سند «{}» در فایل اکسل شناخته‌شده نیست.", input.trim()))
+    Err(format!(
+        "نوع سند «{}» در فایل اکسل شناخته‌شده نیست.",
+        input.trim()
+    ))
 }
 
 pub(crate) fn is_total_row(row: &[Data]) -> bool {

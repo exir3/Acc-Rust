@@ -157,7 +157,11 @@ pub(crate) fn migrate_legacy_database(
     // Prefer the most recently written database; a stale copy in the old
     // identifier folder must not win over newer data in the app data folder.
     existing.sort_by(|left, right| {
-        let modified = |path: &Path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+        let modified = |path: &Path| {
+            std::fs::metadata(path)
+                .and_then(|meta| meta.modified())
+                .ok()
+        };
         modified(right).cmp(&modified(left))
     });
 

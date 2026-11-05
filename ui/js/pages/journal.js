@@ -16,6 +16,7 @@ PAGES.journal = {
         from: f.from,
         to: f.to,
         search: f.search,
+        scope: normalizeReportScope(f.scope),
         offset,
         limit: JOURNAL_PAGE_SIZE,
       }),
@@ -43,6 +44,7 @@ function journalFilterBar() {
       <label for="jTo">تا تاریخ</label>
       <input id="jTo" class="input" name="to" data-date type="text" inputmode="numeric" value="${esc(f.to)}" placeholder="۱۴۰۵/۱۲/۲۹" />
     </div>
+    ${reportScopeField('journal', 'jScope')}
     <button class="btn btn-primary" type="submit">${icon('i-search')}<span>اعمال فیلتر</span></button>
     <button class="btn" type="button" data-reset>${icon('i-refresh')}<span>بازنشانی</span></button>
   </form>`;

@@ -138,9 +138,16 @@ mod tests {
     #[test]
     fn bulk_import_requires_account_title_columns() {
         let mut range = calamine::Range::new((0, 0), (0, 5));
-        for (column, value) in ["شماره سند", "تاریخ سند", "کد کل", "کد معین", "بدهکار", "بستانکار"]
-            .iter()
-            .enumerate()
+        for (column, value) in [
+            "شماره سند",
+            "تاریخ سند",
+            "کد کل",
+            "کد معین",
+            "بدهکار",
+            "بستانکار",
+        ]
+        .iter()
+        .enumerate()
         {
             range.set_value((0, column as u32), text(value));
         }
@@ -250,13 +257,25 @@ mod tests {
         }
 
         let import = parse_bulk_voucher_sheet(Path::new("custom.xlsx"), "اسناد", &range).unwrap();
-        let custom_parent = import.accounts.iter().find(|account| account.code == "9901").unwrap();
-        let custom_child = import.accounts.iter().find(|account| account.code == "881122").unwrap();
+        let custom_parent = import
+            .accounts
+            .iter()
+            .find(|account| account.code == "9901")
+            .unwrap();
+        let custom_child = import
+            .accounts
+            .iter()
+            .find(|account| account.code == "881122")
+            .unwrap();
         assert_eq!(custom_parent.group_code, "10");
         assert_eq!(custom_child.group_code, "10");
         assert_eq!(custom_child.nature, "debtor");
         assert!(custom_child.nature_is_explicit);
-        let merged_group_child = import.accounts.iter().find(|account| account.code == "881123").unwrap();
+        let merged_group_child = import
+            .accounts
+            .iter()
+            .find(|account| account.code == "881123")
+            .unwrap();
         assert_eq!(merged_group_child.group_code, "10");
         assert_eq!(import.vouchers.len(), 1);
         assert_eq!(import.vouchers[0].lines.len(), 3);
@@ -278,11 +297,9 @@ mod tests {
             parse_account_code_data_cell(&text("001101"), "کد حساب").unwrap(),
             "001101"
         );
-        assert!(parse_account_code_data_cell(
-            &Data::Int(1_000_000_000_000_000),
-            "کد حساب"
-        )
-        .is_err());
+        assert!(
+            parse_account_code_data_cell(&Data::Int(1_000_000_000_000_000), "کد حساب").is_err()
+        );
     }
 
     #[test]
@@ -334,9 +351,27 @@ mod tests {
         }
 
         let rows = [
-            ["2", "1405/01/01", "1101", "صندوق", "110101", "صندوق اصلی", "100", ""],
+            [
+                "2",
+                "1405/01/01",
+                "1101",
+                "صندوق",
+                "110101",
+                "صندوق اصلی",
+                "100",
+                "",
+            ],
             ["", "", "4101", "درآمد", "410101", "درآمد فروش", "", "100"],
-            ["1", "1405/01/02", "1101", "صندوق", "110101", "صندوق اصلی", "200", ""],
+            [
+                "1",
+                "1405/01/02",
+                "1101",
+                "صندوق",
+                "110101",
+                "صندوق اصلی",
+                "200",
+                "",
+            ],
             ["", "", "4101", "درآمد", "410101", "درآمد فروش", "", "200"],
         ];
         for (row_index, row) in rows.iter().enumerate() {
@@ -347,7 +382,11 @@ mod tests {
 
         let import = parse_bulk_voucher_sheet(Path::new("sample.xlsx"), "اسناد", &range).unwrap();
         assert_eq!(
-            import.vouchers.iter().map(|voucher| voucher.number.unwrap()).collect::<Vec<_>>(),
+            import
+                .vouchers
+                .iter()
+                .map(|voucher| voucher.number.unwrap())
+                .collect::<Vec<_>>(),
             vec![2, 1]
         );
     }
@@ -371,26 +410,69 @@ mod tests {
             range.set_value((0, column as u32), text(value));
         }
         let rows = [
-            ["2", "1405/01/01", "1101", "صندوق", "110101", "صندوق اصلی", "100", ""],
-            ["1", "1405/01/02", "4101", "درآمد", "410101", "درآمد فروش", "", "100"],
-            ["2", "1405/01/01", "4101", "درآمد", "410101", "درآمد فروش", "", "100"],
+            [
+                "2",
+                "1405/01/01",
+                "1101",
+                "صندوق",
+                "110101",
+                "صندوق اصلی",
+                "100",
+                "",
+            ],
+            [
+                "1",
+                "1405/01/02",
+                "4101",
+                "درآمد",
+                "410101",
+                "درآمد فروش",
+                "",
+                "100",
+            ],
+            [
+                "2",
+                "1405/01/01",
+                "4101",
+                "درآمد",
+                "410101",
+                "درآمد فروش",
+                "",
+                "100",
+            ],
         ];
         for (row_index, row) in rows.iter().enumerate() {
             for (column, value) in row.iter().enumerate() {
                 range.set_value(((row_index + 1) as u32, column as u32), text(value));
             }
         }
-        let error = parse_bulk_voucher_sheet(Path::new("sample.xlsx"), "اسناد", &range).unwrap_err();
+        let error =
+            parse_bulk_voucher_sheet(Path::new("sample.xlsx"), "اسناد", &range).unwrap_err();
         assert!(error.contains("پشت سر هم"));
     }
 
     #[test]
     fn bulk_import_dates_support_jalali_strings_excel_serials_and_gregorian_iso() {
-        assert_eq!(parse_bulk_voucher_date(&text("۱۴۰۵/۰۱/۰۵")).unwrap(), "1405/01/05");
-        assert_eq!(parse_bulk_voucher_date(&text("14050105")).unwrap(), "1405/01/05");
-        assert_eq!(parse_bulk_voucher_date(&text("2024-03-20")).unwrap(), "1403/01/01");
-        assert_eq!(parse_bulk_voucher_date(&text("1405/01/05 08:30:00")).unwrap(), "1405/01/05");
-        assert_eq!(parse_bulk_voucher_date(&Data::Int(45371)).unwrap(), "1403/01/01");
+        assert_eq!(
+            parse_bulk_voucher_date(&text("۱۴۰۵/۰۱/۰۵")).unwrap(),
+            "1405/01/05"
+        );
+        assert_eq!(
+            parse_bulk_voucher_date(&text("14050105")).unwrap(),
+            "1405/01/05"
+        );
+        assert_eq!(
+            parse_bulk_voucher_date(&text("2024-03-20")).unwrap(),
+            "1403/01/01"
+        );
+        assert_eq!(
+            parse_bulk_voucher_date(&text("1405/01/05 08:30:00")).unwrap(),
+            "1405/01/05"
+        );
+        assert_eq!(
+            parse_bulk_voucher_date(&Data::Int(45371)).unwrap(),
+            "1403/01/01"
+        );
         assert_eq!(
             parse_bulk_voucher_date(&Data::DateTime(calamine::ExcelDateTime::new(
                 45371.0,
@@ -409,9 +491,18 @@ mod tests {
 
     #[test]
     fn bulk_import_normalizes_voucher_type_aliases() {
-        assert_eq!(normalize_imported_voucher_type("افتتاحیه").unwrap(), crate::vouchers::VOUCHER_TYPES[1]);
-        assert_eq!(normalize_imported_voucher_type("سند حسابداری اختتامیه").unwrap(), crate::vouchers::VOUCHER_TYPES[2]);
-        assert_eq!(normalize_imported_voucher_type("بستن حساب‌های موقت").unwrap(), crate::vouchers::VOUCHER_TYPES[3]);
+        assert_eq!(
+            normalize_imported_voucher_type("افتتاحیه").unwrap(),
+            crate::vouchers::VOUCHER_TYPES[1]
+        );
+        assert_eq!(
+            normalize_imported_voucher_type("سند حسابداری اختتامیه").unwrap(),
+            crate::vouchers::VOUCHER_TYPES[2]
+        );
+        assert_eq!(
+            normalize_imported_voucher_type("بستن حساب‌های موقت").unwrap(),
+            crate::vouchers::VOUCHER_TYPES[3]
+        );
         assert!(normalize_imported_voucher_type("نوع نامعتبر").is_err());
     }
 
@@ -449,8 +540,14 @@ mod tests {
     fn voucher_number_cells_use_the_voucher_limit_not_the_amount_limit() {
         let value = 1_000_000_000_000_000i64;
         assert_eq!(cell_voucher_number(&Data::Int(value)).unwrap(), value);
-        assert_eq!(cell_voucher_number(&Data::Float(value as f64)).unwrap(), value);
-        assert_eq!(cell_voucher_number(&text("۱٬۰۰۰٬۰۰۰٬۰۰۰٬۰۰۰٬۰۰۰")).unwrap(), value);
+        assert_eq!(
+            cell_voucher_number(&Data::Float(value as f64)).unwrap(),
+            value
+        );
+        assert_eq!(
+            cell_voucher_number(&text("۱٬۰۰۰٬۰۰۰٬۰۰۰٬۰۰۰٬۰۰۰")).unwrap(),
+            value
+        );
         assert!(cell_voucher_number(&Data::Float(9_007_199_254_740_992.0)).is_err());
     }
 
@@ -460,9 +557,11 @@ mod tests {
             parse_account_code_data_cell(&text("001101"), "کد حساب").unwrap(),
             "001101"
         );
-        assert!(parse_account_code_data_cell(&Data::Int(1_000_000_000_000_000), "کد حساب")
-            .unwrap_err()
-            .contains("به‌صورت متن"));
+        assert!(
+            parse_account_code_data_cell(&Data::Int(1_000_000_000_000_000), "کد حساب")
+                .unwrap_err()
+                .contains("به‌صورت متن")
+        );
         assert!(parse_account_code_data_cell(&Data::Float(1101.5), "کد حساب").is_err());
     }
 
@@ -508,9 +607,16 @@ mod tests {
     #[test]
     fn exported_voucher_detail_code_column_is_recognized_without_mistaking_its_title_for_a_code() {
         let mut exported = calamine::Range::new((0, 0), (0, 5));
-        for (col, value) in ["ردیف", "کد حساب", "کد تفصیلی ۱", "شرح", "بدهکار", "بستانکار"]
-            .iter()
-            .enumerate()
+        for (col, value) in [
+            "ردیف",
+            "کد حساب",
+            "کد تفصیلی ۱",
+            "شرح",
+            "بدهکار",
+            "بستانکار",
+        ]
+        .iter()
+        .enumerate()
         {
             exported.set_value((0, col as u32), text(value));
         }
@@ -519,9 +625,16 @@ mod tests {
         assert_eq!(columns.detail1_code, Some(2));
 
         let mut titled = calamine::Range::new((0, 0), (0, 5));
-        for (col, value) in ["کد حساب", "عنوان تفصیلی ۱", "شرح", "بدهکار", "بستانکار", "ردیف"]
-            .iter()
-            .enumerate()
+        for (col, value) in [
+            "کد حساب",
+            "عنوان تفصیلی ۱",
+            "شرح",
+            "بدهکار",
+            "بستانکار",
+            "ردیف",
+        ]
+        .iter()
+        .enumerate()
         {
             titled.set_value((0, col as u32), text(value));
         }

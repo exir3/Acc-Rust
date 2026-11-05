@@ -109,10 +109,12 @@ fn editing_voucher_without_number_preserves_its_number() {
 #[test]
 fn accepts_direct_posting_to_a_level2_account_that_has_detail_children() {
     let db = db::memory_database();
-    let saved = db.save_voucher(voucher(
-        "1405/01/10",
-        vec![line("110201", 1_000, 0), line("410101", 0, 1_000)],
-    )).unwrap();
+    let saved = db
+        .save_voucher(voucher(
+            "1405/01/10",
+            vec![line("110201", 1_000, 0), line("410101", 0, 1_000)],
+        ))
+        .unwrap();
 
     assert_eq!(saved.lines[0].account_code, "110201");
     assert!(saved.lines[0].detail1_code.is_none());
@@ -121,21 +123,28 @@ fn accepts_direct_posting_to_a_level2_account_that_has_detail_children() {
 #[test]
 fn transfer_preserves_the_selected_detail1_account() {
     let db = db::memory_database();
-    let source = db.save_voucher(voucher(
-        "1405/01/10",
-        vec![line("110201001", 1_000, 0), line("410101", 0, 1_000)],
-    )).unwrap();
+    let source = db
+        .save_voucher(voucher(
+            "1405/01/10",
+            vec![line("110201001", 1_000, 0), line("410101", 0, 1_000)],
+        ))
+        .unwrap();
     let line_ids = source.lines.iter().map(|line| line.id).collect();
-    let result = db.transfer_voucher_lines(VoucherTransferInput {
-        source_voucher_id: source.id,
-        source_voucher_number: source.number,
-        target_voucher_number: 2,
-        line_ids,
-        mode: "copy".to_string(),
-    }).unwrap();
+    let result = db
+        .transfer_voucher_lines(VoucherTransferInput {
+            source_voucher_id: source.id,
+            source_voucher_number: source.number,
+            target_voucher_number: 2,
+            line_ids,
+            mode: "copy".to_string(),
+        })
+        .unwrap();
 
     assert_eq!(result.target.lines[0].account_code, "110201");
-    assert_eq!(result.target.lines[0].detail1_code.as_deref(), Some("110201001"));
+    assert_eq!(
+        result.target.lines[0].detail1_code.as_deref(),
+        Some("110201001")
+    );
 }
 
 #[test]
@@ -362,9 +371,27 @@ fn legacy_detail2_is_not_selectable_but_its_detail1_parent_remains_postable() {
     // سطح ۳ در ردیف سند به‌عنوان تفصیلی جدا انتخاب می‌شود؛ سطح ۲ همچنان
     // حساب پایهٔ قابل ثبت باقی می‌ماند، حتی اگر تفصیلی سطح ۳ یا دادهٔ قدیمی
     // سطح ۴ زیر آن وجود داشته باشد.
-    assert!(accounts.iter().find(|a| a.code == "99101").unwrap().is_postable);
-    assert!(!accounts.iter().find(|a| a.code == detail1.code).unwrap().is_postable);
-    assert!(!accounts.iter().find(|a| a.code == "991010101").unwrap().is_postable);
+    assert!(
+        accounts
+            .iter()
+            .find(|a| a.code == "99101")
+            .unwrap()
+            .is_postable
+    );
+    assert!(
+        !accounts
+            .iter()
+            .find(|a| a.code == detail1.code)
+            .unwrap()
+            .is_postable
+    );
+    assert!(
+        !accounts
+            .iter()
+            .find(|a| a.code == "991010101")
+            .unwrap()
+            .is_postable
+    );
 
     let saved = db
         .save_voucher(voucher(
@@ -388,14 +415,24 @@ fn legacy_level3_account_code_is_normalized_to_base_and_detail1() {
         .unwrap();
     db.create_account("99201", "معین آزمایشی", 2, "1", "debtor", "992", true)
         .unwrap();
-    db.create_account("9920101", "تفصیلی آزمایشی", 3, "1", "debtor", "99201", false)
-        .unwrap();
+    db.create_account(
+        "9920101",
+        "تفصیلی آزمایشی",
+        3,
+        "1",
+        "debtor",
+        "99201",
+        false,
+    )
+    .unwrap();
 
     // Older clients may still send the level-3 code in accountCode.
-    let saved = db.save_voucher(voucher(
-        "1405/01/01",
-        vec![line("9920101", 100, 0), line("110101", 0, 100)],
-    )).unwrap();
+    let saved = db
+        .save_voucher(voucher(
+            "1405/01/01",
+            vec![line("9920101", 100, 0), line("110101", 0, 100)],
+        ))
+        .unwrap();
 
     assert_eq!(saved.lines[0].account_code, "99201");
     assert_eq!(saved.lines[0].detail1_code.as_deref(), Some("9920101"));
@@ -681,8 +718,20 @@ fn bulk_import_allows_a_posting_base_to_gain_an_imported_detail_child() {
     assert_eq!(saved.lines[0].account_code, "99101");
     assert_eq!(saved.lines[0].detail1_code.as_deref(), Some("9910101"));
     let accounts = db.list_accounts().unwrap().accounts;
-    assert!(accounts.iter().find(|a| a.code == "99101").unwrap().is_postable);
-    assert!(!accounts.iter().find(|a| a.code == "9910101").unwrap().is_postable);
+    assert!(
+        accounts
+            .iter()
+            .find(|a| a.code == "99101")
+            .unwrap()
+            .is_postable
+    );
+    assert!(
+        !accounts
+            .iter()
+            .find(|a| a.code == "9910101")
+            .unwrap()
+            .is_postable
+    );
 }
 
 #[test]
@@ -984,8 +1033,11 @@ fn rejects_unbalanced_and_invalid_vouchers() {
     assert!(unbalanced.contains("تراز نیست"));
 
     db.with_conn(|conn| {
-        conn.execute("UPDATE accounts SET is_postable = 0 WHERE code = '110101'", [])
-            .map_err(db::db_error)?;
+        conn.execute(
+            "UPDATE accounts SET is_postable = 0 WHERE code = '110101'",
+            [],
+        )
+        .map_err(db::db_error)?;
         Ok(())
     })
     .unwrap();
@@ -1207,24 +1259,28 @@ fn permanent_vouchers_are_immutable_but_can_be_copied_from() {
     assert!(delete_error.contains("دائمی"));
     assert!(db.get_voucher(permanent.number).unwrap().is_some());
 
-    let line_ids = permanent.lines.iter().map(|line| line.id).collect();
-    let copied = db.transfer_voucher_lines(VoucherTransferInput {
-        source_voucher_id: permanent.id,
-        source_voucher_number: permanent.number,
-        target_voucher_number: 2,
-        line_ids: line_ids.clone(),
-        mode: "copy".to_string(),
-    }).unwrap();
+    let line_ids: Vec<i64> = permanent.lines.iter().map(|line| line.id).collect();
+    let copied = db
+        .transfer_voucher_lines(VoucherTransferInput {
+            source_voucher_id: permanent.id,
+            source_voucher_number: permanent.number,
+            target_voucher_number: 2,
+            line_ids: line_ids.clone(),
+            mode: "copy".to_string(),
+        })
+        .unwrap();
     assert_eq!(copied.target.lines.len(), 2);
     assert!(db.get_voucher(permanent.number).unwrap().is_some());
 
-    let move_error = db.transfer_voucher_lines(VoucherTransferInput {
-        source_voucher_id: permanent.id,
-        source_voucher_number: permanent.number,
-        target_voucher_number: 3,
-        line_ids,
-        mode: "move".to_string(),
-    }).unwrap_err();
+    let move_error = db
+        .transfer_voucher_lines(VoucherTransferInput {
+            source_voucher_id: permanent.id,
+            source_voucher_number: permanent.number,
+            target_voucher_number: 3,
+            line_ids,
+            mode: "move".to_string(),
+        })
+        .unwrap_err();
     assert!(move_error.contains("دائمی"));
 }
 
@@ -1233,7 +1289,9 @@ fn bulk_delete_skips_permanent_vouchers() {
     let db = db::memory_database();
     let temporary = db.save_voucher(cash_sale("1405/01/05", 100_000)).unwrap();
     let saved = db.save_voucher(cash_sale("1405/01/06", 200_000)).unwrap();
-    let permanent = db.set_voucher_permanent(saved.id, Some(&saved.updated_at)).unwrap();
+    let permanent = db
+        .set_voucher_permanent(saved.id, Some(&saved.updated_at))
+        .unwrap();
 
     let input = bulk_delete_input("all");
     let preview = db.preview_bulk_voucher_delete(&input).unwrap();
@@ -1242,7 +1300,9 @@ fn bulk_delete_skips_permanent_vouchers() {
     assert_eq!(preview.locked_count, 1);
     assert_eq!(preview.locked_sample[0].voucher_number, permanent.number);
 
-    let result = db.apply_bulk_voucher_delete(&input, &preview.plan_token, false).unwrap();
+    let result = db
+        .apply_bulk_voucher_delete(&input, &preview.plan_token, false)
+        .unwrap();
     assert_eq!(result.deleted_count, 1);
     assert_eq!(result.locked_count, 1);
     assert!(db.get_voucher(temporary.number).unwrap().is_none());
@@ -1253,16 +1313,16 @@ fn bulk_delete_skips_permanent_vouchers() {
 fn reorganization_keeps_permanent_numbers_reserved() {
     let db = db::memory_database();
     let saved_permanent = db.save_voucher(cash_sale("1405/01/20", 100_000)).unwrap();
-    let permanent = db.set_voucher_permanent(
-        saved_permanent.id,
-        Some(&saved_permanent.updated_at),
-    ).unwrap();
+    let permanent = db
+        .set_voucher_permanent(saved_permanent.id, Some(&saved_permanent.updated_at))
+        .unwrap();
     db.save_voucher(cash_sale("1405/01/10", 200_000)).unwrap();
     db.save_voucher(cash_sale("1405/01/01", 300_000)).unwrap();
 
     let preview = db.preview_voucher_reorganization("sort").unwrap();
     assert_eq!(preview.number_changes.len(), 2);
-    db.apply_voucher_reorganization("sort", &preview.plan_token).unwrap();
+    db.apply_voucher_reorganization("sort", &preview.plan_token)
+        .unwrap();
 
     let after_permanent = db.get_voucher(1).unwrap().unwrap();
     assert_eq!(after_permanent.id, permanent.id);
@@ -1653,6 +1713,47 @@ fn income_statement_classifies_cogs_by_group_not_code_prefix() {
 }
 
 #[test]
+fn income_statement_routes_accounts_by_group_default_section() {
+    let db = db::memory_database();
+    db.create_account_group("90", "درآمد طبقه‌بندی‌شده", "سایر", "revenue")
+        .unwrap();
+    db.create_account("9101", "درآمد ویژه", 1, "90", "creditor", "", true)
+        .unwrap();
+    db.create_account_group("91", "هزینه مالی", "سایر", "finance_cost")
+        .unwrap();
+    db.create_account("9201", "بهره", 1, "91", "debtor", "", true)
+        .unwrap();
+    db.create_account_group("92", "مالیات", "سایر", "income_tax")
+        .unwrap();
+    db.create_account("9301", "مالیات بر درآمد", 1, "92", "debtor", "", true)
+        .unwrap();
+
+    db.save_voucher(voucher(
+        "1405/01/10",
+        vec![
+            line("110101", 115, 0),
+            line("9101", 0, 130),
+            line("9201", 10, 0),
+            line("9301", 5, 0),
+        ],
+    ))
+    .unwrap();
+
+    let income = db.get_income_statement("1405/01/01", "1405/12/29").unwrap();
+    assert_eq!(income.revenue_total, 130);
+    assert_eq!(income.revenues.len(), 1);
+    assert_eq!(income.revenues[0].account_code, "9101");
+    assert_eq!(income.expense_total, 0);
+    assert_eq!(income.finance_cost_total, 10);
+    assert_eq!(income.finance_costs[0].account_code, "9201");
+    assert_eq!(income.income_tax_total, 5);
+    assert_eq!(income.income_taxes[0].account_code, "9301");
+    assert_eq!(income.operating_profit, 130);
+    assert_eq!(income.profit_before_tax, 120);
+    assert_eq!(income.net_profit, 115);
+}
+
+#[test]
 fn aggregate_arithmetic_reports_overflow_instead_of_wrapping() {
     assert!(checked_add(i64::MAX, 1, "آزمون").is_err());
     assert!(checked_sub(i64::MIN, 1, "آزمون").is_err());
@@ -1854,6 +1955,18 @@ fn paged_lists_keep_totals_for_the_whole_filter() {
     assert_eq!(journal.total_debit, 6_000);
     assert_eq!(journal.total_credit, 6_000);
 
+    // Ledger paging keeps the whole-period totals, and the running balance of
+    // the page carries the rows before it.
+    let ledger = db
+        .get_ledger_page("110101", "", "", Some(1), Some(1))
+        .unwrap();
+    assert_eq!(ledger.row_count, 3);
+    assert_eq!(ledger.rows.len(), 1);
+    assert_eq!(ledger.rows[0].number, 2);
+    assert_eq!(ledger.rows[0].running_debit, 3_000);
+    assert_eq!(ledger.total_debit, 6_000);
+    assert_eq!(ledger.closing_debit, 6_000);
+
     assert!(db
         .list_vouchers_page("", "", "", Some(-1), Some(10))
         .is_err());
@@ -1881,4 +1994,90 @@ fn voucher_number_limit_matches_javascript_safe_integer() {
     let mut rejected = cash_sale("1405/01/10", 1_000);
     rejected.number = Some(MAX_VOUCHER_NUMBER + 1);
     assert!(db.save_voucher(rejected).unwrap_err().contains("حداکثر"));
+}
+
+#[test]
+fn closed_fiscal_year_blocks_saving_editing_finalizing_and_deleting() {
+    let db = db::memory_database();
+    let saved = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+    let year = db
+        .list_fiscal_years()
+        .unwrap()
+        .years
+        .into_iter()
+        .find(|year| {
+            year.start_date.as_str() <= "1405/01/10" && year.end_date.as_str() >= "1405/01/10"
+        })
+        .expect("the saved voucher must have a fiscal year");
+    assert_eq!(year.status, "open");
+
+    db.set_fiscal_year_status(year.id, "closed").unwrap();
+
+    let new_error = db.save_voucher(cash_sale("1405/01/11", 2_000)).unwrap_err();
+    assert!(new_error.contains("بسته") || new_error.contains("نهایی"));
+
+    let mut edited = cash_sale("1405/01/12", 2_000);
+    edited.id = Some(saved.id);
+    let edit_error = db.save_voucher(edited).unwrap_err();
+    assert!(edit_error.contains("بسته") || edit_error.contains("نهایی"));
+
+    let finalize_error = db
+        .set_voucher_permanent(saved.id, Some(&saved.updated_at))
+        .unwrap_err();
+    assert!(finalize_error.contains("بسته") || finalize_error.contains("نهایی"));
+
+    let delete_error = db
+        .delete_voucher(saved.id, Some(&saved.updated_at))
+        .unwrap_err();
+    assert!(delete_error.contains("بسته") || delete_error.contains("نهایی"));
+}
+
+#[test]
+fn official_reports_exclude_temporary_vouchers_until_they_are_finalized() {
+    let db = db::memory_database();
+    let draft = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+    let final_draft = db.save_voucher(cash_sale("1405/01/11", 2_000)).unwrap();
+    db.set_voucher_permanent(final_draft.id, Some(&final_draft.updated_at))
+        .unwrap();
+
+    let official = db
+        .get_journal_scoped("1405/01/01", "1405/01/31", "", ReportScope::Official)
+        .unwrap();
+    let working = db
+        .get_journal_scoped("1405/01/01", "1405/01/31", "", ReportScope::Working)
+        .unwrap();
+    let temporary = db
+        .get_journal_scoped("1405/01/01", "1405/01/31", "", ReportScope::Temporary)
+        .unwrap();
+    assert_eq!(official.rows.len(), 2);
+    assert_eq!(working.rows.len(), 4);
+    assert_eq!(temporary.rows.len(), 2);
+    assert!(official
+        .rows
+        .iter()
+        .all(|row| row.number == final_draft.number));
+    assert!(temporary.rows.iter().all(|row| row.number == draft.number));
+}
+
+#[test]
+fn audit_history_records_voucher_and_definition_changes() {
+    let db = db::memory_database();
+    let saved = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+    db.set_voucher_permanent(saved.id, Some(&saved.updated_at))
+        .unwrap();
+
+    let entries = db.list_audit_logs(Some(100), None, None).unwrap();
+    assert!(entries.total >= 3);
+    assert!(entries
+        .entries
+        .iter()
+        .any(|entry| entry.entity_type == "voucher" && entry.action == "create"));
+    assert!(entries
+        .entries
+        .iter()
+        .any(|entry| entry.entity_type == "voucher" && entry.action == "finalize"));
+    assert!(entries
+        .entries
+        .iter()
+        .any(|entry| entry.entity_type == "fiscal_year"));
 }
