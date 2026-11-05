@@ -106,25 +106,32 @@ function openAccountDialog(account) {
     if (currentLevel <= 1) {
       parentSelect.innerHTML = '<option value="">— حساب سطح کل است —</option>';
       parentSelect.disabled = true;
-      if (groupSelect) groupSelect.disabled = isEdit;
-      if (postable) postable.checked = false;
+      // A level-1 (کل) account is postable in WebApp, just like level 2.
+      if (groupSelect) groupSelect.disabled = false;
+      if (postable) postable.checked = true;
       if (postable) postable.disabled = true;
       if (!isEdit && codeInput) codeInput.value = toFa(nextAccountCode(state.accounts, currentLevel));
       return;
     }
-    parentSelect.disabled = isEdit;
-    if (groupSelect) groupSelect.disabled = isEdit;
+    // Match WebApp: the account's group and direct parent can be changed;
+    // the backend validates the new branch and blocks unsafe historical moves.
+    parentSelect.disabled = false;
+    if (groupSelect) groupSelect.disabled = false;
     if (postable) postable.disabled = true;
     if (postable) postable.checked = currentLevel <= 2;
     const candidates = state.accounts.filter((a) => Number(a.level) === currentLevel - 1 && a.groupCode === groupCode);
-    const previous = isEdit
-      ? account?.parentCode || ''
-      : (parentSelect.value || initialParentCode);
-    // Keep the stored parent visible in edit mode; never silently substitute
-    // another account if the hierarchy is unusual.
+    const selectedParent = parentSelect.value;
+    const selectedStillValid = candidates.some((a) => a.code === selectedParent);
+    const previous = selectedStillValid
+      ? selectedParent
+      : (isEdit
+        ? (groupCode === account?.groupCode ? account?.parentCode || '' : '')
+        : initialParentCode);
+    // Preserve an inactive current parent only when it still belongs to the
+    // selected group and is exactly one level above the edited account.
     if (isEdit && previous && !candidates.some((a) => a.code === previous)) {
       const existing = state.accounts.find((a) => a.code === previous);
-      if (existing) candidates.unshift(existing);
+      if (existing && existing.groupCode === groupCode && Number(existing.level) === currentLevel - 1) candidates.unshift(existing);
     }
     parentSelect.innerHTML = candidates.length
       ? `<option value="">— انتخاب حساب بالاتر —</option>${candidates.map((a) => `<option value="${esc(a.code)}"${a.code === previous ? ' selected' : ''}>${toFa(a.code)} — ${esc(a.name)}</option>`).join('')}`

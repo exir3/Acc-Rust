@@ -188,13 +188,15 @@
     };
     const parentsFor = (preferred, allowGroupChange = false) => {
       const n=Number(level.value);
-      if(n===1){parent.innerHTML='<option value="">حساب سطح کل (بدون والد)</option>';parent.disabled=true;group.disabled=state.mode==='edit';applyPostablePolicy();if(state.mode==='new')setSuggestedCode(1,'');return;}
-      parent.disabled=state.mode==='edit';group.disabled=!allowGroupChange;applyPostablePolicy();
+      if(n===1){parent.innerHTML='<option value="">حساب سطح کل (بدون والد)</option>';parent.disabled=true;group.disabled=state.mode==='new'&&state.path.length>0;applyPostablePolicy();if(state.mode==='new')setSuggestedCode(1,'');return;}
+      // WebApp permits editing the parent and group. The Rust repository
+      // validates both changes transactionally and protects posted history.
+      parent.disabled=false;group.disabled=state.mode==='new'&&!allowGroupChange;applyPostablePolicy();
       const candidates=state.accounts.filter(a=>Number(a.level)===n-1&&a.groupCode===group.value&&(a.isActive!==false||(state.mode==='edit'&&a.code===preferred)));
-      // In edit mode the existing parent must be preserved even if the stored
-      // hierarchy is unusual; do not silently fall back to another account.
+      // Preserve an existing inactive parent only while it remains a valid
+      // direct parent in the selected group. Never inject a cross-group option.
       const existingParent=state.mode==='edit'&&preferred?state.accounts.find(a=>a.code===preferred):null;
-      if(existingParent&&!candidates.some(a=>a.code===preferred))candidates.unshift(existingParent);
+      if(existingParent&&Number(existingParent.level)===n-1&&existingParent.groupCode===group.value&&!candidates.some(a=>a.code===preferred))candidates.unshift(existingParent);
       parent.innerHTML='<option value="">— انتخاب حساب بالاتر —</option>'+candidates.map(a=>'<option value="'+esc(a.code)+'">'+fa(a.code)+' — '+esc(a.name)+(a.isActive===false?' (غیرفعال)':'')+'</option>').join('');
       if(state.mode==='edit'){
         parent.value=preferred||'';
@@ -223,11 +225,11 @@
       if(state.busy||state.mode!=='view'||!account)return;
       state.selected=account.code;state.mode='edit';editor.hidden=false;fillGroups(account.groupCode);
       $('[data-editor-title]').textContent='اصلاح حساب';
-      $('[data-editor-hint]').textContent='کد، سطح، گروه و حساب بالاتر پس از ثبت ثابت‌اند؛ گروه و والد در این پنجره تغییر نمی‌کنند.';
+      $('[data-editor-hint]').textContent='کد و سطح پس از ثبت ثابت‌اند؛ نام، ماهیت، گروه و حساب بالاتر با رعایت قواعد سلسله‌مراتب قابل اصلاح هستند.';
       code.value=fa(account.code);code.readOnly=true;name.value=account.name;
       level.innerHTML='<option value="'+account.level+'">'+levelText(account.level)+'</option>';level.value=String(account.level);
       group.value=account.groupCode;
-      parentsFor(account.parentCode,false);
+      parentsFor(account.parentCode,true);
       nature.value=account.nature;activeCheck.checked=account.isActive!==false;
       applyPostablePolicy();
       rememberEditorValues();
@@ -317,7 +319,7 @@
     $('[data-level]').addEventListener('change',e=>{state.level=e.target.value;render();});
     $('[data-active-filter]').addEventListener('change',e=>{state.active=e.target.value;render();});
     level.addEventListener('change',()=>parentsFor(''));
-    group.addEventListener('change',()=>parentsFor('',false));
+    group.addEventListener('change',()=>parentsFor('',state.mode==='edit'));
     parent.addEventListener('change',()=>{if(state.mode==='new')setSuggestedCode(Number(level.value),parent.value);});
     code.addEventListener('input',()=>{if(state.mode==='new')code.value=fa(nums(code.value));});
     form.addEventListener('submit',save);$('[data-cancel]').addEventListener('click',cancel);
