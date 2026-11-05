@@ -8,9 +8,10 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri",
-    "check:js": "node scripts/check-js.mjs"
+    "check:js": "node scripts/check-js.mjs",
+    "test": "node --test tests/account-picker-core.test.mjs tests/voucher-core.test.mjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.12.4"
+    "@tauri-apps/cli": "2.12.4"
   }
 }

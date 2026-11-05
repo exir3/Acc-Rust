@@ -379,7 +379,6 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                             db::to_fa_digits(&code)
                         ));
                     }
-                    skipped_count += 1;
                     row_skipped += 1;
                     parent_code = code;
                     parent_nature = nature;
@@ -400,15 +399,20 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
             if !pending.is_empty() {
                 let created = database.create_accounts_atomic(pending)?;
                 row_created += created.len();
-                created_count += created.len();
                 accounts.extend(created);
             }
             Ok((row_created, row_skipped))
         })();
-        if let Err(error) = row_result {
-            error_count += 1;
-            if errors.len() < MAX_IMPORT_ERRORS {
-                errors.push(format!("ردیف {}: {}", db::to_fa_digits(excel_row), error));
+        match row_result {
+            Ok((row_created, row_skipped)) => {
+                created_count += row_created;
+                skipped_count += row_skipped;
+            }
+            Err(error) => {
+                error_count += 1;
+                if errors.len() < MAX_IMPORT_ERRORS {
+                    errors.push(format!("ردیف {}: {}", db::to_fa_digits(excel_row), error));
+                }
             }
         }
     }

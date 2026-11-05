@@ -2,6 +2,8 @@
 
 /* ── Account picker ─────────────────────────────────────────── */
 
+const accountPickerCore = globalThis.AccountPickerCore;
+
 let apTarget = null;
 let apIndex = 0;
 let apVisible = [];
@@ -16,19 +18,20 @@ function filterAccountPicker(term) {
   const q = normalizeSearch(term);
   const row = apTarget?.closest?.('tr') || null;
   const baseCode = digitsOnly(row?.querySelector('.vf-code-input')?.value || '');
-  const currentCode = digitsOnly(apTarget?.value || '');
   const savedException = (account) => accountChainActive(account) ||
     (apMode === 'detail'
       ? digitsOnly(row?.dataset.savedDetail1 || '') === digitsOnly(account.code)
       : voucherAlreadyUsesAccount(account.code));
-  let source = state.accounts.filter((account) => {
-    if (apMode === 'detail') {
-      return Number(account.level) === 3
-        && digitsOnly(account.parentCode) === baseCode
-        && savedException(account);
-    }
-    return Number(account.level) >= 1 && Number(account.level) <= 2 && savedException(account);
-  });
+  const options = {
+    mode: apMode,
+    baseCode,
+    path: state.accountPickerPath,
+    showAll: state.accountPickerShowAll,
+  };
+  const source = (q
+    ? accountPickerCore.searchPool(state.accounts, options)
+    : accountPickerCore.visibleAccounts(state.accounts, options)
+  ).filter(savedException);
   if (!q) return source.slice();
   return source.filter((account) =>
     normalizeSearch(account.code).includes(q) ||
@@ -42,9 +45,20 @@ function filterAccountPicker(term) {
 function renderAccountPickerPath() {
   const path = $('#accountPickerPath');
   if (!path) return;
-  const labels = [apMode === 'detail' ? 'تفصیلی‌های معین انتخاب‌شده' : 'حساب‌های پایه (کل/معین)'].concat(state.accountPickerPath.map((account) =>
-    vfFa(account.code) + ' — ' + account.name
-  ));
+  const search = $('#accountPickerSearch');
+  const searching = !!search && search.value.trim() !== '';
+  const rootLabel = apMode === 'detail'
+    ? 'تفصیلی‌های معین انتخاب‌شده'
+    : state.accountPickerShowAll
+      ? 'همه حساب‌های پایه (کل/معین)'
+      : 'حساب‌های کل';
+  const labels = searching
+    ? [apMode === 'detail'
+      ? 'نتایج جستجو در تفصیلی‌های معین انتخاب‌شده'
+      : 'نتایج جستجو در همه حساب‌ها']
+    : [rootLabel].concat(state.accountPickerPath.map((account) =>
+      vfFa(account.code) + ' — ' + account.name
+    ));
   path.textContent = labels.join('  ‹  ');
 }
 
@@ -81,7 +95,9 @@ function renderAccountPickerRows(resetIndex = true) {
     const cell = document.createElement('div');
     cell.className = 'ap-cell ap-nostate-cell';
     cell.setAttribute('role', 'gridcell');
-    cell.textContent = 'نتیجه‌ای برای این جستجو یافت نشد';
+    cell.textContent = term.trim()
+      ? 'نتیجه‌ای برای این جستجو یافت نشد'
+      : 'حسابی در این سطح تعریف نشده است';
     row.append(cell);
     fragment.append(row);
     box.append(fragment);
@@ -165,8 +181,6 @@ function openAccountPicker(input) {
 
   apTarget = input || null;
   apMode = input?.classList.contains('vf-detail1-input') ? 'detail' : 'base';
-  state.accountPickerPath = [];
-  state.accountPickerShowAll = false;
   const search = $('#accountPickerSearch');
   const row = input?.closest?.('tr');
   const code = input ? digitsOnly(input.value) : '';
@@ -174,12 +188,21 @@ function openAccountPicker(input) {
     toast('ابتدا حساب پایه (کل یا معین) را انتخاب کنید.', 'info');
     return;
   }
-  if (search) search.value = code;
+
+  // Open on the level that contains the current account so the list starts
+  // as its siblings, not as a flat list of every account.
+  const current = code ? accountForCode(code) : null;
+  state.accountPickerPath = apMode === 'base' && current
+    ? accountPickerCore.ancestors(current, state.accounts)
+    : [];
+  state.accountPickerShowAll = false;
+  if (search) search.value = '';
 
   apIndex = 0;
   renderAccountPickerRows();
-  const exact = apVisible.findIndex((account) => account.code === code);
-  if (exact > 0) {
+  const exact = apVisible.findIndex((account) =>
+    digitsOnly(account.code) === digitsOnly(code));
+  if (exact >= 0) {
     apIndex = exact;
     renderAccountPickerRows(false);
   }
@@ -198,6 +221,17 @@ function openAccountPicker(input) {
 
 function drillOrChooseAccountPickerRow(account) {
   if (!account) return;
+  if (accountPickerCore.canDrill(state.accounts, account, apMode)) {
+    state.accountPickerPath = accountPickerCore.ancestors(account, state.accounts)
+      .concat(account);
+    state.accountPickerShowAll = false;
+    const search = $('#accountPickerSearch');
+    if (search) search.value = '';
+    apIndex = 0;
+    renderAccountPickerRows();
+    search?.focus();
+    return;
+  }
   chooseAccountPickerRow();
 }
 
@@ -225,6 +259,7 @@ function chooseAccountPickerRow() {
   const row = target.closest('tr');
   const baseInput = row?.querySelector('.vf-code-input');
   const baseCode = digitsOnly(baseInput?.value || '');
+  let selectedCode = account.code;
 
   if (apMode === 'detail') {
     if (Number(account.level) !== 3 || digitsOnly(account.parentCode) !== baseCode) {
@@ -237,6 +272,28 @@ function chooseAccountPickerRow() {
       toast('حساب تفصیلی یا یکی از والدین آن غیرفعال است و برای ردیف جدید قابل استفاده نیست.', 'error');
       return;
     }
+  } else if (Number(account.level) === 3) {
+    // Drilling into a معین shows its details; choosing one fills both the
+    // base and detail columns so the saved row keeps a valid pair.
+    const parent = accountForCode(account.parentCode);
+    const detailInput = row?.querySelector('.vf-detail1-input');
+    const savedSameDetail = !!row?.dataset.lineId
+      && digitsOnly(row.dataset.savedDetail1 || '') === digitsOnly(account.code);
+    if (!parent || Number(parent.level) !== 2 || !accountAllowedForNewLine(parent, row)) {
+      toast('حساب معین والد این تفصیلی برای ثبت سند معتبر نیست.', 'error');
+      return;
+    }
+    if (!accountChainActive(account) && !savedSameDetail) {
+      toast('حساب تفصیلی یا یکی از والدین آن غیرفعال است و برای ردیف جدید قابل استفاده نیست.', 'error');
+      return;
+    }
+    if (!baseInput || !detailInput) {
+      toast('ردیف سند برای انتخاب تفصیلی آماده نیست.', 'error');
+      return;
+    }
+    baseInput.value = parent.code;
+    detailInput.value = account.code;
+    selectedCode = parent.code;
   } else {
     if (![1, 2].includes(Number(account.level)) || !accountAllowedForNewLine(account, row)) {
       toast('برای ثبت سند، یک حساب کل یا معین فعال انتخاب کنید.', 'error');
@@ -249,7 +306,7 @@ function chooseAccountPickerRow() {
     }
   }
 
-  target.value = account.code;
+  target.value = selectedCode;
   target.dispatchEvent(new Event('input', { bubbles: true }));
   updateRowAccount(row, true);
   updateLedger(row);
@@ -333,12 +390,23 @@ async function openQuickAccountCreate() {
       return;
     }
     level = 3;
-  } else if (selected && Number(selected.level) === 1) {
-    parent = selected;
-    level = 2;
-  } else if (selected && Number(selected.level) === 2) {
-    toast('برای تعریف تفصیلی ۱، از ستون تفصیلی همین ردیف و انتخابگر تفصیلی استفاده کنید.', 'info');
-    return;
+  } else {
+    const pathParent = state.accountPickerPath[state.accountPickerPath.length - 1] || null;
+    const anchor = selected || pathParent;
+    if (anchor && Number(anchor.level) === 1) {
+      parent = anchor;
+      level = 2;
+    } else if (anchor && Number(anchor.level) === 2) {
+      parent = anchor;
+      level = 3;
+    } else if (anchor && Number(anchor.level) === 3) {
+      parent = accountForCode(anchor.parentCode);
+      if (!parent || Number(parent.level) !== 2) {
+        toast('حساب معین والد این تفصیلی پیدا نشد.', 'error');
+        return;
+      }
+      level = 3;
+    }
   }
 
   let groups;
@@ -467,7 +535,13 @@ function bindAccountPicker() {
   if (closeBtn) closeBtn.addEventListener('click', () => closeAccountPicker(true));
   const backBtn = $('#accountPickerBack');
   if (backBtn) backBtn.addEventListener('click', () => {
-    if (state.accountPickerPath.length) {
+    if (state.accountPickerShowAll) {
+      state.accountPickerShowAll = false;
+      if (search) search.value = '';
+      apIndex = 0;
+      renderAccountPickerRows();
+      search?.focus();
+    } else if (state.accountPickerPath.length) {
       state.accountPickerPath.pop();
       state.accountPickerShowAll = false;
       if (search) search.value = '';
@@ -569,12 +643,7 @@ function bindAccountPicker() {
         break;
       case 'F2':
         ev.preventDefault();
-        if (apVisible[apIndex] && state.accounts.some((item) =>
-          digitsOnly(item.parentCode) === digitsOnly(apVisible[apIndex].code))) {
-          drillOrChooseAccountPickerRow(apVisible[apIndex]);
-        } else {
-          chooseAccountPickerRow();
-        }
+        drillOrChooseAccountPickerRow(apVisible[apIndex]);
         break;
       case 'F5':
         ev.preventDefault();
