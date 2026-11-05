@@ -81,6 +81,7 @@ mod tests {
                 account_code: "1101".to_string(),
                 account_name: "صندوق".to_string(),
                 group_name: "دارایی‌های جاری".to_string(),
+                parent_code: String::new(),
                 level: 1,
                 opening_debit: 100,
                 opening_credit: 0,

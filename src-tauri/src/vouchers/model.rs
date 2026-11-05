@@ -395,6 +395,7 @@ pub struct TrialBalanceRow {
     pub account_code: String,
     pub account_name: String,
     pub group_name: String,
+    pub parent_code: String,
     pub level: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub opening_debit: i64,

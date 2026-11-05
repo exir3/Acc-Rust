@@ -354,6 +354,7 @@ impl Database {
                     account_code: account.code.clone(),
                     account_name: account.name.clone(),
                     group_name: account.group_name.clone(),
+                    parent_code: account.parent_code.clone(),
                     level: account.level,
                     opening_debit: opening_net.max(0),
                     opening_credit: checked_neg(
