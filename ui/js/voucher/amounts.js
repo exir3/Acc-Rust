@@ -18,6 +18,20 @@ function parseAmountInput(value) {
   return BigInt(normalized.replace(/,/g, ''));
 }
 
+/* Caret position after the given number of digits in a grouped value, so
+   live thousands separators do not move the caret to the end. */
+function amountCaretPosition(text, digitCount) {
+  if (digitCount <= 0) return 0;
+  let seen = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] >= '0' && text[index] <= '9') {
+      seen += 1;
+      if (seen === digitCount) return index + 1;
+    }
+  }
+  return text.length;
+}
+
 // Fallbacks mirror the backend. `loadSettings` replaces them with the values
 // returned by `get_settings`, so a limit change needs no front-end edit.
 let MAX_AMOUNT = 999_999_999_999_999n;

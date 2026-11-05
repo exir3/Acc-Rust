@@ -7,7 +7,7 @@ function voucherRowTemplate() {
     <tr>
       <td class="vf-rowno"></td>
       <td><input class="vf-code-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="کد حساب پایه" title="برای انتخاب حساب Space یا F4 را بزنید" /></td>
-      <td class="vf-detail1"><input class="vf-detail1-input" type="text" dir="rtl" readonly autocomplete="off" aria-label="تفصیلی ۱" placeholder="انتخاب تفصیلی" title="برای انتخاب تفصیلی Space یا F4 را بزنید" /></td>
+      <td class="vf-detail1"><input class="vf-detail1-input" type="text" dir="rtl" readonly autocomplete="off" aria-label="تفصیلی ۱" title="برای انتخاب تفصیلی Space یا F4 را بزنید" /></td>
       <td><input class="vf-desc-input" type="text" dir="rtl" maxlength="${MAX_LINE_DESCRIPTION}" autocomplete="off" aria-label="شرح" /></td>
       <td><input class="vf-amount-input vf-debit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بدهکار" /></td>
       <td><input class="vf-amount-input vf-credit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بستانکار" /></td>
@@ -52,8 +52,6 @@ function renumberRows() {
       if (input) input.setAttribute('aria-label', `${label}${suffix}`);
     });
   });
-  const docCount = $('#vfDocRecordCount');
-  if (docCount) docCount.textContent = vfFa(filled.length);
   return filled.length;
 }
 

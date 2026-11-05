@@ -11,10 +11,6 @@ function bindVoucherGrid() {
     if (!row) return;
     state.activeRow = row;
     const input = ev.target;
-    if (input.classList.contains('vf-amount-input')) {
-      // Drop the thousands separators while editing.
-      input.value = digitsOnly(input.value);
-    }
     updateRowAccount(row, input.classList.contains('vf-code-input') || input.classList.contains('vf-detail1-input'));
     updateLedger(row);
     updateTotals();
@@ -36,26 +32,43 @@ function bindVoucherGrid() {
     if (!input.matches('input')) return;
 
     if (input.classList.contains('vf-amount-input')) {
-      const rawValue = toAsciiDigits(input.value);
-      const amount = parseAmountInput(rawValue);
-      input.value = rawValue;
-      if (amount === null) {
+      const ascii = toAsciiDigits(input.value);
+      const caret = input.selectionStart ?? ascii.length;
+      const digitsBeforeCaret = digitsOnly(ascii.slice(0, caret)).length;
+      const converted = input.value !== ascii;
+      if (converted) input.value = ascii;
+
+      const invalidChar = /[^\d,\s]/.test(ascii);
+      const digits = digitsOnly(ascii);
+      input.classList.remove('is-invalid');
+      input.removeAttribute('aria-invalid');
+
+      if (invalidChar) {
         input.classList.add('is-invalid');
         input.setAttribute('aria-invalid', 'true');
-        const message = /[-−]/.test(rawValue)
+        const message = /[-−]/.test(ascii)
           ? 'مبلغ منفی مجاز نیست؛ از ستون مقابل استفاده کنید.'
-          : /[./٫]/.test(rawValue)
+          : /[./٫]/.test(ascii)
             ? 'مبلغ باید عدد صحیح ریالی باشد؛ اعشار مجاز نیست.'
             : 'مبلغ فقط باید شامل رقم و جداکننده هزارگان معتبر باشد.';
         toast(message, 'error');
-      } else if (amount > MAX_AMOUNT) {
-        input.classList.add('is-invalid');
-        input.setAttribute('aria-invalid', 'true');
-        toast(`مبلغ هر ردیف حداکثر ${vfFa(formatAmount(MAX_AMOUNT))} ریال می‌تواند باشد.`, 'error');
+      } else if (!digits) {
+        if (input.value !== '') input.value = '';
       } else {
-        input.classList.remove('is-invalid');
-        input.removeAttribute('aria-invalid');
-        input.value = digitsOnly(rawValue);
+        const amount = BigInt(digits);
+        if (amount > MAX_AMOUNT) {
+          input.classList.add('is-invalid');
+          input.setAttribute('aria-invalid', 'true');
+          toast(`مبلغ هر ردیف حداکثر ${vfFa(formatAmount(MAX_AMOUNT))} ریال می‌تواند باشد.`, 'error');
+        }
+        // Thousands separators are applied while typing, and the caret keeps
+        // its place instead of jumping to the end of the field.
+        const formatted = formatAmount(amount);
+        if (converted || input.value !== formatted) {
+          input.value = formatted;
+          const position = amountCaretPosition(formatted, digitsBeforeCaret);
+          try { input.setSelectionRange(position, position); } catch { /* ignore */ }
+        }
       }
     } else if (input.classList.contains('vf-code-input')) {
       const cleaned = digitsOnly(toAsciiDigits(input.value));
@@ -104,6 +117,12 @@ function bindVoucherGrid() {
     if ((isSpace || ev.key === 'F4') && (input.classList.contains('vf-code-input') || input.classList.contains('vf-detail1-input'))) {
       ev.preventDefault();
       openAccountPicker(input);
+      return;
+    }
+
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey) && input.classList.contains('vf-desc-input')) {
+      ev.preventDefault();
+      openSavedDescriptions(input.closest('tr'));
       return;
     }
 

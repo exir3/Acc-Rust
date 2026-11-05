@@ -2003,7 +2003,6 @@ input, textarea, select { user-select: text; }
   padding: 0 5px;
   text-align: center;
   color: #1e3a8a;
-  cursor: pointer;
 }
 .vf-grid .vf-detail1-input::placeholder { color: #8493a2; opacity: 1; }
 .vf-grid .vf-detail1-input:focus { background: #fff8df; box-shadow: inset 0 0 0 1px #c49b45; }
@@ -2019,18 +2018,11 @@ input, textarea, select { user-select: text; }
   font-size: 13px;
 }
 .vf-grid input:focus { background: #fffdf2; }
-.vf-grid input:focus-visible {
-  outline: 2px solid #1d6fd6;
-  outline-offset: -2px;
-  background: #fffdf2;
-  box-shadow: inset 0 0 0 1px #ffffff;
-}
-.vf-grid td:focus-within { box-shadow: inset 0 0 0 2px rgba(29, 111, 214, .35); }
 .vf-code-input { text-align: center; direction: ltr; font-variant-numeric: tabular-nums; }
 .vf-desc-input { text-align: right; direction: rtl; padding: 0 8px; }
 .vf-amount-input {
   padding: 0 8px;
-  text-align: right;
+  text-align: center;
   direction: ltr;
   font-variant-numeric: tabular-nums;
 }

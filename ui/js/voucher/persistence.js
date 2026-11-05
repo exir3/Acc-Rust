@@ -78,7 +78,6 @@ function startNew(number) {
   updateDescCounter();
   fillGrid([]);
   setStatus('info', 'سند جدید — ذخیره نشده');
-  void refreshVoucherCounters(number);
   requestAnimationFrame(() => $('#voucherRows .vf-code-input')?.focus());
 }
 
@@ -100,7 +99,6 @@ function loadVoucher(voucher) {
       ? `سند شماره ${vfFa(voucher.number)} دائمی — فقط‌خواندنی`
       : `سند شماره ${vfFa(voucher.number)} ذخیره‌شده — موقت`
   );
-  void refreshVoucherCounters(voucher.number);
   refreshFormState();
 }
 
@@ -301,7 +299,6 @@ async function saveVoucher(options = {}) {
       state.voucher = saved;
       if (currentDraft.number === draft.number) $('#vfDocNo').value = String(saved.number);
       state.dirty = true;
-      void refreshVoucherCounters(saved.number);
       setStatus('warn', 'تغییرات ذخیره‌نشده');
       toast('نسخه اولیه سند ذخیره شد؛ ویرایش‌های جدید حفظ شده‌اند. برای دائمی‌سازی، تغییرات باقی‌مانده را ذخیره کنید.', 'warning');
     } else {
@@ -569,7 +566,6 @@ async function copyVoucher() {
   updateDescCounter();
   fillGrid(copy.lines);
   markDirty();
-  void refreshVoucherCounters(state.nextNumber);
   toast(`سند جدید از روی سند جاری ساخته شد (شماره ${vfFa(state.nextNumber)}).`, 'info');
   requestAnimationFrame(() => $('#voucherRows .vf-code-input')?.focus());
 }

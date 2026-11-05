@@ -47,28 +47,6 @@ function updateDescCounter() {
   output.textContent = `${vfFa(chars.length)}/${vfFa(MAX_DESCRIPTION)}`;
 }
 
-/* ── Header counters ───────────────────────────────────────── */
-
-let vfCounterSequence = 0;
-
-async function refreshVoucherCounters(number) {
-  if (!invoke) return;
-  const sequence = ++vfCounterSequence;
-  const target = Number(number);
-  try {
-    const counters = await invoke('voucher_counters', {
-      number: Number.isSafeInteger(target) && target > 0 ? target : null,
-    });
-    if (sequence !== vfCounterSequence) return;
-    const total = $('#vfTotalRecords');
-    const upTo = $('#vfRecordsUpTo');
-    if (total) total.textContent = vfFa(counters.totalRecords ?? 0);
-    if (upTo) upTo.textContent = vfFa(counters.recordsUpToThisDoc ?? 0);
-  } catch {
-    // Counters are informational; a failure must not block the form.
-  }
-}
-
 /* ── Permanent / temporary document ─────────────────────────── */
 
 async function setDocumentPermanent(value) {
@@ -269,13 +247,19 @@ function bindDocMeta() {
     });
   }
 
-  if (desc) desc.addEventListener('input', updateDescCounter);
+  if (desc) {
+    desc.addEventListener('input', updateDescCounter);
+    desc.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
+        ev.preventDefault();
+        openSavedDescriptions();
+      }
+    });
+  }
 
   $('#vfPermanentBtn')?.addEventListener('click', () => setDocumentPermanent(true));
   $('#vfChangesBtn')?.addEventListener('click', () => setDocumentPermanent(false));
 
   $('#vfPrevBtn')?.addEventListener('click', navigatePrev);
   $('#vfNextBtn')?.addEventListener('click', navigateNext);
-
-  refreshVoucherCounters(currentNumber());
 }
