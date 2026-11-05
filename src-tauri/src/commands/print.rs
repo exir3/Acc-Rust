@@ -29,7 +29,7 @@ pub(crate) fn open_journal_preview(
     let report = state
         .database
         .get_journal_scoped(&from, &to, &search, report_scope(scope)?)?;
-    let meta = report_meta(&state)?;
+    let meta = report_meta(&state, &from, &to)?;
     show_preview_window(&app, report::journal_print_doc(&report, &meta))
 }
 
@@ -48,7 +48,7 @@ pub(crate) fn open_ledger_preview(
         state
             .database
             .get_ledger_scoped(&account_code, &from, &to, report_scope(scope)?)?;
-    let meta = report_meta(&state)?;
+    let meta = report_meta(&state, &from, &to)?;
     show_preview_window(&app, report::ledger_print_doc(&report, &meta))
 }
 
@@ -80,7 +80,7 @@ pub(crate) fn open_trial_balance_preview(
         multi_level.unwrap_or(true),
         report_scope(scope)?,
     )?;
-    let mut meta = report_meta(&state)?;
+    let mut meta = report_meta(&state, &from, &to)?;
     meta.show_print_date_time = show_print_date_time.unwrap_or(true);
     show_preview_window(
         &app,
@@ -108,7 +108,7 @@ pub(crate) fn open_income_statement_preview(
     let report = state
         .database
         .get_income_statement_scoped(&from, &to, report_scope(scope)?)?;
-    let meta = report_meta(&state)?;
+    let meta = report_meta(&state, &from, &to)?;
     show_preview_window(&app, report::income_statement_print_doc(&report, &meta))
 }
 
@@ -124,7 +124,7 @@ pub(crate) fn open_balance_sheet_preview(
     let report = state
         .database
         .get_balance_sheet_scoped(&as_of, report_scope(scope)?)?;
-    let meta = report_meta(&state)?;
+    let meta = report_meta(&state, &as_of, &as_of)?;
     let document = report::balance_sheet_print_doc(&report, &meta)?;
     show_preview_window(&app, document)
 }
@@ -141,7 +141,7 @@ pub(crate) fn open_voucher_preview(
         .database
         .get_voucher(number)?
         .ok_or_else(|| "برای چاپ، ابتدا سند را ذخیره کنید.".to_string())?;
-    let meta = report_meta(&state)?;
+    let meta = report_meta(&state, &voucher.date, &voucher.date)?;
     show_preview_window(&app, report::voucher_print_doc(&voucher, &meta))
 }
 

@@ -611,6 +611,59 @@ body.is-voucher-list-popup .page-scroll {
 
 .settings-form .input { height: 31px; }
 
+.settings-form textarea.input {
+  height: auto;
+  min-height: 72px;
+  resize: vertical;
+  padding: 7px 9px;
+  line-height: 1.7;
+}
+
+.audit-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.audit-filters .input { height: 31px; min-width: 170px; }
+
+.audit-diff summary {
+  cursor: pointer;
+  color: var(--accent, #1d6fb8);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.audit-diff-part {
+  margin-top: 6px;
+}
+
+.audit-diff-part span {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #67788f;
+  margin-bottom: 2px;
+}
+
+.audit-diff pre {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  direction: ltr;
+  text-align: left;
+  font-size: 10px;
+  line-height: 1.5;
+  background: #f5f8fc;
+  border: 1px solid #e1e8f1;
+  border-radius: 6px;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .settings-form .form-actions {
   grid-column: 1 / -1;
   display: flex;

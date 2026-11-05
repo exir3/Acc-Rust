@@ -171,7 +171,7 @@ pub(crate) fn page(
         html: html_doc,
         title: title.to_string(),
         subtitle: format!(
-            "{} — سال مالی تنظیم‌شده {}",
+            "{} — سال مالی {}",
             if meta.company.trim().is_empty() {
                 "واحد اقتصادی"
             } else {
@@ -213,7 +213,7 @@ pub(crate) fn head(title: &str, meta: &ReportMeta, period_text: &str) -> String 
   <div class="rpt-title">{title}</div>
   <div class="rpt-meta">
     {period}
-    <span>سال مالی (تنظیمات): <b>{year}</b></span>
+    <span>سال مالی: <b>{year}</b></span>
     {today_cell}
   </div>
 </div>"#,

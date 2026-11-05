@@ -143,6 +143,18 @@ pub(crate) const REFERENCE_SCHEMA: &str = r#"
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
+
+    -- One row per successfully completed bulk import. A retried request with
+    -- the same file content returns the original result instead of inserting
+    -- the same vouchers twice.
+    CREATE TABLE IF NOT EXISTS import_batches (
+        payload_hash    TEXT PRIMARY KEY,
+        file_name       TEXT NOT NULL DEFAULT '',
+        sheet_name      TEXT NOT NULL DEFAULT '',
+        voucher_count   INTEGER NOT NULL,
+        imported_numbers TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    );
 "#;
 
 /// Creates the base tables and records the version they physically match.

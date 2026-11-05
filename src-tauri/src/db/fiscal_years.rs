@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use crate::db::audit;
 use crate::db::common::{db_error, to_fa_digits};
 use crate::db::model::{Database, FiscalYear, FiscalYearList};
-use crate::vouchers::normalize_date;
+use crate::vouchers::{normalize_date, normalize_filter_date};
 
 pub(crate) const FISCAL_YEAR_STATUSES: [&str; 3] = ["open", "closed", "final"];
 
@@ -31,6 +31,60 @@ fn validate_title(title: &str) -> Result<String, String> {
         return Err("عنوان سال مالی نمی‌تواند بیشتر از ۶۰ کاراکتر باشد.".to_string());
     }
     Ok(value.to_string())
+}
+
+/// A finalized year is a statement that the books are done. Reopening it is
+/// allowed, but only with a recorded reason and an explicit confirmation.
+fn reopen_reason_for(
+    before: &FiscalYear,
+    new_status: &str,
+    reason: Option<&str>,
+    confirm: bool,
+) -> Result<String, String> {
+    if before.status != "final" || new_status == "final" {
+        return Ok(String::new());
+    }
+    let reason = reason.unwrap_or("").trim();
+    if reason.is_empty() {
+        return Err("سال مالی نهایی‌شده فقط با ثبت دلیل بازگشایی قابل تغییر است.".to_string());
+    }
+    if reason.chars().count() > 500 {
+        return Err("دلیل بازگشایی نمی‌تواند بیشتر از ۵۰۰ کاراکتر باشد.".to_string());
+    }
+    if !confirm {
+        return Err(
+            "بازگشایی سال مالی نهایی‌شده نیاز به تأیید صریح دارد؛ عملیات را تأیید کنید.".to_string(),
+        );
+    }
+    Ok(reason.to_string())
+}
+
+/// Finalizing a year while unsaved/temporary vouchers remain would hide work
+/// that still has to be completed, so it is refused.
+fn ensure_no_temporary_vouchers(conn: &Connection, year_id: i64) -> Result<(), String> {
+    let temporary: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vouchers v
+              WHERE v.is_temporary = 1
+                AND (
+                    v.fiscal_year_id = ?1
+                    OR (
+                        v.fiscal_year_id IS NULL
+                        AND v.date BETWEEN (SELECT start_date FROM fiscal_years WHERE id = ?1)
+                                       AND (SELECT end_date FROM fiscal_years WHERE id = ?1)
+                    )
+                )",
+            params![year_id],
+            |row| row.get(0),
+        )
+        .map_err(db_error)?;
+    if temporary > 0 {
+        return Err(format!(
+            "سال مالی {} سند موقت دارد؛ ابتدا اسناد موقت را دائمی یا حذف کنید و سپس سال را نهایی کنید.",
+            to_fa_digits(temporary)
+        ));
+    }
+    Ok(())
 }
 
 fn fetch_year(conn: &Connection, id: i64) -> Result<FiscalYear, String> {
@@ -221,6 +275,73 @@ pub(crate) fn ensure_open_period(conn: &Connection, date: &str) -> Result<i64, S
 }
 
 impl Database {
+    /// The fiscal-year title that best describes a report's date range.
+    ///
+    /// A range fully inside one configured year shows that year's own title;
+    /// when the range spans years (or no year was set up), the caller keeps the
+    /// configured default. This keeps printed reports consistent with the
+    /// dates they actually cover instead of always showing the settings value.
+    pub fn fiscal_year_label_for_range(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Result<Option<String>, String> {
+        let from = normalize_filter_date(from, "از تاریخ")?;
+        let to = normalize_filter_date(to, "تا تاریخ")?;
+        if !from.is_empty() && !to.is_empty() && from > to {
+            return Err("تاریخ شروع نمی‌تواند بعد از تاریخ پایان باشد.".to_string());
+        }
+        if from.is_empty() && to.is_empty() {
+            return Ok(None);
+        }
+        let anchor_from = if from.is_empty() {
+            to.clone()
+        } else {
+            from.clone()
+        };
+        let anchor_to = if to.is_empty() {
+            from.clone()
+        } else {
+            to.clone()
+        };
+
+        self.with_conn(move |conn| {
+            let covering = conn
+                .query_row(
+                    "SELECT title FROM fiscal_years
+                      WHERE start_date <= ?1 AND end_date >= ?2
+                      ORDER BY id
+                      LIMIT 1",
+                    params![anchor_from, anchor_to],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(db_error)?;
+            if covering.is_some() {
+                return Ok(covering);
+            }
+            // A range that spans more than one configured year has no single
+            // fiscal-year title. Returning an empty label makes the header show
+            // "—" instead of an unrelated value from the editable settings. A
+            // range outside every configured year keeps the caller's fallback.
+            if conn
+                .query_row(
+                    "SELECT 1 FROM fiscal_years
+                      WHERE ?1 BETWEEN start_date AND end_date
+                      LIMIT 1",
+                    params![anchor_from],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(db_error)?
+                .is_some()
+            {
+                return Ok(Some(String::new()));
+            }
+            Ok(None)
+        })
+    }
+
     pub fn list_fiscal_years(&self) -> Result<FiscalYearList, String> {
         let years = self.with_conn(|conn| list_years(conn))?;
         Ok(FiscalYearList {
@@ -271,6 +392,7 @@ impl Database {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_fiscal_year(
         &self,
         id: i64,
@@ -278,6 +400,8 @@ impl Database {
         start_date: &str,
         end_date: &str,
         status: &str,
+        reason: Option<&str>,
+        confirm: bool,
     ) -> Result<FiscalYear, String> {
         if id <= 0 {
             return Err("شناسه سال مالی نامعتبر است.".to_string());
@@ -295,6 +419,10 @@ impl Database {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(db_error)?;
             let before = fetch_year(&tx, id)?;
+            let reopen_reason = reopen_reason_for(&before, &status, reason, confirm)?;
+            if status == "final" && before.status != "final" {
+                ensure_no_temporary_vouchers(&tx, id)?;
+            }
             if (before.start_date != start_date || before.end_date != end_date)
                 && before.voucher_count > 0
             {
@@ -313,6 +441,16 @@ impl Database {
             )
             .map_err(db_error)?;
             let after = fetch_year(&tx, id)?;
+            let mut details = String::new();
+            if before.status != after.status {
+                details = format!("وضعیت از {} به {} تغییر کرد.", before.status, after.status);
+            }
+            if !reopen_reason.is_empty() {
+                if !details.is_empty() {
+                    details.push(' ');
+                }
+                details.push_str(&format!("دلیل بازگشایی: {reopen_reason}"));
+            }
             audit::log(
                 &tx,
                 "update",
@@ -320,14 +458,20 @@ impl Database {
                 Some(id),
                 Some(&serde_json::to_string(&before).map_err(|error| error.to_string())?),
                 Some(&serde_json::to_string(&after).map_err(|error| error.to_string())?),
-                "",
+                &details,
             )?;
             tx.commit().map_err(db_error)?;
             Ok(after)
         })
     }
 
-    pub fn set_fiscal_year_status(&self, id: i64, status: &str) -> Result<FiscalYear, String> {
+    pub fn set_fiscal_year_status(
+        &self,
+        id: i64,
+        status: &str,
+        reason: Option<&str>,
+        confirm: bool,
+    ) -> Result<FiscalYear, String> {
         if id <= 0 {
             return Err("شناسه سال مالی نامعتبر است.".to_string());
         }
@@ -338,6 +482,10 @@ impl Database {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(db_error)?;
             let before = fetch_year(&tx, id)?;
+            let reopen_reason = reopen_reason_for(&before, &status, reason, confirm)?;
+            if status == "final" && before.status != "final" {
+                ensure_no_temporary_vouchers(&tx, id)?;
+            }
             tx.execute(
                 "UPDATE fiscal_years
                     SET status = ?1, updated_at = datetime('now', 'localtime')
@@ -346,6 +494,10 @@ impl Database {
             )
             .map_err(db_error)?;
             let after = fetch_year(&tx, id)?;
+            let mut details = format!("وضعیت از {} به {} تغییر کرد.", before.status, after.status);
+            if !reopen_reason.is_empty() {
+                details.push_str(&format!(" دلیل بازگشایی: {reopen_reason}"));
+            }
             audit::log(
                 &tx,
                 "status",
@@ -353,7 +505,7 @@ impl Database {
                 Some(id),
                 Some(&serde_json::to_string(&before).map_err(|error| error.to_string())?),
                 Some(&serde_json::to_string(&after).map_err(|error| error.to_string())?),
-                &format!("وضعیت از {} به {} تغییر کرد.", before.status, after.status),
+                &details,
             )?;
             tx.commit().map_err(db_error)?;
             Ok(after)

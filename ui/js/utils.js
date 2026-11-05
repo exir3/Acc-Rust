@@ -164,7 +164,7 @@ function accountPathTo(accounts, account) {
 }
 
 function nextAccountCode(accounts, level, parentCode = '') {
-  const baseWidth = ({ 1: 3, 2: 2, 3: 2 })[Number(level)];
+  const baseWidth = ({ 1: 4, 2: 2, 3: 3 })[Number(level)];
   if (!baseWidth || (Number(level) > 1 && !parentCode)) return '';
 
   const prefix = Number(level) === 1 ? '' : String(parentCode);
@@ -172,7 +172,7 @@ function nextAccountCode(accounts, level, parentCode = '') {
     Number(account.level) === Number(level)
     && (Number(level) === 1
       ? !account.parentCode
-      : account.parentCode === parentCode && String(account.code).startsWith(prefix))
+      : account.parentCode === parentCode)
   );
   const suffixWidths = siblings
     .map((account) => String(account.code).length - prefix.length)

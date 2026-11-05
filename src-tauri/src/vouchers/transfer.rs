@@ -1,11 +1,12 @@
 //! Copying or moving persisted voucher rows between two vouchers.
 
-use crate::db::{self, Database};
+use crate::db::{self, audit, Database};
 use crate::vouchers::model::{
     VoucherLineInput, VoucherTransferInput, VoucherTransferResult, MAX_AMOUNT, MAX_LINES,
     MAX_VOUCHER_NUMBER, TOUCHED_AT,
 };
 use crate::vouchers::query::fetch_voucher_by_id;
+use crate::vouchers::storage::voucher_snapshot;
 use crate::vouchers::validation::{
     assert_voucher_type_matches_lines, checked_add, checked_sum, validate_voucher_line_accounts,
 };
@@ -50,19 +51,36 @@ impl Database {
 
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db::db_error)?;
-            let (source_date, source_type, source_is_temporary) = tx
+            let (source_date, source_type, source_is_temporary, source_year_status) = tx
                 .query_row(
-                    "SELECT date, type, is_temporary FROM vouchers WHERE id = ?1 AND number = ?2",
+                    "SELECT v.date, v.type, v.is_temporary,
+                            COALESCE(
+                                f.status,
+                                (SELECT fy.status FROM fiscal_years fy
+                                  WHERE v.date BETWEEN fy.start_date AND fy.end_date
+                                  ORDER BY fy.id LIMIT 1),
+                                ''
+                            )
+                       FROM vouchers v
+                       LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id
+                      WHERE v.id = ?1 AND v.number = ?2",
                     params![source_id, source_number],
                     |row| Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)? != 0,
+                        row.get::<_, String>(3)?,
                     )),
                 )
                 .optional()
                 .map_err(db::db_error)?
                 .ok_or_else(|| "سند مبدأ پس از بازخوانی پیدا نشد؛ فرم را تازه‌سازی کنید.".to_string())?;
+            if !source_year_status.is_empty() && source_year_status != "open" {
+                return Err(
+                    "سال مالی سند مبدأ بسته یا نهایی‌شده است؛ کپی یا انتقال ردیف‌های آن مجاز نیست."
+                        .to_string(),
+                );
+            }
             if is_move && !source_is_temporary {
                 return Err("سند مبدأ دائمی است و انتقال یا تغییر ردیف‌های آن مجاز نیست.".to_string());
             }
@@ -154,25 +172,52 @@ impl Database {
 
             let existing_target = tx
                 .query_row(
-                    "SELECT id, type, is_temporary FROM vouchers WHERE number = ?1",
+                    "SELECT v.id, v.type, v.is_temporary,
+                            COALESCE(
+                                f.status,
+                                (SELECT fy.status FROM fiscal_years fy
+                                  WHERE v.date BETWEEN fy.start_date AND fy.end_date
+                                  ORDER BY fy.id LIMIT 1),
+                                ''
+                            )
+                       FROM vouchers v
+                       LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id
+                      WHERE v.number = ?1",
                     params![target_number],
                     |row| Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)? != 0,
+                        row.get::<_, String>(3)?,
                     )),
                 )
                 .optional()
                 .map_err(db::db_error)?;
-            if existing_target.as_ref().is_some_and(|(_, _, is_temporary)| !*is_temporary) {
+            if existing_target
+                .as_ref()
+                .is_some_and(|(_, _, is_temporary, _)| !*is_temporary)
+            {
                 return Err("سند مقصد دائمی است و دریافت ردیف جدید در آن مجاز نیست.".to_string());
             }
-            if existing_target.as_ref().map(|(id, _, _)| *id) == Some(source_id) {
+            if existing_target
+                .as_ref()
+                .is_some_and(|(_, _, _, year_status)| !year_status.is_empty() && year_status != "open")
+            {
+                return Err(
+                    "سال مالی سند مقصد بسته یا نهایی‌شده است؛ افزودن ردیف به آن مجاز نیست."
+                        .to_string(),
+                );
+            }
+            if existing_target
+                .as_ref()
+                .map(|(id, _, _, _)| *id)
+                == Some(source_id)
+            {
                 return Err("سند مقصد نمی‌تواند همان سند مبدأ باشد.".to_string());
             }
             let target_type = existing_target
                 .as_ref()
-                .map(|(_, kind, _)| kind.clone())
+                .map(|(_, kind, _, _)| kind.clone())
                 .unwrap_or_else(|| source_type.clone());
 
             // The selected lines join the target voucher, so they must agree
@@ -183,8 +228,18 @@ impl Database {
                 .collect();
             assert_voucher_type_matches_lines(&tx, &target_type, &selected_lines)?;
 
+            let source_before = if is_move {
+                Some(voucher_snapshot(&tx, source_id)?)
+            } else {
+                None
+            };
+            let target_before = existing_target
+                .as_ref()
+                .map(|(id, _, _, _)| voucher_snapshot(&tx, *id))
+                .transpose()?;
+
             let (target_id, target_count, target_debit, target_credit, created_target) =
-                if let Some((id, _, _)) = existing_target {
+                if let Some((id, _, _, _)) = existing_target {
                     let totals = tx.query_row(
                         "SELECT COUNT(*), COALESCE(SUM(debit), 0), COALESCE(SUM(credit), 0)
                            FROM voucher_lines WHERE voucher_id = ?1",
@@ -197,10 +252,11 @@ impl Database {
                     ).map_err(db::db_error)?;
                     (id, totals.0, totals.1, totals.2, false)
                 } else {
+                    let fiscal_year_id = db::ensure_open_period(&tx, &source_date)?;
                     tx.execute(
-                        "INSERT INTO vouchers (number, date, type, description, is_temporary)
-                         VALUES (?1, ?2, ?3, '', 1)",
-                        params![target_number, source_date, source_type],
+                        "INSERT INTO vouchers (number, date, type, description, is_temporary, fiscal_year_id)
+                         VALUES (?1, ?2, ?3, '', 1, ?4)",
+                        params![target_number, source_date, source_type, fiscal_year_id],
                     ).map_err(db::db_error)?;
                     (tx.last_insert_rowid(), 0, 0, 0, true)
                 };
@@ -253,6 +309,38 @@ impl Database {
                 &format!("UPDATE vouchers SET updated_at = {TOUCHED_AT} WHERE id = ?1"),
                 params![target_id],
             ).map_err(db::db_error)?;
+
+            let target_after = voucher_snapshot(&tx, target_id)?;
+            let target_before_text = target_before.map(|value| value.to_string());
+            let target_after_text = target_after.to_string();
+            let detail = if is_move {
+                "انتقال ردیف‌های انتخابی به سند مقصد"
+            } else {
+                "کپی ردیف‌های انتخابی به سند مقصد"
+            };
+            audit::log(
+                &tx,
+                "transfer",
+                "voucher",
+                Some(target_id),
+                target_before_text.as_deref(),
+                Some(&target_after_text),
+                detail,
+            )?;
+            if let Some(before) = source_before {
+                let after = voucher_snapshot(&tx, source_id)?;
+                let before_text = before.to_string();
+                let after_text = after.to_string();
+                audit::log(
+                    &tx,
+                    "transfer",
+                    "voucher",
+                    Some(source_id),
+                    Some(&before_text),
+                    Some(&after_text),
+                    "حذف ردیف‌های منتقل‌شده از سند مبدأ",
+                )?;
+            }
 
             tx.commit().map_err(db::db_error)?;
             let target = fetch_voucher_by_id(conn, target_id)?;

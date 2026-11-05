@@ -45,11 +45,19 @@ pub struct AppState {
     pub(crate) report_files: Mutex<HashSet<PathBuf>>,
 }
 
-pub(crate) fn report_meta(state: &State<'_, AppState>) -> Result<report::ReportMeta, String> {
+pub(crate) fn report_meta(
+    state: &State<'_, AppState>,
+    from: &str,
+    to: &str,
+) -> Result<report::ReportMeta, String> {
     let settings = state.database.get_settings()?;
+    let fiscal_year = state
+        .database
+        .fiscal_year_label_for_range(from, to)?
+        .unwrap_or(settings.fiscal_year);
     Ok(report::ReportMeta {
         company: settings.company_name,
-        fiscal_year: settings.fiscal_year,
+        fiscal_year,
         today: settings.today,
         show_print_date_time: true,
     })

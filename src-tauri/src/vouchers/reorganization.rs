@@ -1,11 +1,12 @@
 //! Merging same-date vouchers and renumbering the book.
 
-use crate::db::{self, Database};
+use crate::db::{self, audit, Database};
 use crate::vouchers::model::{
     VoucherMergePreview, VoucherNumberChange, VoucherReorganizationPreview,
     VoucherReorganizationResult, MAX_DESCRIPTION, MAX_LINES, MAX_VOUCHER_NUMBER, TOUCHED_AT,
     VOUCHER_TYPES,
 };
+use crate::vouchers::storage::voucher_snapshot;
 use crate::vouchers::validation::{checked_sum, validate_voucher_date};
 use rusqlite::{params, Connection};
 use std::collections::{BTreeMap, HashSet};
@@ -19,6 +20,7 @@ struct ReorganizationVoucher {
     voucher_type: String,
     description: String,
     is_temporary: bool,
+    fiscal_status: String,
 }
 
 #[derive(Debug, Clone, Hash)]
@@ -64,7 +66,17 @@ fn validate_reorganization_operation(operation: &str) -> Result<(), String> {
 fn read_reorganization_snapshot(conn: &Connection) -> Result<ReorganizationSnapshot, String> {
     let vouchers = conn
         .prepare(
-            "SELECT id, number, date, type, description, is_temporary FROM vouchers ORDER BY id",
+            "SELECT v.id, v.number, v.date, v.type, v.description, v.is_temporary,
+                    COALESCE(
+                        f.status,
+                        (SELECT fy.status FROM fiscal_years fy
+                          WHERE v.date BETWEEN fy.start_date AND fy.end_date
+                          ORDER BY fy.id LIMIT 1),
+                        ''
+                    )
+               FROM vouchers v
+               LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id
+              ORDER BY v.id",
         )
         .map_err(db::db_error)?
         .query_map([], |row| {
@@ -75,6 +87,7 @@ fn read_reorganization_snapshot(conn: &Connection) -> Result<ReorganizationSnaps
                 voucher_type: row.get(3)?,
                 description: row.get(4)?,
                 is_temporary: row.get::<_, i64>(5)? != 0,
+                fiscal_status: row.get(6)?,
             })
         })
         .map_err(db::db_error)?
@@ -266,11 +279,33 @@ fn build_reorganization_plan(
         }
     }
 
+    // Only the vouchers this plan will actually change are subject to the
+    // period check. A closed year elsewhere in the book must not block work on
+    // open temporary vouchers.
+    let mut affected_ids = HashSet::new();
+    for group in &merge_plan {
+        affected_ids.insert(group.keep_id);
+        affected_ids.extend(group.source_ids.iter().copied());
+    }
+    for (voucher_id, _) in &number_changes {
+        affected_ids.insert(*voucher_id);
+    }
+    if let Some(blocked) = snapshot.vouchers.iter().find(|voucher| {
+        affected_ids.contains(&voucher.id)
+            && !voucher.fiscal_status.is_empty()
+            && voucher.fiscal_status != "open"
+    }) {
+        return Err(format!(
+            "سند شماره {} در سال مالی بسته یا نهایی‌شده قرار دارد؛ این سند را نمی‌توان ادغام یا بازشماره‌گذاری کرد.",
+            db::to_fa_digits(blocked.number.to_string())
+        ));
+    }
+
+    let removed_voucher_count = removed_ids.len();
     let mut hasher = DefaultHasher::new();
     operation.hash(&mut hasher);
     snapshot.hash(&mut hasher);
     let plan_token = format!("{:016x}", hasher.finish());
-    let removed_voucher_count = removed_ids.len();
     let preview = VoucherReorganizationPreview {
         operation: operation.to_string(),
         total_vouchers: snapshot.vouchers.len(),
@@ -321,6 +356,21 @@ impl Database {
             if plan.preview.plan_token != plan_token {
                 return Err("اسناد پس از پیش‌نمایش تغییر کرده‌اند؛ پیش‌نمایش جدید بگیرید.".to_string());
             }
+
+            let mut affected_ids = HashSet::new();
+            for group in &plan.merge_groups {
+                affected_ids.insert(group.keep_id);
+                affected_ids.extend(group.source_ids.iter().copied());
+            }
+            for (voucher_id, _) in &plan.number_changes {
+                affected_ids.insert(*voucher_id);
+            }
+            let mut affected_ids: Vec<i64> = affected_ids.into_iter().collect();
+            affected_ids.sort_unstable();
+            let before_snapshots = affected_ids
+                .iter()
+                .map(|voucher_id| Ok((*voucher_id, voucher_snapshot(&tx, *voucher_id)?)))
+                .collect::<Result<Vec<_>, String>>()?;
 
             let mut removed_voucher_count = 0;
             for group in &plan.merge_groups {
@@ -396,6 +446,46 @@ impl Database {
                 removed_voucher_count,
                 renumbered_count: plan.number_changes.len(),
             };
+            for (voucher_id, before) in &before_snapshots {
+                let after = voucher_snapshot(&tx, *voucher_id)?;
+                let before_text = before.to_string();
+                let after_text = after.to_string();
+                audit::log(
+                    &tx,
+                    "reorganize",
+                    "voucher",
+                    Some(*voucher_id),
+                    Some(&before_text),
+                    if after.is_null() {
+                        None
+                    } else {
+                        Some(&after_text)
+                    },
+                    "ادغام یا بازشماره‌گذاری اسناد",
+                )?;
+            }
+            let summary = serde_json::json!({
+                "operation": result.operation,
+                "mergedGroupCount": result.merged_group_count,
+                "removedVoucherCount": result.removed_voucher_count,
+                "renumberedCount": result.renumbered_count,
+            });
+            let details = format!(
+                "عملیات {}: {} گروه ادغام، {} سند حذف‌شده، {} سند بازشماره‌گذاری‌شده.",
+                result.operation,
+                db::to_fa_digits(result.merged_group_count.to_string()),
+                db::to_fa_digits(result.removed_voucher_count.to_string()),
+                db::to_fa_digits(result.renumbered_count.to_string())
+            );
+            audit::log(
+                &tx,
+                "reorganize",
+                "voucher",
+                None,
+                None,
+                Some(&summary.to_string()),
+                &details,
+            )?;
             tx.commit().map_err(db::db_error)?;
             Ok(result)
         })

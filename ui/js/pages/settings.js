@@ -26,6 +26,9 @@ const AUDIT_ACTION_LABELS = {
   finalize: 'نهایی‌سازی',
   restore: 'بازیابی',
   migrate: 'مهاجرت',
+  import: 'ورود گروهی',
+  transfer: 'کپی/انتقال ردیف',
+  reorganize: 'ادغام/بازشماره‌گذاری',
 };
 
 PAGES.settings = {
@@ -36,12 +39,13 @@ PAGES.settings = {
     const [settings, fiscalYears, auditLogs, legacy] = await Promise.all([
       invoke('get_settings'),
       invoke('list_fiscal_years'),
-      invoke('get_audit_logs', { limit: 40 }),
+      invoke('get_audit_logs', { limit: 100 }),
       invoke('analyze_legacy_level4').catch(() => null),
     ]);
     state.settings = settings;
     state.fiscalYears = fiscalYears.years || [];
     state.legacyLevel4 = legacy;
+    state.auditLogs = auditLogs;
     updateBranding(settings);
     return { settings, fiscalYears: state.fiscalYears, auditLogs, legacy };
   },
@@ -186,33 +190,71 @@ function legacyLevel4Card(legacy) {
   </div>`;
 }
 
+function auditDiff(entry) {
+  const render = (value, label) => {
+    if (!value) return '';
+    let text = value;
+    try {
+      text = JSON.stringify(JSON.parse(value), null, 2);
+    } catch {
+      // Keep the stored text as-is when it is not valid JSON.
+    }
+    if (text.length > 1800) text = `${text.slice(0, 1800)}\n…`;
+    return `<div class="audit-diff-part"><span>${label}</span><pre>${esc(text)}</pre></div>`;
+  };
+  const before = render(entry.beforeValue, 'قبل');
+  const after = render(entry.afterValue, 'بعد');
+  if (!before && !after) return '—';
+  return `<details class="audit-diff"><summary>مشاهده</summary>${before}${after}</details>`;
+}
+
 function auditLogCard(logs) {
   const entries = logs?.entries || [];
-  const rows = entries.length ? entries.map((entry) => `
-    <tr>
+  const total = Number(logs?.total ?? entries.length);
+  const entities = [...new Set(entries.map((entry) => entry.entityType))].sort();
+  const entityOptions = entities
+    .map((entity) => `<option value="${esc(entity)}">${esc(AUDIT_ENTITY_LABELS[entity] || entity)}</option>`)
+    .join('');
+  const rows = entries.length ? entries.map((entry) => {
+    const entityLabel = AUDIT_ENTITY_LABELS[entry.entityType] || entry.entityType;
+    const actionLabel = AUDIT_ACTION_LABELS[entry.action] || entry.action;
+    const searchable = `${entry.createdAt} ${entityLabel} ${actionLabel} ${entry.details || ''} ${entry.beforeValue || ''} ${entry.afterValue || ''}`.slice(0, 6000);
+    return `
+    <tr data-audit-row data-entity="${esc(entry.entityType)}" data-search="${esc(searchable.toLowerCase())}">
       <td class="nowrap ltr">${toFa(entry.createdAt)}</td>
-      <td class="nowrap">${esc(AUDIT_ENTITY_LABELS[entry.entityType] || entry.entityType)}</td>
-      <td class="nowrap">${esc(AUDIT_ACTION_LABELS[entry.action] || entry.action)}</td>
+      <td class="nowrap">${esc(entityLabel)}</td>
+      <td class="nowrap">${esc(actionLabel)}</td>
       <td class="desc-cell">${esc(entry.details || '—')}</td>
-    </tr>`).join('') : `<tr><td colspan="4" class="center muted">هنوز تغییری ثبت نشده است.</td></tr>`;
+      <td class="desc-cell">${auditDiff(entry)}</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="5" class="center muted">هنوز تغییری ثبت نشده است.</td></tr>`;
 
   return `
-  <div class="card" style="grid-column:1/-1;margin-top:12px">
+  <div class="card" id="auditLogCard" style="grid-column:1/-1;margin-top:12px">
     <div class="section-head">
       <h2>${icon('i-doc')} تاریخچهٔ تغییرات</h2>
-      <span class="badge" data-tone="info">${toFa(logs?.total ?? entries.length)} رویداد</span>
+      <span class="badge" data-tone="info">${toFa(entries.length)} از ${toFa(total)} رویداد</span>
+    </div>
+    <div class="audit-filters">
+      <select class="input" data-audit-entity aria-label="فیلتر موضوع">
+        <option value="">همه موضوع‌ها</option>
+        ${entityOptions}
+      </select>
+      <input class="input" type="search" data-audit-search placeholder="جستجو در جزئیات یا مقادیر..." aria-label="جستجو در تاریخچه" />
+      <button type="button" class="btn btn-sm" data-audit-clear>پاک کردن فیلتر</button>
     </div>
     <div class="table-wrap short">
       <table class="data-table">
         <thead><tr>
           <th style="width:150px">زمان</th><th style="width:110px">موضوع</th>
-          <th style="width:110px">عملیات</th><th>جزئیات</th>
+          <th style="width:130px">عملیات</th><th>جزئیات</th><th style="width:120px">تغییرات</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
+    ${total > entries.length ? `<div class="form-actions"><button type="button" class="btn btn-sm" data-audit-more>${icon('i-plus')}<span>نمایش رویدادهای بیشتر</span></button></div>` : ''}
     <div class="form-note">
-      تاریخچه فقط افزودنی است و تغییر تعریف حساب‌ها، گروه‌ها، سال‌های مالی، تنظیمات، اسناد، بازیابی پایگاه داده و مهاجرت سطح ۴ را نگه می‌دارد.
+      تاریخچه فقط افزودنی است و تغییر تعریف حساب‌ها، گروه‌ها، سال‌های مالی، تنظیمات، اسناد، ورود گروهی، انتقال ردیف، ادغام و بازشماره‌گذاری، بازیابی پایگاه داده و مهاجرت سطح ۴ را نگه می‌دارد. برای هر تغییر، تصویر قبل و بعد سند ذخیره می‌شود.
     </div>
   </div>`;
 }
@@ -233,18 +275,28 @@ function bindSettings(root, data) {
       const status = button.dataset.status === 'closed' ? 'closed' : 'open';
       const year = (state.fiscalYears || []).find((item) => item.id === id);
       if (!year) return;
-      const confirmed = await confirmDialog(
-        status === 'closed' ? 'بستن سال مالی' : 'باز کردن سال مالی',
-        status === 'closed'
-          ? `در سال مالی «${year.title}» پس از بستن، ثبت و تغییر اسناد مجاز نیست. ادامه می‌دهید؟`
-          : `سال مالی «${year.title}» دوباره برای ثبت اسناد باز می‌شود. ادامه می‌دهید؟`,
-        status === 'closed' ? 'بستن سال' : 'باز کردن سال',
-        status === 'closed',
-      );
-      if (!confirmed) return;
+      let reason = '';
+      let confirm = false;
+      if (year.status === 'final') {
+        const typed = await promptReopenYear(year);
+        if (typed === null) return;
+        reason = typed;
+        confirm = true;
+      } else {
+        const confirmed = await confirmDialog(
+          status === 'closed' ? 'بستن سال مالی' : 'باز کردن سال مالی',
+          status === 'closed'
+            ? `در سال مالی «${year.title}» پس از بستن، ثبت و تغییر اسناد مجاز نیست. ادامه می‌دهید؟`
+            : `سال مالی «${year.title}» دوباره برای ثبت اسناد باز می‌شود. ادامه می‌دهید؟`,
+          status === 'closed' ? 'بستن سال' : 'باز کردن سال',
+          status === 'closed',
+        );
+        if (!confirmed) return;
+        confirm = true;
+      }
       button.disabled = true;
       try {
-        await invoke('set_fiscal_year_status', { id, status });
+        await invoke('set_fiscal_year_status', { id, status, reason, confirm });
         toast(status === 'closed' ? 'سال مالی بسته شد.' : 'سال مالی باز شد.', 'ok');
         await navigate('settings', { force: true });
       } catch (error) {
@@ -311,6 +363,92 @@ function bindSettings(root, data) {
     } finally {
       button.disabled = false;
     }
+  });
+  bindAuditControls(root);
+}
+
+function bindAuditControls(root) {
+  const card = root.querySelector('#auditLogCard');
+  if (!card) return;
+  const entityFilter = card.querySelector('[data-audit-entity]');
+  const searchInput = card.querySelector('[data-audit-search]');
+  const apply = () => {
+    const entity = entityFilter?.value || '';
+    const query = (searchInput?.value || '').trim().toLowerCase();
+    card.querySelectorAll('[data-audit-row]').forEach((row) => {
+      const matchesEntity = !entity || row.dataset.entity === entity;
+      const matchesQuery = !query || String(row.dataset.search || '').includes(query);
+      row.hidden = !(matchesEntity && matchesQuery);
+    });
+  };
+  entityFilter?.addEventListener('change', apply);
+  searchInput?.addEventListener('input', apply);
+  card.querySelector('[data-audit-clear]')?.addEventListener('click', () => {
+    if (entityFilter) entityFilter.value = '';
+    if (searchInput) searchInput.value = '';
+    apply();
+  });
+  const more = card.querySelector('[data-audit-more]');
+  more?.addEventListener('click', async () => {
+    const current = state.auditLogs || { entries: [], total: 0 };
+    const shown = (current.entries || []).length;
+    more.disabled = true;
+    try {
+      const logs = await invoke('get_audit_logs', { limit: Math.max(shown + 100, 200) });
+      state.auditLogs = logs;
+      card.outerHTML = auditLogCard(logs);
+      bindAuditControls(root);
+    } catch (error) {
+      toast(errorText(error), 'error');
+      more.disabled = false;
+    }
+  });
+}
+
+function promptReopenYear(year) {
+  return new Promise((resolve) => {
+    const dialog = openDialog({
+      title: 'بازگشایی سال مالی نهایی‌شده',
+      body: `
+        <div class="note" data-tone="warn">
+          سال مالی «${esc(year.title)}» نهایی شده است. برای تغییر آن، دلیل بازگشایی را ثبت کنید.
+        </div>
+        <div class="field" style="margin-top:12px">
+          <label for="fyReopenReason">دلیل بازگشایی <span class="req">*</span></label>
+          <textarea id="fyReopenReason" class="input" rows="3" maxlength="500" placeholder="مثلاً اصلاح سند اشتباه پس از بستن سال"></textarea>
+        </div>
+        <div class="form-error" id="fyReopenError" hidden></div>`,
+      hideClose: true,
+      onClose: () => resolve(null),
+      actions: [
+        {
+          label: 'بازگشایی سال',
+          primary: true,
+          onClick: () => {
+            const reason = (dialog?.body.querySelector('#fyReopenReason')?.value || '').trim();
+            const errorBox = dialog?.body.querySelector('#fyReopenError');
+            if (!reason) {
+              if (errorBox) {
+                errorBox.textContent = 'ثبت دلیل بازگشایی الزامی است.';
+                errorBox.hidden = false;
+              }
+              return;
+            }
+            dialogCloseHandler = null;
+            closeDialog();
+            resolve(reason);
+          },
+        },
+        {
+          label: 'انصراف',
+          onClick: () => {
+            dialogCloseHandler = null;
+            closeDialog();
+            resolve(null);
+          },
+        },
+      ],
+    });
   });
 }
 
@@ -393,6 +531,12 @@ function openFiscalYearDialog(year = null) {
             ${FISCAL_YEAR_STATUSES.map((status) => `<option value="${status.value}"${status.value === (year?.status || 'open') ? ' selected' : ''}>${status.label}</option>`).join('')}
           </select>
         </div>
+        ${editing && year?.status === 'final' ? `
+        <div class="field" style="grid-column:1/-1">
+          <label for="fyReopenReason">دلیل بازگشایی (در صورت تغییر وضعیت از نهایی)</label>
+          <textarea id="fyReopenReason" class="input" name="reopenReason" rows="3" maxlength="500" placeholder="مثلاً اصلاح سند اشتباه پس از بستن سال"></textarea>
+          <div class="form-note">تا زمانی که وضعیت «نهایی» باقی بماند، ثبت دلیل لازم نیست.</div>
+        </div>` : ''}
         ${lockedRange ? '<div class="form-note" style="grid-column:1/-1">این سال مالی سند ثبت‌شده دارد؛ بازه تاریخ آن قابل تغییر نیست. فقط عنوان یا وضعیت را می‌توانید تغییر دهید.</div>' : ''}
         <div class="form-error" id="fiscalYearError" hidden></div>
         <div class="form-actions">
@@ -409,9 +553,18 @@ function openFiscalYearDialog(year = null) {
     const startDate = lockedRange ? year.startDate : (form.elements.startDate?.value || '').trim();
     const endDate = lockedRange ? year.endDate : (form.elements.endDate?.value || '').trim();
     const status = form.elements.status?.value || 'open';
+    const reopenReason = (form.elements.reopenReason?.value || '').trim();
+    const reopeningFinal = editing && year.status === 'final' && status !== 'final';
     if (!title) {
       if (errorBox) {
         errorBox.textContent = 'عنوان سال مالی الزامی است.';
+        errorBox.hidden = false;
+      }
+      return;
+    }
+    if (reopeningFinal && !reopenReason) {
+      if (errorBox) {
+        errorBox.textContent = 'برای تغییر وضعیت سال مالی نهایی‌شده، دلیل بازگشایی را ثبت کنید.';
         errorBox.hidden = false;
       }
       return;
@@ -428,7 +581,15 @@ function openFiscalYearDialog(year = null) {
     if (errorBox) errorBox.hidden = true;
     try {
       if (editing) {
-        await invoke('update_fiscal_year', { id: year.id, title, startDate, endDate, status });
+        await invoke('update_fiscal_year', {
+          id: year.id,
+          title,
+          startDate,
+          endDate,
+          status,
+          reason: reopeningFinal ? reopenReason : '',
+          confirm: reopeningFinal,
+        });
       } else {
         await invoke('create_fiscal_year', { title, startDate, endDate, status });
       }

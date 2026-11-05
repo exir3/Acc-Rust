@@ -14,7 +14,7 @@
 
   const FA_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
   const LEVEL_NAMES = { 1: 'کل', 2: 'معین', 3: 'تفصیلی ۱' };
-  const CODE_WIDTHS = { 1: 3, 2: 2, 3: 2 };
+  const CODE_WIDTHS = { 1: 4, 2: 2, 3: 3 };
   const MAX_LEVEL = 3;
   const MAX_ACCOUNT_NAME = 255;
   const NATURES = ['debtor', 'creditor', 'dual'];
@@ -237,7 +237,7 @@
     const width = CODE_WIDTHS[level];
     if (!width || (level > 1 && !parentCode)) return '';
     const usedCodes = new Set(state.accounts.map((account) => account.code));
-    const min = level === 1 ? 100 : 1;
+    const min = level === 1 ? 10 ** (width - 1) : 1;
     const max = (10 ** width) - 1;
     const candidates = state.accounts
       .filter((account) => (
@@ -250,7 +250,7 @@
       .filter((code) => new RegExp(`^\\d{${width}}$`).test(code))
       .map(Number)
       .filter((value) => value >= min && value <= max);
-    const next = (candidates.length ? Math.max(...candidates) : (level === 1 ? 100 : 0)) + 1;
+    const next = (candidates.length ? Math.max(...candidates) : (level === 1 ? min - 1 : 0)) + 1;
     for (const [start, end] of [
       [next, max],
       [min, Math.min(next - 1, max)],
@@ -266,9 +266,8 @@
   function isValidNewAccountCode(code, level, parentCode) {
     const width = CODE_WIDTHS[level];
     if (!width || !/^\d+$/.test(code)) return false;
-    if (level === 1) return code.length === width && Number(code) >= 100;
-    if (!parentCode || !code.startsWith(parentCode)) return false;
-    if (code.length !== parentCode.length + width) return false;
+    if (level === 1) return code.length === width && Number(code) >= 10 ** (width - 1);
+    if (!parentCode || code.length !== parentCode.length + width) return false;
     return Number(code.slice(parentCode.length)) > 0;
   }
 
@@ -784,8 +783,8 @@
     if (mode === 'new' && !isValidNewAccountCode(code, level, parentCode)) {
       const width = CODE_WIDTHS[level];
       showError(level === 1
-        ? `کد حساب کل باید دقیقاً ${toFaDigits(width || 3)} رقم باشد و از ۱۰۰ شروع شود.`
-        : `کد حساب ${levelName(level)} باید با کد والد شروع شود و ${toFaDigits(width || 2)} رقم به آن اضافه کند.`);
+        ? `کد حساب کل باید دقیقاً ${toFaDigits(width || 4)} رقم باشد و از ${toFaDigits(10 ** ((width || 4) - 1))} شروع شود.`
+        : `کد حساب ${levelName(level)} باید ${toFaDigits(width || 2)} رقم بیشتر از کد والد داشته باشد.`);
       return;
     }
     if (mode === 'new' && state.accounts.some((account) => account.code === code)) {

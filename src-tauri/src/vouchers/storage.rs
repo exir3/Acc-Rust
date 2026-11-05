@@ -16,6 +16,72 @@ use crate::vouchers::validation::{
 };
 use rusqlite::{params, OptionalExtension};
 
+/// Full before/after image used by the audit trail. It contains the header,
+/// its fiscal-year label and every line, so a reviewer can reconstruct exactly
+/// what changed instead of seeing only a header summary.
+pub(crate) fn voucher_snapshot(
+    conn: &rusqlite::Connection,
+    voucher_id: i64,
+) -> Result<serde_json::Value, String> {
+    let voucher = conn
+        .query_row(
+            "SELECT v.id, v.number, v.date, v.type, v.description, v.is_temporary,
+                    v.fiscal_year_id, f.title, v.created_at, v.updated_at
+               FROM vouchers v
+               LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id
+              WHERE v.id = ?1",
+            params![voucher_id],
+            |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "number": row.get::<_, i64>(1)?,
+                    "date": row.get::<_, String>(2)?,
+                    "type": row.get::<_, String>(3)?,
+                    "description": row.get::<_, String>(4)?,
+                    "isTemporary": row.get::<_, i64>(5)? != 0,
+                    "fiscalYearId": row.get::<_, Option<i64>>(6)?,
+                    "fiscalYearTitle": row.get::<_, Option<String>>(7)?,
+                    "createdAt": row.get::<_, String>(8)?,
+                    "updatedAt": row.get::<_, String>(9)?,
+                }))
+            },
+        )
+        .optional()
+        .map_err(db::db_error)?;
+    if voucher.is_none() {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let mut statement = conn
+        .prepare(
+            "SELECT id, row_no, account_code, NULLIF(detail1_code, ''), description, debit, credit
+               FROM voucher_lines
+              WHERE voucher_id = ?1
+              ORDER BY row_no, id",
+        )
+        .map_err(db::db_error)?;
+    let lines = statement
+        .query_map(params![voucher_id], |row| {
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "rowNo": row.get::<_, i64>(1)?,
+                "accountCode": row.get::<_, String>(2)?,
+                "detail1Code": row.get::<_, Option<String>>(3)?,
+                "description": row.get::<_, String>(4)?,
+                "debit": row.get::<_, i64>(5)?,
+                "credit": row.get::<_, i64>(6)?,
+            }))
+        })
+        .map_err(db::db_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db::db_error)?;
+
+    Ok(serde_json::json!({
+        "voucher": voucher,
+        "lines": lines,
+    }))
+}
+
 impl Database {
     pub fn next_voucher_number(&self) -> Result<i64, String> {
         self.with_conn(|conn| {
@@ -383,6 +449,12 @@ impl Database {
                 return Err("شماره سند تکراری است؛ شماره دیگری انتخاب کنید.".to_string());
             }
 
+            let before_snapshot = if id > 0 {
+                Some(voucher_snapshot(&tx, id)?)
+            } else {
+                None
+            };
+
             let voucher_id = if id > 0 {
                 let updated = if let Some(expected) = expected_updated_at.as_deref() {
                     tx.execute(
@@ -457,21 +529,16 @@ impl Database {
                 ).map_err(db::db_error)?;
             }
 
-            let after = serde_json::json!({
-                "number": number,
-                "date": date,
-                "type": voucher_type,
-                "description": description,
-                "fiscalYearId": fiscal_year_id,
-                "lineCount": lines.len(),
-            });
+            let after_snapshot = voucher_snapshot(&tx, voucher_id)?;
+            let before_text = before_snapshot.map(|value| value.to_string());
+            let after_text = after_snapshot.to_string();
             audit::log(
                 &tx,
                 if id > 0 { "update" } else { "create" },
                 "voucher",
                 Some(voucher_id),
-                None,
-                Some(&after.to_string()),
+                before_text.as_deref(),
+                Some(&after_text),
                 "",
             )?;
 
@@ -529,6 +596,7 @@ impl Database {
                 return Err("سند پس از باز شدن تغییر کرده است؛ دوباره بارگذاری کنید.".to_string());
             }
 
+            let before_snapshot = voucher_snapshot(&tx, id)?;
             let affected = tx
                 .execute(
                     &format!(
@@ -542,13 +610,16 @@ impl Database {
                 return Err("دائمی‌کردن سند انجام نشد؛ سند را دوباره بارگذاری کنید.".to_string());
             }
 
+            let after_snapshot = voucher_snapshot(&tx, id)?;
+            let before_text = before_snapshot.to_string();
+            let after_text = after_snapshot.to_string();
             audit::log(
                 &tx,
                 "finalize",
                 "voucher",
                 Some(id),
-                Some("{\"isTemporary\":true}"),
-                Some("{\"isTemporary\":false}"),
+                Some(&before_text),
+                Some(&after_text),
                 "",
             )?;
 
@@ -570,7 +641,7 @@ impl Database {
             let tx = conn.transaction().map_err(db::db_error)?;
             let current = tx
                 .query_row(
-                    "SELECT v.updated_at, v.is_temporary, COALESCE(f.status, ''), v.number, v.date
+                    "SELECT v.updated_at, v.is_temporary, COALESCE(f.status, '')
                        FROM vouchers v
                        LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id
                       WHERE v.id = ?1",
@@ -580,14 +651,12 @@ impl Database {
                             row.get::<_, String>(0)?,
                             row.get::<_, i64>(1)? != 0,
                             row.get::<_, String>(2)?,
-                            row.get::<_, i64>(3)?,
-                            row.get::<_, String>(4)?,
                         ))
                     },
                 )
                 .optional()
                 .map_err(db::db_error)?;
-            let Some((current, is_temporary, year_status, number, date)) = current else {
+            let Some((current, is_temporary, year_status)) = current else {
                 return Err("سند حسابداری یافت نشد.".to_string());
             };
             if !is_temporary {
@@ -604,6 +673,7 @@ impl Database {
                         .to_string(),
                 );
             }
+            let before_snapshot = voucher_snapshot(&tx, id)?;
             let affected = tx
                 .execute(
                     "DELETE FROM vouchers WHERE id = ?1 AND updated_at = ?2",
@@ -621,7 +691,7 @@ impl Database {
                 "delete",
                 "voucher",
                 Some(id),
-                Some(&serde_json::json!({ "number": number, "date": date }).to_string()),
+                Some(&before_snapshot.to_string()),
                 None,
                 "",
             )?;

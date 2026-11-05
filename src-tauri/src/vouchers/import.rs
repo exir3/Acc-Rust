@@ -1,10 +1,11 @@
 //! Bulk voucher import from parsed Excel workbooks.
 
-use crate::db::{self, Database};
+use crate::db::{self, audit, Database};
 use crate::vouchers::model::{
     VoucherLineInput, MAX_AMOUNT, MAX_DESCRIPTION, MAX_LINES, MAX_LINE_DESCRIPTION,
     MAX_VOUCHER_NUMBER,
 };
+use crate::vouchers::storage::voucher_snapshot;
 use crate::vouchers::validation::{
     assert_voucher_type_matches_lines, checked_sum, normalize_date,
     normalize_voucher_line_accounts, validate_description, validate_voucher_line_accounts,
@@ -12,6 +13,75 @@ use crate::vouchers::validation::{
 };
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
+
+/// Deterministic FNV-1a fingerprint of the parsed workbook. It identifies a
+/// retry of the same import without adding a hashing dependency.
+struct PayloadHasher {
+    state: u64,
+}
+
+impl PayloadHasher {
+    fn new() -> Self {
+        Self {
+            state: 0xcbf2_9ce4_8422_2325,
+        }
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.state ^= u64::from(*byte);
+            self.state = self.state.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    fn text(&mut self, value: &str) {
+        self.write(value.as_bytes());
+        self.write(&[0]);
+    }
+
+    fn number(&mut self, value: i64) {
+        self.text(&value.to_string());
+    }
+
+    fn flag(&mut self, value: bool) {
+        self.write(&[u8::from(value)]);
+    }
+
+    fn finish(self) -> String {
+        format!("{:016x}", self.state)
+    }
+}
+
+fn import_payload_hash(import: &crate::excel::BulkVoucherImport) -> String {
+    let mut hasher = PayloadHasher::new();
+    hasher.text(&import.file_name);
+    hasher.text(&import.sheet_name);
+    for account in &import.accounts {
+        hasher.text(&account.code);
+        hasher.text(&account.name);
+        hasher.text(&account.parent_code);
+        hasher.text(&account.group_code);
+        hasher.number(account.level);
+        hasher.text(&account.nature);
+        hasher.flag(account.nature_is_explicit);
+    }
+    for voucher in &import.vouchers {
+        hasher.number(voucher.id.unwrap_or(0));
+        hasher.number(voucher.number.unwrap_or(0));
+        hasher.text(&voucher.date);
+        hasher.text(&voucher.voucher_type);
+        hasher.text(&voucher.description);
+        for line in &voucher.lines {
+            hasher.number(line.id.unwrap_or(0));
+            hasher.text(&line.account_code);
+            hasher.text(line.detail1_code.as_deref().unwrap_or(""));
+            hasher.text(&line.description);
+            hasher.number(line.debit);
+            hasher.number(line.credit);
+        }
+    }
+    hasher.finish()
+}
 
 impl Database {
     pub fn preview_bulk_import(
@@ -240,6 +310,10 @@ impl Database {
             return Err("فایلی برای ورود وجود ندارد.".to_string());
         }
 
+        let payload_hash = import_payload_hash(&import);
+        let file_name = import.file_name.clone();
+        let sheet_name = import.sheet_name.clone();
+
         let mut prepared = Vec::with_capacity(import.vouchers.len());
         let mut numbers = HashSet::new();
         for input in import.vouchers {
@@ -320,6 +394,20 @@ impl Database {
         let imported_count = prepared.len();
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db::db_error)?;
+            let previous = tx
+                .query_row(
+                    "SELECT voucher_count FROM import_batches WHERE payload_hash = ?1",
+                    params![&payload_hash],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(db::db_error)?;
+            if let Some(count) = previous {
+                let count = usize::try_from(count)
+                    .map_err(|_| "تعداد سندهای دسته ورودی معتبر نیست.".to_string())?;
+                return Ok(count);
+            }
+            let mut imported_numbers = Vec::with_capacity(prepared.len());
             let incoming_numbers: HashSet<i64> = prepared.iter().map(|item| item.0).collect();
             let mut used_numbers = HashSet::new();
             {
@@ -462,9 +550,11 @@ impl Database {
                     }
                 }
                 used_numbers.insert(stored_number);
+                let fiscal_year_id = db::ensure_open_period(&tx, &date)?;
                 tx.execute(
-                    "INSERT INTO vouchers (number, date, type, description) VALUES (?1, ?2, ?3, ?4)",
-                    params![stored_number, date, voucher_type, description],
+                    "INSERT INTO vouchers (number, date, type, description, fiscal_year_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![stored_number, date, voucher_type, description, fiscal_year_id],
                 )
                 .map_err(db::db_error)?;
                 let voucher_id = tx.last_insert_rowid();
@@ -476,7 +566,55 @@ impl Database {
                     )
                     .map_err(db::db_error)?;
                 }
+                imported_numbers.push(stored_number);
+                let snapshot = voucher_snapshot(&tx, voucher_id)?;
+                audit::log(
+                    &tx,
+                    "create",
+                    "voucher",
+                    Some(voucher_id),
+                    None,
+                    Some(&snapshot.to_string()),
+                    "ورود گروهی از فایل اکسل",
+                )?;
             }
+            let numbers_text = imported_numbers
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            tx.execute(
+                "INSERT INTO import_batches
+                    (payload_hash, file_name, sheet_name, voucher_count, imported_numbers)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    &payload_hash,
+                    &file_name,
+                    &sheet_name,
+                    imported_count as i64,
+                    numbers_text
+                ],
+            )
+            .map_err(db::db_error)?;
+            let after = serde_json::json!({
+                "voucherCount": imported_count,
+                "numbers": imported_numbers,
+            });
+            let details = format!(
+                "ورود گروهی {} سند از فایل «{}»، برگه «{}».",
+                db::to_fa_digits(imported_count),
+                file_name,
+                sheet_name
+            );
+            audit::log(
+                &tx,
+                "import",
+                "voucher",
+                None,
+                None,
+                Some(&after.to_string()),
+                &details,
+            )?;
             tx.commit().map_err(db::db_error)?;
             Ok(imported_count)
         })

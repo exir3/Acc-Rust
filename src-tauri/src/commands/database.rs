@@ -136,30 +136,43 @@ pub(crate) fn create_fiscal_year(
 }
 
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn update_fiscal_year(
     id: i64,
     title: String,
     start_date: String,
     end_date: String,
     status: String,
+    reason: Option<String>,
+    confirm: Option<bool>,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::FiscalYear, String> {
     require_window(&window, &["main"])?;
-    state
-        .database
-        .update_fiscal_year(id, &title, &start_date, &end_date, &status)
+    state.database.update_fiscal_year(
+        id,
+        &title,
+        &start_date,
+        &end_date,
+        &status,
+        reason.as_deref(),
+        confirm.unwrap_or(false),
+    )
 }
 
 #[tauri::command(async)]
 pub(crate) fn set_fiscal_year_status(
     id: i64,
     status: String,
+    reason: Option<String>,
+    confirm: Option<bool>,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::FiscalYear, String> {
     require_window(&window, &["main"])?;
-    state.database.set_fiscal_year_status(id, &status)
+    state
+        .database
+        .set_fiscal_year_status(id, &status, reason.as_deref(), confirm.unwrap_or(false))
 }
 
 #[tauri::command(async)]

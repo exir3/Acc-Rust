@@ -281,7 +281,7 @@ function escapeVoucherPickerHtml(value) {
 }
 
 function nextVoucherPickerAccountCode(level, parentCode, accounts) {
-  const baseWidth = ({ 1: 3, 2: 2, 3: 2 })[Number(level)];
+  const baseWidth = ({ 1: 4, 2: 2, 3: 3 })[Number(level)];
   if (!baseWidth || (Number(level) > 1 && !parentCode)) return '';
   const prefix = Number(level) === 1 ? '' : String(parentCode);
   const siblings = accounts.filter((account) => Number(account.level) === Number(level)

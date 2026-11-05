@@ -2011,7 +2011,8 @@ fn closed_fiscal_year_blocks_saving_editing_finalizing_and_deleting() {
         .expect("the saved voucher must have a fiscal year");
     assert_eq!(year.status, "open");
 
-    db.set_fiscal_year_status(year.id, "closed").unwrap();
+    db.set_fiscal_year_status(year.id, "closed", None, false)
+        .unwrap();
 
     let new_error = db.save_voucher(cash_sale("1405/01/11", 2_000)).unwrap_err();
     assert!(new_error.contains("بسته") || new_error.contains("نهایی"));
@@ -2030,6 +2031,202 @@ fn closed_fiscal_year_blocks_saving_editing_finalizing_and_deleting() {
         .delete_voucher(saved.id, Some(&saved.updated_at))
         .unwrap_err();
     assert!(delete_error.contains("بسته") || delete_error.contains("نهایی"));
+}
+
+#[test]
+fn closed_fiscal_year_blocks_bulk_import_and_line_transfer() {
+    let db = db::memory_database();
+    let source = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+    let year = db
+        .list_fiscal_years()
+        .unwrap()
+        .years
+        .into_iter()
+        .find(|year| {
+            year.start_date.as_str() <= "1405/01/10" && year.end_date.as_str() >= "1405/01/10"
+        })
+        .expect("the saved voucher must have a fiscal year");
+    db.set_fiscal_year_status(year.id, "closed", None, false)
+        .unwrap();
+
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "closed.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        accounts: Vec::new(),
+        vouchers: vec![{
+            let mut imported = cash_sale("1405/01/11", 2_000);
+            imported.number = Some(2);
+            imported
+        }],
+    };
+    let import_error = db.import_vouchers(import, false).unwrap_err();
+    assert!(import_error.contains("بسته") || import_error.contains("نهایی"));
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+
+    let transfer_error = db
+        .transfer_voucher_lines(VoucherTransferInput {
+            source_voucher_id: source.id,
+            source_voucher_number: source.number,
+            target_voucher_number: 2,
+            line_ids: source.lines.iter().map(|line| line.id).collect(),
+            mode: "copy".to_string(),
+        })
+        .unwrap_err();
+    assert!(transfer_error.contains("بسته") || transfer_error.contains("نهایی"));
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+}
+
+#[test]
+fn closed_fiscal_year_blocks_only_affected_reorganization_vouchers() {
+    let db = db::memory_database();
+    db.save_voucher(cash_sale("1405/01/02", 1_000)).unwrap();
+    db.save_voucher(cash_sale("1405/01/02", 1_500)).unwrap();
+    let year = db
+        .list_fiscal_years()
+        .unwrap()
+        .years
+        .into_iter()
+        .find(|year| {
+            year.start_date.as_str() <= "1405/01/02" && year.end_date.as_str() >= "1405/01/02"
+        })
+        .expect("the saved voucher must have a fiscal year");
+    db.set_fiscal_year_status(year.id, "closed", None, false)
+        .unwrap();
+
+    let error = db.preview_voucher_reorganization("merge").unwrap_err();
+    assert!(error.contains("بسته یا نهایی"));
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 2);
+}
+
+#[test]
+fn bulk_import_replays_a_completed_batch_without_duplicates() {
+    let db = db::memory_database();
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "replay.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        accounts: Vec::new(),
+        vouchers: vec![{
+            let mut imported = cash_sale("1405/01/10", 1_000);
+            imported.number = Some(1);
+            imported
+        }],
+    };
+
+    assert_eq!(db.import_vouchers(import.clone(), false).unwrap(), 1);
+    assert_eq!(db.import_vouchers(import, false).unwrap(), 1);
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+}
+
+#[test]
+fn audit_snapshots_keep_the_full_before_and_after_image() {
+    let db = db::memory_database();
+    let saved = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+    let mut edited = cash_sale("1405/01/10", 1_500);
+    edited.id = Some(saved.id);
+    edited.description = "شرح ویرایش‌شده".to_string();
+    db.save_voucher(edited).unwrap();
+
+    let logs = db.list_audit_logs(Some(100), None, None).unwrap();
+    let create = logs
+        .entries
+        .iter()
+        .find(|entry| entry.entity_type == "voucher" && entry.action == "create")
+        .expect("create audit entry");
+    let create_after = create.after_value.as_deref().unwrap_or("");
+    assert!(create_after.contains("\"lines\""));
+    assert!(create_after.contains("\"accountCode\""));
+
+    let update = logs
+        .entries
+        .iter()
+        .find(|entry| entry.entity_type == "voucher" && entry.action == "update")
+        .expect("update audit entry");
+    let update_before = update.before_value.as_deref().unwrap_or("");
+    let update_after = update.after_value.as_deref().unwrap_or("");
+    assert!(update_before.contains("\"lines\""));
+    assert!(update_before.contains("1000"));
+    assert!(update_after.contains("1500"));
+    assert!(update_after.contains("شرح ویرایش‌شده"));
+}
+
+#[test]
+fn final_fiscal_year_requires_a_reason_and_confirmation_to_reopen() {
+    let db = db::memory_database();
+    let draft = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+    let year = db
+        .list_fiscal_years()
+        .unwrap()
+        .years
+        .into_iter()
+        .find(|year| {
+            year.start_date.as_str() <= "1405/01/10" && year.end_date.as_str() >= "1405/01/10"
+        })
+        .expect("the saved voucher must have a fiscal year");
+
+    let temporary_error = db
+        .set_fiscal_year_status(year.id, "final", None, false)
+        .unwrap_err();
+    assert!(temporary_error.contains("موقت"));
+
+    db.set_voucher_permanent(draft.id, Some(&draft.updated_at))
+        .unwrap();
+    db.set_fiscal_year_status(year.id, "final", None, false)
+        .unwrap();
+
+    assert!(db
+        .set_fiscal_year_status(year.id, "open", None, true)
+        .unwrap_err()
+        .contains("دلیل"));
+    assert!(db
+        .set_fiscal_year_status(year.id, "open", Some("اصلاح سند"), false)
+        .unwrap_err()
+        .contains("تأیید"));
+    db.set_fiscal_year_status(year.id, "open", Some("اصلاح سند اشتباه"), true)
+        .unwrap();
+
+    let logs = db.list_audit_logs(Some(100), None, None).unwrap();
+    assert!(logs.entries.iter().any(|entry| {
+        entry.action == "status"
+            && entry.details.contains("اصلاح سند اشتباه")
+            && entry
+                .before_value
+                .as_deref()
+                .unwrap_or("")
+                .contains("\"final\"")
+    }));
+}
+
+#[test]
+fn report_fiscal_year_label_follows_the_date_range() {
+    let db = db::memory_database();
+    db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+    assert_eq!(
+        db.fiscal_year_label_for_range("1405/01/01", "1405/12/29")
+            .unwrap()
+            .as_deref(),
+        Some("سال مالی ۱۴۰۵")
+    );
+    assert_eq!(
+        db.fiscal_year_label_for_range("1406/01/01", "1406/12/29")
+            .unwrap()
+            .as_deref(),
+        None
+    );
+
+    db.create_fiscal_year("سال ۱۴۰۶", "1406/01/01", "1406/12/29", "open")
+        .unwrap();
+    assert_eq!(
+        db.fiscal_year_label_for_range("1406/02/01", "1406/03/01")
+            .unwrap()
+            .as_deref(),
+        Some("سال ۱۴۰۶")
+    );
+    assert_eq!(
+        db.fiscal_year_label_for_range("1405/06/01", "1406/06/01")
+            .unwrap()
+            .as_deref(),
+        Some("")
+    );
 }
 
 #[test]

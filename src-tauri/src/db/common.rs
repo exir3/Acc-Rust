@@ -6,7 +6,7 @@ pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
 /// `CURRENT_SCHEMA_VERSION`. Keeping the two constants separate is intentional:
 /// a fresh database must still run the v5 voucher-pair migration.
 pub(crate) const BASE_SCHEMA_VERSION: i64 = 4;
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 9;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 10;
 // A pre-delete snapshot must preserve legacy vouchers exactly as they existed,
 // even when an old document already violates the current balancing rules.
 pub(crate) const BULK_DELETE_SNAPSHOT_KEY: &str = "backup_snapshot_kind";
