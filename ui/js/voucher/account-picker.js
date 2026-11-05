@@ -151,6 +151,10 @@ function highlightAccountPickerRow(index) {
 }
 
 function openAccountPicker(input) {
+  if (isLockedVoucher()) {
+    toast('سند دائمی است و حساب‌های ردیف‌های آن قابل تغییر نیستند.', 'error');
+    return;
+  }
   const modal = $('#accountPickerModal');
   if (!modal) return;
   if (!state.accounts.length) {
@@ -209,6 +213,11 @@ function closeAccountPicker(refocus = false) {
 }
 
 function chooseAccountPickerRow() {
+  if (isLockedVoucher()) {
+    closeAccountPicker(false);
+    toast('سند دائمی است و حساب‌های ردیف‌های آن قابل تغییر نیستند.', 'error');
+    return;
+  }
   const account = apVisible[apIndex];
   if (!account || !apTarget) return;
   const target = apTarget;
@@ -264,6 +273,322 @@ function trapPickerFocus(ev) {
   }
 }
 
+function escapeVoucherPickerHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[char]);
+}
+
+function nextVoucherPickerAccountCode(level, parentCode, accounts) {
+  const baseWidth = ({ 1: 3, 2: 2, 3: 2 })[Number(level)];
+  if (!baseWidth || (Number(level) > 1 && !parentCode)) return '';
+  const prefix = Number(level) === 1 ? '' : String(parentCode);
+  const siblings = accounts.filter((account) => Number(account.level) === Number(level)
+    && (Number(level) === 1 ? !account.parentCode : account.parentCode === parentCode));
+  const widths = siblings.map((account) => String(account.code).length - prefix.length)
+    .filter((width) => width > 0);
+  const width = Math.max(baseWidth, ...widths);
+  if (prefix.length + width > 50) return '';
+  const minimum = Number(level) === 1 ? 10n ** BigInt(width - 1) : 1n;
+  const maximum = 10n ** BigInt(width) - 1n;
+  const pattern = new RegExp('^\\d{' + width + '}
+  const modal = $('#accountPickerModal');
+  const rows = $('#accountPickerRows');
+  const search = $('#accountPickerSearch');
+  if (!modal || !rows) return;
+
+  const closeBtn = $('#btnAccountPickerClose');
+  if (closeBtn) closeBtn.addEventListener('click', () => closeAccountPicker(true));
+  const backBtn = $('#accountPickerBack');
+  if (backBtn) backBtn.addEventListener('click', () => {
+    if (state.accountPickerPath.length) {
+      state.accountPickerPath.pop();
+      state.accountPickerShowAll = false;
+      if (search) search.value = '';
+      apIndex = 0;
+      renderAccountPickerRows();
+      search?.focus();
+    } else {
+      closeAccountPicker(true);
+    }
+  });
+  modal.addEventListener('click', (ev) => {
+    if (ev.target.id === 'accountPickerModal') closeAccountPicker(true);
+  });
+
+  if (search) {
+    let apSearchDebounceTimer = 0;
+    search.addEventListener('input', () => {
+      clearTimeout(apSearchDebounceTimer);
+      apSearchDebounceTimer = setTimeout(() => renderAccountPickerRows(), 120);
+    });
+  }
+
+  rows.addEventListener('click', (ev) => {
+    const row = ev.target.closest('.ap-row[data-picker-index]');
+    if (!row) return;
+    apIndex = Number(row.dataset.pickerIndex);
+    highlightAccountPickerRow(apIndex);
+  });
+  rows.addEventListener('dblclick', (ev) => {
+    const row = ev.target.closest('.ap-row[data-picker-index]');
+    if (!row) return;
+    apIndex = Number(row.dataset.pickerIndex);
+    highlightAccountPickerRow(apIndex);
+    drillOrChooseAccountPickerRow(apVisible[apIndex]);
+  });
+
+  const selectBtn = $('#accountPickerSelect');
+  if (selectBtn) selectBtn.addEventListener('click', chooseAccountPickerRow);
+  $('#accountPickerCreate')?.addEventListener('click', openQuickAccountCreate);
+
+  const clearBtn = modal.querySelector('[data-picker-act="clear"]');
+  const showAllAccounts = () => {
+    state.accountPickerPath = [];
+    state.accountPickerShowAll = true;
+    if (search) search.value = '';
+    renderAccountPickerRows();
+    if (search) search.focus();
+  };
+  if (clearBtn) {
+    clearBtn.addEventListener('click', showAllAccounts);
+  }
+
+  modal.addEventListener('keydown', (ev) => {
+    trapPickerFocus(ev);
+    if (ev.defaultPrevented || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+
+    const inField = ev.target.closest && ev.target.closest('input, textarea, select');
+    const nativeControl = ev.target.closest && ev.target.closest('button, a[href], [role="button"]');
+    if (nativeControl && (ev.key === 'Enter' || ev.key === ' ')) return;
+    if (ev.key === 'Insert' || ev.key === 'F3') {
+      ev.preventDefault();
+      openQuickAccountCreate();
+      return;
+    }
+
+    const step = Math.max(1, Math.floor(rows.clientHeight / 37) - 1);
+    switch (ev.key) {
+      case 'ArrowDown':
+        ev.preventDefault();
+        highlightAccountPickerRow(apIndex + 1);
+        break;
+      case 'ArrowUp':
+        ev.preventDefault();
+        highlightAccountPickerRow(apIndex - 1);
+        break;
+      case 'PageDown':
+        ev.preventDefault();
+        highlightAccountPickerRow(apIndex + step);
+        break;
+      case 'PageUp':
+        ev.preventDefault();
+        highlightAccountPickerRow(apIndex - step);
+        break;
+      case 'Home':
+        if (!inField && (!search || !search.value)) {
+          ev.preventDefault();
+          highlightAccountPickerRow(0);
+        }
+        break;
+      case 'End':
+        if (!inField && (!search || !search.value)) {
+          ev.preventDefault();
+          highlightAccountPickerRow(apVisible.length - 1);
+        }
+        break;
+      case 'Enter':
+        ev.preventDefault();
+        chooseAccountPickerRow();
+        break;
+      case 'F2':
+        ev.preventDefault();
+        if (apVisible[apIndex] && state.accounts.some((item) =>
+          digitsOnly(item.parentCode) === digitsOnly(apVisible[apIndex].code))) {
+          drillOrChooseAccountPickerRow(apVisible[apIndex]);
+        } else {
+          chooseAccountPickerRow();
+        }
+        break;
+      case 'F5':
+        ev.preventDefault();
+        if (search) search.focus();
+        break;
+      case 'F6':
+        ev.preventDefault();
+        showAllAccounts();
+        break;
+      default:
+        break;
+    }
+  });
+}
+
+);
+  const used = new Set(accounts.map((account) => String(account.code)));
+  const suffixes = siblings.map((account) => String(account.code).slice(prefix.length))
+    .filter((suffix) => pattern.test(suffix)).map(BigInt);
+  const highest = suffixes.length
+    ? suffixes.reduce((max, value) => value > max ? value : max, minimum - 1n)
+    : (Number(level) === 1 ? minimum : 0n);
+  let next = highest + 1n;
+  for (let checked = 0; checked <= accounts.length + 1; checked += 1) {
+    if (next > maximum) next = minimum;
+    const candidate = prefix + next.toString().padStart(width, '0');
+    if (!used.has(candidate)) return candidate;
+    next += 1n;
+  }
+  return '';
+}
+
+function closeQuickAccountCreate() {
+  const modal = $('#vfQuickAccountModal');
+  if (modal) modal.hidden = true;
+  if (accountPickerOpen()) $('#accountPickerCreate')?.focus();
+}
+
+async function openQuickAccountCreate() {
+  if (!invoke || !apTarget) return;
+  const row = apTarget.closest('tr');
+  const baseCode = apMode === 'detail'
+    ? digitsOnly(row?.querySelector('.vf-code-input')?.value || '')
+    : digitsOnly(apTarget.value || '');
+  const selected = apMode === 'detail'
+    ? accountForCode(baseCode)
+    : (apVisible[apIndex] || accountForCode(baseCode));
+  let parent = null;
+  let level = 1;
+  if (apMode === 'detail') {
+    parent = selected;
+    if (!parent || Number(parent.level) !== 2) {
+      toast('برای تعریف تفصیلی ۱، ابتدا یک حساب معین معتبر انتخاب کنید.', 'info');
+      return;
+    }
+    level = 3;
+  } else if (selected && Number(selected.level) === 1) {
+    parent = selected;
+    level = 2;
+  } else if (selected && Number(selected.level) === 2) {
+    toast('برای تعریف تفصیلی ۱، از ستون تفصیلی همین ردیف و انتخابگر تفصیلی استفاده کنید.', 'info');
+    return;
+  }
+
+  let groups;
+  try {
+    const payload = await invoke('list_account_groups');
+    groups = Array.isArray(payload?.groups) ? payload.groups : [];
+  } catch (error) {
+    toast(errorText(error), 'error');
+    return;
+  }
+  if (!groups.length) {
+    toast('ابتدا حداقل یک گروه حساب تعریف کنید.', 'error');
+    return;
+  }
+
+  let modal = $('#vfQuickAccountModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'vfQuickAccountModal';
+    modal.className = 'modal vf-quick-account-modal';
+    modal.hidden = true;
+    modal.innerHTML = `
+      <section class="ap-window vf-quick-account-window" role="dialog" aria-modal="true" aria-labelledby="vfQuickAccountTitle">
+        <div class="ap-titlebar">
+          <button class="ap-close" type="button" data-quick-close aria-label="بستن">
+            <svg class="ico"><use href="#i-close" /></svg>
+          </button>
+          <span class="ap-title" id="vfQuickAccountTitle">تعریف حساب از داخل انتخابگر</span>
+        </div>
+        <form id="vfQuickAccountForm" class="vf-quick-account-form">
+          <label>سطح حساب<input id="vfQuickAccountLevel" type="text" readonly /></label>
+          <label>حساب بالاتر<input id="vfQuickAccountParent" type="text" readonly /></label>
+          <label>گروه حساب<select id="vfQuickAccountGroup" required></select></label>
+          <label>کد حساب<input id="vfQuickAccountCode" type="text" inputmode="numeric" dir="ltr" maxlength="50" required /></label>
+          <label>نام حساب<input id="vfQuickAccountName" type="text" maxlength="200" required /></label>
+          <label>ماهیت<select id="vfQuickAccountNature">
+            <option value="debtor">بدهکار</option><option value="creditor">بستانکار</option><option value="dual">دوگانه</option>
+          </select></label>
+          <div class="vf-quick-account-actions">
+            <button type="submit" class="ap-tool ap-tool-select">ثبت حساب</button>
+            <button type="button" class="ap-tool" data-quick-close>انصراف</button>
+          </div>
+          <div id="vfQuickAccountError" role="status" aria-live="polite"></div>
+        </form>
+      </section>`;
+    document.body.append(modal);
+    modal.querySelectorAll('[data-quick-close]').forEach((button) => button.addEventListener('click', closeQuickAccountCreate));
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeQuickAccountCreate();
+    });
+    modal.querySelector('#vfQuickAccountForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const submit = form.querySelector('[type="submit"]');
+      const code = digitsOnly($('#vfQuickAccountCode').value);
+      const name = $('#vfQuickAccountName').value.trim();
+      const groupCode = $('#vfQuickAccountGroup').value;
+      const selectedLevel = Number($('#vfQuickAccountLevel').dataset.level);
+      const parentCode = $('#vfQuickAccountParent').dataset.code || '';
+      const nature = $('#vfQuickAccountNature').value;
+      const errorBox = $('#vfQuickAccountError');
+      errorBox.textContent = '';
+      if (!code || !name) {
+        errorBox.textContent = 'کد و نام حساب الزامی است.';
+        return;
+      }
+      submit.disabled = true;
+      try {
+        const created = await invoke('create_account', {
+          code, name, level: selectedLevel, groupCode, nature,
+          parentCode, isPostable: selectedLevel <= 2, isActive: true,
+        });
+        await loadAccounts();
+        modal.hidden = true;
+        const search = $('#accountPickerSearch');
+        if (search) search.value = created.code;
+        renderAccountPickerRows();
+        const index = apVisible.findIndex((item) => digitsOnly(item.code) === digitsOnly(created.code));
+        if (index >= 0) {
+          apIndex = index;
+          renderAccountPickerRows(false);
+          chooseAccountPickerRow();
+        } else {
+          toast('حساب ایجاد شد؛ برای انتخاب آن، فهرست حساب‌ها را به‌روزرسانی کنید.', 'ok');
+        }
+      } catch (error) {
+        errorBox.textContent = errorText(error);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    modal.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeQuickAccountCreate();
+      }
+    });
+  }
+
+  const groupSelect = $('#vfQuickAccountGroup');
+  groupSelect.innerHTML = groups.map((group) =>
+    `<option value="${escapeVoucherPickerHtml(group.code)}">${escapeVoucherPickerHtml(group.code)} — ${escapeVoucherPickerHtml(group.name)}</option>`
+  ).join('');
+  groupSelect.value = parent?.groupCode || groups[0].code;
+  const levelInput = $('#vfQuickAccountLevel');
+  levelInput.value = ({ 1: 'کل', 2: 'معین', 3: 'تفصیلی ۱' })[level];
+  levelInput.dataset.level = String(level);
+  const parentInput = $('#vfQuickAccountParent');
+  parentInput.value = parent ? `${parent.code} — ${parent.name}` : 'بدون حساب بالاتر';
+  parentInput.dataset.code = parent?.code || '';
+  $('#vfQuickAccountCode').value = nextVoucherPickerAccountCode(level, parent?.code || '', state.accounts);
+  $('#vfQuickAccountName').value = '';
+  $('#vfQuickAccountNature').value = parent?.nature || 'debtor';
+  $('#vfQuickAccountError').textContent = '';
+  modal.hidden = false;
+  $('#vfQuickAccountName').focus();
+}
+
 function bindAccountPicker() {
   const modal = $('#accountPickerModal');
   const rows = $('#accountPickerRows');
@@ -313,6 +638,7 @@ function bindAccountPicker() {
 
   const selectBtn = $('#accountPickerSelect');
   if (selectBtn) selectBtn.addEventListener('click', chooseAccountPickerRow);
+  $('#accountPickerCreate')?.addEventListener('click', openQuickAccountCreate);
 
   const clearBtn = modal.querySelector('[data-picker-act="clear"]');
   const showAllAccounts = () => {
@@ -333,6 +659,11 @@ function bindAccountPicker() {
     const inField = ev.target.closest && ev.target.closest('input, textarea, select');
     const nativeControl = ev.target.closest && ev.target.closest('button, a[href], [role="button"]');
     if (nativeControl && (ev.key === 'Enter' || ev.key === ' ')) return;
+    if (ev.key === 'Insert' || ev.key === 'F3') {
+      ev.preventDefault();
+      openQuickAccountCreate();
+      return;
+    }
 
     const step = Math.max(1, Math.floor(rows.clientHeight / 37) - 1);
     switch (ev.key) {

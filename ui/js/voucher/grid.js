@@ -220,6 +220,34 @@ function updateLedger(row) {
 
 function refreshFormState() {
   renumberRows();
+  const locked = isLockedVoucher();
+  gridRows().forEach((row) => {
+    row.querySelectorAll('.vf-code-input, .vf-detail1-input, .vf-desc-input, .vf-debit-input, .vf-credit-input').forEach((input) => {
+      input.readOnly = locked;
+      input.setAttribute('aria-readonly', locked ? 'true' : 'false');
+    });
+  });
+  ['#vfDocNo', '#vfDocDate', '#vfDocDesc'].forEach((selector) => {
+    const input = $(selector);
+    if (input) {
+      input.readOnly = locked;
+      input.setAttribute('aria-readonly', locked ? 'true' : 'false');
+    }
+  });
+  const docType = $('#vfDocType');
+  if (docType) docType.disabled = locked;
+  const toggle = $('#vfPermanentToggle');
+  if (toggle) {
+    toggle.checked = locked || Boolean(state.makePermanent);
+    toggle.disabled = locked || state.busy;
+    toggle.title = locked
+      ? 'سند دائمی است و قابل بازگشت به وضعیت موقت نیست.'
+      : 'پس از ذخیره، سند دائمی می‌شود و دیگر قابل ویرایش یا حذف نخواهد بود.';
+  }
+  const mutating = ['save', 'add-row', 'delete-row', 'delete-voucher', 'transfer-move', 'excel-import'];
+  $$('[data-action]').forEach((button) => {
+    if (mutating.includes(button.dataset.action)) button.disabled = locked || state.busy;
+  });
   updateTotals();
   updateLedger(state.activeRow && state.activeRow.isConnected ? state.activeRow : null);
   applyVoucherGridSearch();

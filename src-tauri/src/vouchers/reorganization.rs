@@ -18,6 +18,7 @@ struct ReorganizationVoucher {
     date: String,
     voucher_type: String,
     description: String,
+    is_temporary: bool,
 }
 
 #[derive(Debug, Clone, Hash)]
@@ -62,7 +63,7 @@ fn validate_reorganization_operation(operation: &str) -> Result<(), String> {
 
 fn read_reorganization_snapshot(conn: &Connection) -> Result<ReorganizationSnapshot, String> {
     let vouchers = conn
-        .prepare("SELECT id, number, date, type, description FROM vouchers ORDER BY id")
+        .prepare("SELECT id, number, date, type, description, is_temporary FROM vouchers ORDER BY id")
         .map_err(db::db_error)?
         .query_map([], |row| {
             Ok(ReorganizationVoucher {
@@ -71,6 +72,7 @@ fn read_reorganization_snapshot(conn: &Connection) -> Result<ReorganizationSnaps
                 date: row.get(2)?,
                 voucher_type: row.get(3)?,
                 description: row.get(4)?,
+                is_temporary: row.get::<_, i64>(5)? != 0,
             })
         })
         .map_err(db::db_error)?
@@ -119,7 +121,7 @@ fn build_reorganization_plan(
         for voucher in snapshot
             .vouchers
             .iter()
-            .filter(|voucher| voucher.voucher_type == VOUCHER_TYPES[0])
+            .filter(|voucher| voucher.is_temporary && voucher.voucher_type == VOUCHER_TYPES[0])
         {
             let date = validate_voucher_date(&voucher.date)?;
             grouped
@@ -217,10 +219,16 @@ fn build_reorganization_plan(
 
     let mut number_changes = Vec::new();
     if do_sort {
+        // Permanent documents reserve their numbers and are excluded from sorting.
+        // Temporary documents are assigned the next free positive number in date order.
+        let reserved_numbers: HashSet<i64> = snapshot.vouchers.iter()
+            .filter(|voucher| !voucher.is_temporary)
+            .map(|voucher| voucher.number)
+            .collect();
         let mut remaining: Vec<(&ReorganizationVoucher, String)> = snapshot
             .vouchers
             .iter()
-            .filter(|voucher| !removed_ids.contains(&voucher.id))
+            .filter(|voucher| voucher.is_temporary && !removed_ids.contains(&voucher.id))
             .map(|voucher| Ok((voucher, validate_voucher_date(&voucher.date)?)))
             .collect::<Result<_, String>>()?;
         remaining.sort_by(|(left, left_date), (right, right_date)| {
@@ -229,9 +237,18 @@ fn build_reorganization_plan(
                 .then_with(|| left.number.cmp(&right.number))
                 .then_with(|| left.id.cmp(&right.id))
         });
-        for (index, (voucher, date)) in remaining.into_iter().enumerate() {
-            let new_number = i64::try_from(index + 1)
-                .map_err(|_| "تعداد اسناد از محدوده شماره‌گذاری مجاز بیشتر است.".to_string())?;
+        let mut next_number = 1_i64;
+        for (voucher, date) in remaining {
+            while reserved_numbers.contains(&next_number) {
+                next_number = next_number.checked_add(1)
+                    .ok_or_else(|| "شماره سند بعدی از محدوده مجاز خارج است.".to_string())?;
+            }
+            if next_number > MAX_VOUCHER_NUMBER {
+                return Err("تعداد اسناد از محدوده شماره‌گذاری مجاز بیشتر است.".to_string());
+            }
+            let new_number = next_number;
+            next_number = next_number.checked_add(1)
+                .ok_or_else(|| "شماره سند بعدی از محدوده مجاز خارج است.".to_string())?;
             if voucher.number != new_number {
                 let change = VoucherNumberChange {
                     old_number: voucher.number,

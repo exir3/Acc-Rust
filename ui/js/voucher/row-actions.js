@@ -3,6 +3,7 @@
 /* ── Row toolbar actions ────────────────────────────────────── */
 
 function addRow() {
+  if (isLockedVoucher()) { toast('سند دائمی است و ردیف‌های آن قابل تغییر نیستند.', 'error'); return; }
   const tbody = $('#voucherRows');
   if (!tbody) return;
   const gridSearch = $('#vfGridSearch');
@@ -31,6 +32,7 @@ function addRow() {
 }
 
 function repeatRow(includeAmounts = false) {
+  if (isLockedVoucher()) { toast('سند دائمی است و ردیف‌های آن قابل تغییر نیستند.', 'error'); return; }
   if (gridRows().filter(rowHasValue).length >= MAX_VOUCHER_LINES) {
     toast(`حداکثر ${vfFa(MAX_VOUCHER_LINES)} ردیف برای هر سند مجاز است.`, 'warning');
     return;
@@ -69,6 +71,7 @@ function repeatRow(includeAmounts = false) {
 }
 
 function deleteRow() {
+  if (isLockedVoucher()) { toast('سند دائمی است و ردیف‌های آن قابل تغییر نیستند.', 'error'); return; }
   const row = state.activeRow && state.activeRow.isConnected ? state.activeRow : null;
   if (!row) {
     toast('ابتدا ردیفی را انتخاب کنید.', 'info');

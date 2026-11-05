@@ -36,6 +36,7 @@ struct BulkVoucherDeleteTarget {
     voucher_type: String,
     description: String,
     updated_at: String,
+    is_temporary: bool,
 }
 
 fn parse_bulk_delete_scope(
@@ -78,7 +79,7 @@ fn read_bulk_delete_targets(
     conn: &Connection,
     scope: &BulkVoucherDeleteScope,
 ) -> Result<Vec<BulkVoucherDeleteTarget>, String> {
-    const COLUMNS: &str = "SELECT id, number, date, type, description, updated_at FROM vouchers";
+    const COLUMNS: &str = "SELECT id, number, date, type, description, updated_at, is_temporary FROM vouchers";
     // Read one row beyond the cap so an oversized range is rejected without
     // loading the whole ledger into memory.
     let limit = MAX_BULK_DELETE_TARGETS + 1;
@@ -90,6 +91,7 @@ fn read_bulk_delete_targets(
             voucher_type: row.get(3)?,
             description: row.get(4)?,
             updated_at: row.get(5)?,
+            is_temporary: row.get::<_, i64>(6)? != 0,
         })
     };
 
@@ -192,14 +194,19 @@ impl Database {
             check_bulk_delete_limit(&targets)?;
             let plan_token = bulk_delete_fingerprint(&scope, &targets);
             let timestamp = local_timestamp(conn)?;
-            let deletable_sample = targets.iter().take(20).map(bulk_delete_sample).collect();
+            let deletable_count = targets.iter().filter(|target| target.is_temporary).count();
+            let locked_count = targets.len() - deletable_count;
+            let deletable_sample = targets.iter().filter(|target| target.is_temporary)
+                .take(20).map(bulk_delete_sample).collect();
+            let locked_sample = targets.iter().filter(|target| !target.is_temporary)
+                .take(20).map(bulk_delete_sample).collect();
             Ok(BulkVoucherDeletePreview {
                 scope: scope.as_str().to_string(),
                 plan_token,
                 total_matched: targets.len(),
-                deletable_count: targets.len(),
-                locked_count: 0,
-                locked_sample: Vec::new(),
+                deletable_count,
+                locked_count,
+                locked_sample,
                 deletable_sample,
                 date_range: match &scope {
                     BulkVoucherDeleteScope::DateRange { from, to } => {
@@ -291,11 +298,16 @@ impl Database {
             if bulk_delete_fingerprint(&scope, &targets) != token {
                 return Err("اسناد پس از پیش‌نمایش تغییر کرده‌اند؛ پیش‌نمایش جدید بگیرید.".to_string());
             }
-            for target in &targets {
-                tx.execute("DELETE FROM vouchers WHERE id = ?1", params![target.id])
-                    .map_err(db::db_error)?;
+            let locked_count = targets.iter().filter(|target| !target.is_temporary).count();
+            let deletable: Vec<_> = targets.iter().filter(|target| target.is_temporary).collect();
+            for target in &deletable {
+                tx.execute(
+                    "DELETE FROM vouchers WHERE id = ?1 AND is_temporary = 1",
+                    params![target.id],
+                )
+                .map_err(db::db_error)?;
             }
-            let deleted_count = targets.len();
+            let deleted_count = deletable.len();
             let timestamp = local_timestamp(&tx)?;
             tx.commit().map_err(db::db_error)?;
             let message = if deleted_count == 0 {
@@ -307,7 +319,7 @@ impl Database {
                 scope: scope.as_str().to_string(),
                 message,
                 deleted_count,
-                locked_count: 0,
+                locked_count,
                 timestamp,
                 with_backup,
                 pre_delete_backup_file: backup_file,

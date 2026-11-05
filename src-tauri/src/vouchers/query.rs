@@ -82,7 +82,7 @@ pub(crate) fn list_vouchers(
     page: Option<(i64, i64)>,
 ) -> Result<Vec<VoucherSummary>, String> {
     let mut sql = format!(
-        "SELECT v.id, v.number, v.date, v.updated_at, v.type, v.description,
+        "SELECT v.id, v.number, v.date, v.updated_at, v.type, v.description, v.is_temporary,
                 COALESCE(SUM(l.debit), 0), COALESCE(SUM(l.credit), 0), COUNT(l.id)
            FROM vouchers v
            LEFT JOIN voucher_lines l ON l.voucher_id = v.id
@@ -105,9 +105,10 @@ pub(crate) fn list_vouchers(
             updated_at: row.get(3)?,
             voucher_type: row.get(4)?,
             description: row.get(5)?,
-            total_debit: row.get(6)?,
-            total_credit: row.get(7)?,
-            line_count: row.get(8)?,
+            is_temporary: row.get::<_, i64>(6)? != 0,
+            total_debit: row.get(7)?,
+            total_credit: row.get(8)?,
+            line_count: row.get(9)?,
         })
     };
 
@@ -196,9 +197,9 @@ pub(crate) fn fetch_voucher_by_number(
 }
 
 pub(crate) fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher, String> {
-    let (number, date, updated_at, voucher_type, description) = conn
+    let (number, date, updated_at, voucher_type, description, is_temporary) = conn
         .query_row(
-            "SELECT number, date, updated_at, type, description FROM vouchers WHERE id = ?1",
+            "SELECT number, date, updated_at, type, description, is_temporary FROM vouchers WHERE id = ?1",
             params![id],
             |row| {
                 Ok((
@@ -207,6 +208,7 @@ pub(crate) fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)? != 0,
                 ))
             },
         )
@@ -250,6 +252,7 @@ pub(crate) fn fetch_voucher_by_id(conn: &Connection, id: i64) -> Result<Voucher,
         number,
         date,
         updated_at,
+        is_temporary,
         voucher_type,
         description,
         lines,

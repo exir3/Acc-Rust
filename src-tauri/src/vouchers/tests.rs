@@ -1102,6 +1102,29 @@ fn updates_existing_voucher_without_duplicating_it() {
 }
 
 #[test]
+fn idempotent_voucher_save_replays_and_rejects_payload_mismatch() {
+    let db = db::memory_database();
+    let input = cash_sale("1405/01/10", 500_000);
+
+    let first = db
+        .save_voucher_idempotent(input.clone(), None, Some("request-key-1"))
+        .unwrap();
+    let replay = db
+        .save_voucher_idempotent(input.clone(), None, Some("request-key-1"))
+        .unwrap();
+
+    assert_eq!(first.id, replay.id);
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+
+    let changed = cash_sale("1405/01/11", 600_000);
+    let mismatch = db
+        .save_voucher_idempotent(changed, None, Some("request-key-1"))
+        .unwrap_err();
+    assert!(mismatch.contains("کلید یکتای ذخیره"));
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+}
+
+#[test]
 fn stale_voucher_version_cannot_overwrite_a_newer_edit() {
     let db = db::memory_database();
     let saved = db.save_voucher(cash_sale("1405/01/10", 500_000)).unwrap();
@@ -1157,6 +1180,96 @@ fn delete_rejects_a_stale_voucher_version() {
     db.delete_voucher(saved.id, Some(&saved.updated_at))
         .unwrap();
     assert!(db.get_voucher(saved.number).unwrap().is_none());
+}
+
+#[test]
+fn permanent_vouchers_are_immutable_but_can_be_copied_from() {
+    let db = db::memory_database();
+    let saved = db.save_voucher(cash_sale("1405/01/10", 300_000)).unwrap();
+    assert!(saved.is_temporary);
+
+    let permanent = db
+        .set_voucher_permanent(saved.id, Some(&saved.updated_at))
+        .unwrap();
+    assert!(!permanent.is_temporary);
+    assert!(!db.list_vouchers("", "", "").unwrap().vouchers[0].is_temporary);
+
+    let mut edit = cash_sale("1405/01/11", 400_000);
+    edit.id = Some(permanent.id);
+    let edit_error = db
+        .save_voucher_if_unchanged(edit, Some(&permanent.updated_at))
+        .unwrap_err();
+    assert!(edit_error.contains("دائمی"));
+
+    let delete_error = db
+        .delete_voucher(permanent.id, Some(&permanent.updated_at))
+        .unwrap_err();
+    assert!(delete_error.contains("دائمی"));
+    assert!(db.get_voucher(permanent.number).unwrap().is_some());
+
+    let line_ids = permanent.lines.iter().map(|line| line.id).collect();
+    let copied = db.transfer_voucher_lines(VoucherTransferInput {
+        source_voucher_id: permanent.id,
+        source_voucher_number: permanent.number,
+        target_voucher_number: 2,
+        line_ids: line_ids.clone(),
+        mode: "copy".to_string(),
+    }).unwrap();
+    assert_eq!(copied.target.lines.len(), 2);
+    assert!(db.get_voucher(permanent.number).unwrap().is_some());
+
+    let move_error = db.transfer_voucher_lines(VoucherTransferInput {
+        source_voucher_id: permanent.id,
+        source_voucher_number: permanent.number,
+        target_voucher_number: 3,
+        line_ids,
+        mode: "move".to_string(),
+    }).unwrap_err();
+    assert!(move_error.contains("دائمی"));
+}
+
+#[test]
+fn bulk_delete_skips_permanent_vouchers() {
+    let db = db::memory_database();
+    let temporary = db.save_voucher(cash_sale("1405/01/05", 100_000)).unwrap();
+    let saved = db.save_voucher(cash_sale("1405/01/06", 200_000)).unwrap();
+    let permanent = db.set_voucher_permanent(saved.id, Some(&saved.updated_at)).unwrap();
+
+    let input = bulk_delete_input("all");
+    let preview = db.preview_bulk_voucher_delete(&input).unwrap();
+    assert_eq!(preview.total_matched, 2);
+    assert_eq!(preview.deletable_count, 1);
+    assert_eq!(preview.locked_count, 1);
+    assert_eq!(preview.locked_sample[0].voucher_number, permanent.number);
+
+    let result = db.apply_bulk_voucher_delete(&input, &preview.plan_token, false).unwrap();
+    assert_eq!(result.deleted_count, 1);
+    assert_eq!(result.locked_count, 1);
+    assert!(db.get_voucher(temporary.number).unwrap().is_none());
+    assert!(db.get_voucher(permanent.number).unwrap().is_some());
+}
+
+#[test]
+fn reorganization_keeps_permanent_numbers_reserved() {
+    let db = db::memory_database();
+    let saved_permanent = db.save_voucher(cash_sale("1405/01/20", 100_000)).unwrap();
+    let permanent = db.set_voucher_permanent(
+        saved_permanent.id,
+        Some(&saved_permanent.updated_at),
+    ).unwrap();
+    db.save_voucher(cash_sale("1405/01/10", 200_000)).unwrap();
+    db.save_voucher(cash_sale("1405/01/01", 300_000)).unwrap();
+
+    let preview = db.preview_voucher_reorganization("sort").unwrap();
+    assert_eq!(preview.number_changes.len(), 2);
+    db.apply_voucher_reorganization("sort", &preview.plan_token).unwrap();
+
+    let after_permanent = db.get_voucher(1).unwrap().unwrap();
+    assert_eq!(after_permanent.id, permanent.id);
+    assert_eq!(after_permanent.date, permanent.date);
+    assert!(!after_permanent.is_temporary);
+    assert_eq!(db.get_voucher(2).unwrap().unwrap().date, "1405/01/01");
+    assert_eq!(db.get_voucher(3).unwrap().unwrap().date, "1405/01/10");
 }
 
 #[test]

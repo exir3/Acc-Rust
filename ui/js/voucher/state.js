@@ -7,6 +7,7 @@ const state = {
   accountByCode: new Map(),
   settings: { companyName: '', fiscalYear: '', today: '' },
   voucher: null,
+  makePermanent: false,
   overflowVoucherLines: 0,
   nextNumber: 1,
   dirty: false,
@@ -23,6 +24,10 @@ const state = {
 };
 
 const accountForCode = (code) => state.accountByCode.get(digitsOnly(code)) || null;
+
+function isLockedVoucher() {
+  return Boolean(state.voucher && state.voucher.isTemporary === false);
+}
 
 // Accounts already saved on the open voucher stay usable even after being
 // marked inactive; new lines may only pick an active definition.

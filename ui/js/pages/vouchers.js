@@ -87,7 +87,7 @@ function renderVoucherTable(report) {
     <tr>
       <td class="center"><button type="button" class="link-btn" data-open-voucher="${v.number}" title="باز کردن سند">${toFa(v.number)}</button></td>
       <td class="nowrap">${faDate(v.date)}</td>
-      <td class="center"><span class="voucher-tag">${esc(v.type)}</span></td>
+      <td class="center"><span class="voucher-tag">${esc(v.type)} · ${v.isTemporary === false ? 'دائمی' : 'موقت'}</span></td>
       <td class="desc-cell">${esc(v.description) || '—'}</td>
       <td class="center">${toFa(v.lineCount)}</td>
       <td class="money debit">${money(v.totalDebit)}</td>
@@ -95,7 +95,7 @@ function renderVoucherTable(report) {
       <td class="center nowrap">
         <button type="button" class="btn btn-sm" data-open-voucher="${v.number}" title="ویرایش سند">${icon('i-edit')}</button>
         <button type="button" class="btn btn-sm" data-print-voucher="${v.number}" title="چاپ سند">${icon('i-print')}</button>
-        <button type="button" class="btn btn-sm" data-delete-voucher="${v.id}" data-voucher-updated="${esc(v.updatedAt || '')}" data-voucher-label="${esc(v.description || `سند ${v.number}`)}" title="حذف سند">${icon('i-trash')}</button>
+${v.isTemporary === false ? '' : `<button type="button" class="btn btn-sm" data-delete-voucher="${v.id}" data-voucher-updated="${esc(v.updatedAt || '')}" data-voucher-label="${esc(v.description || `سند ${v.number}`)}" title="حذف سند">${icon('i-trash')}</button>`}
       </td>
     </tr>`).join('');
 

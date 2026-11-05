@@ -464,6 +464,39 @@ pub(crate) fn ensure_voucher_account_pair_guards(conn: &Connection) -> Result<()
     ).map_err(db_error)
 }
 
+/// Permanent vouchers are immutable across every database write path.
+pub(crate) fn ensure_permanent_voucher_guards(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS vouchers_permanent_update;
+         DROP TRIGGER IF EXISTS vouchers_permanent_delete;
+         DROP TRIGGER IF EXISTS voucher_lines_permanent_insert;
+         DROP TRIGGER IF EXISTS voucher_lines_permanent_update;
+         DROP TRIGGER IF EXISTS voucher_lines_permanent_delete;
+         CREATE TRIGGER vouchers_permanent_update
+         BEFORE UPDATE ON vouchers
+         WHEN OLD.is_temporary = 0
+         BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;
+         CREATE TRIGGER vouchers_permanent_delete
+         BEFORE DELETE ON vouchers
+         WHEN OLD.is_temporary = 0
+         BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;
+         CREATE TRIGGER voucher_lines_permanent_insert
+         BEFORE INSERT ON voucher_lines
+         WHEN EXISTS (SELECT 1 FROM vouchers v WHERE v.id = NEW.voucher_id AND v.is_temporary = 0)
+         BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;
+         CREATE TRIGGER voucher_lines_permanent_update
+         BEFORE UPDATE ON voucher_lines
+         WHEN EXISTS (SELECT 1 FROM vouchers v WHERE v.id = OLD.voucher_id AND v.is_temporary = 0)
+           OR EXISTS (SELECT 1 FROM vouchers v WHERE v.id = NEW.voucher_id AND v.is_temporary = 0)
+         BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;
+         CREATE TRIGGER voucher_lines_permanent_delete
+         BEFORE DELETE ON voucher_lines
+         WHEN EXISTS (SELECT 1 FROM vouchers v WHERE v.id = OLD.voucher_id AND v.is_temporary = 0)
+         BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;"
+    )
+    .map_err(db_error)
+}
+
 /// Applies additive schema changes and upgrades the recorded version.
 pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), String> {
     let version_text: String = conn
@@ -513,9 +546,33 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
         migrate_voucher_account_pairs(&tx)?;
     }
 
-    // Re-create these idempotently on every open. This also repairs a backup
-    // created by a build that had the v5 columns but missed the guards.
+    // Existing documents remain temporary after upgrade. The migration never
+    // silently locks historical accounting records.
+    if table_exists(&tx, "vouchers")? {
+        let voucher_columns = table_columns(&tx, "vouchers")?;
+        if !voucher_columns.iter().any(|column| column == "is_temporary") {
+            tx.execute(
+                "ALTER TABLE vouchers ADD COLUMN is_temporary INTEGER NOT NULL DEFAULT 1 CHECK(is_temporary IN (0, 1))",
+                [],
+            )
+            .map_err(db_error)?;
+        }
+    }
+
+    // Persist request fingerprints so a retry after a lost response returns
+    // the already-created or already-updated voucher instead of writing twice.
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS voucher_save_idempotency (
+            idempotency_key TEXT PRIMARY KEY,
+            payload_signature TEXT NOT NULL,
+            voucher_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+        );"
+    ).map_err(db_error)?;
+
+    // Re-create guards on every open, including after a database restore.
     ensure_voucher_account_pair_guards(&tx)?;
+    ensure_permanent_voucher_guards(&tx)?;
 
     if version < CURRENT_SCHEMA_VERSION {
         tx.execute(

@@ -9,6 +9,7 @@ async function init() {
   bindVoucherTransfer();
   bindExcelPreview();
   bindConfirm();
+  bindSavedDescriptions();
   bindDocMeta();
   bindVoucherSearch();
   bindToolbar();

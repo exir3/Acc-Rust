@@ -64,6 +64,33 @@ function bindDocMeta() {
 
   if (desc) desc.addEventListener('input', updateDescCounter);
 
+  const permanentToggle = $('#vfPermanentToggle');
+  if (permanentToggle) {
+    permanentToggle.addEventListener('change', async () => {
+      if (isLockedVoucher()) {
+        permanentToggle.checked = true;
+        return;
+      }
+      if (permanentToggle.checked) {
+        const confirmed = await confirmAction(
+          'پس از ذخیره، این سند دائمی و فقط‌خواندنی می‌شود. ویرایش، حذف یا بازگرداندن آن به وضعیت موقت ممکن نخواهد بود. ادامه می‌دهید؟',
+          'تأیید دائمی‌سازی'
+        );
+        if (!confirmed) {
+          permanentToggle.checked = false;
+          state.makePermanent = false;
+          refreshFormState();
+          return;
+        }
+        state.makePermanent = true;
+      } else {
+        state.makePermanent = false;
+      }
+      markDirty();
+      refreshFormState();
+    });
+  }
+
   $('#vfPrevBtn')?.addEventListener('click', navigatePrev);
   $('#vfNextBtn')?.addEventListener('click', navigateNext);
 }

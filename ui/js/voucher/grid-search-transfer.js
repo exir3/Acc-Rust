@@ -115,6 +115,10 @@ function parseVoucherClipboardRows(raw) {
   return parsed;
 }
 async function pasteVoucherRows() {
+  if (isLockedVoucher()) {
+    toast('سند دائمی است و امکان افزودن ردیف وجود ندارد.', 'error');
+    return;
+  }
   try {
     if (!navigator.clipboard || !navigator.clipboard.readText)
       throw new Error('خواندن کلیپ‌بورد در این پنجره مجاز نیست.');
@@ -207,6 +211,10 @@ function renderVoucherTransferRows() {
 }
 async function openVoucherTransfer(mode) {
   if (state.busy || !invoke || (mode !== 'copy' && mode !== 'move')) return;
+  if (mode === 'move' && isLockedVoucher()) {
+    toast('از سند دائمی نمی‌توان ردیف‌ها را منتقل یا حذف کرد؛ فقط کپی مجاز است.', 'error');
+    return;
+  }
   let source = state.voucher;
   if (!source) { toast('برای کپی یا انتقال ردیف‌ها، ابتدا یک سند ذخیره‌شده را باز کنید.', 'warning'); return; }
   if (state.dirty) {

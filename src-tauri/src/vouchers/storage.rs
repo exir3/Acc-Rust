@@ -103,7 +103,7 @@ impl Database {
     }
 
     pub fn save_voucher(&self, input: VoucherInput) -> Result<Voucher, String> {
-        self.save_voucher_inner(input, None)
+        self.save_voucher_inner(input, None, None)
     }
 
     pub fn save_voucher_if_unchanged(
@@ -114,13 +114,42 @@ impl Database {
         if input.id.is_some() && expected_updated_at.is_none() {
             return Err("نسخه سند مشخص نیست؛ سند را دوباره بارگذاری کنید.".to_string());
         }
-        self.save_voucher_inner(input, expected_updated_at.map(str::to_string))
+        self.save_voucher_inner(input, expected_updated_at.map(str::to_string), None)
+    }
+
+    /// Saves a voucher with an optional durable idempotency key. A retry with
+    /// the same key and same payload replays the original voucher; key reuse
+    /// with a different payload is rejected.
+    pub fn save_voucher_idempotent(
+        &self,
+        input: VoucherInput,
+        expected_updated_at: Option<&str>,
+        idempotency_key: Option<&str>,
+    ) -> Result<Voucher, String> {
+        if input.id.is_some() && expected_updated_at.is_none() {
+            return Err("نسخه سند مشخص نیست؛ سند را دوباره بارگذاری کنید.".to_string());
+        }
+
+        let request = if let Some(key) = idempotency_key {
+            let key = key.trim();
+            if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+                return Err("کلید یکتای ذخیره معتبر نیست.".to_string());
+            }
+            let signature = serde_json::to_string(&(input.clone(), expected_updated_at))
+                .map_err(|_| "ساخت امضای درخواست ذخیره ناموفق بود.".to_string())?;
+            Some((key.to_string(), signature))
+        } else {
+            None
+        };
+
+        self.save_voucher_inner(input, expected_updated_at.map(str::to_string), request)
     }
 
     fn save_voucher_inner(
         &self,
         input: VoucherInput,
         expected_updated_at: Option<String>,
+        idempotency: Option<(String, String)>,
     ) -> Result<Voucher, String> {
         let date = normalize_date(&input.date, "تاریخ سند")?;
         let voucher_type = validate_voucher_type(&input.voucher_type)?;
@@ -213,6 +242,25 @@ impl Database {
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db::db_error)?;
 
+            if let Some((key, signature)) = &idempotency {
+                let previous = tx
+                    .query_row(
+                        "SELECT payload_signature, voucher_id
+                           FROM voucher_save_idempotency
+                          WHERE idempotency_key = ?1",
+                        params![key],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                    )
+                    .optional()
+                    .map_err(db::db_error)?;
+                if let Some((previous_signature, voucher_id)) = previous {
+                    if previous_signature != *signature {
+                        return Err("کلید یکتای ذخیره قبلاً برای محتوای دیگری استفاده شده است.".to_string());
+                    }
+                    return fetch_voucher_by_id(&tx, voucher_id);
+                }
+            }
+
             // Convert legacy level-3-only payloads to the canonical pair, then
             // validate both the base account and its optional detail.
             normalize_voucher_line_accounts(&tx, &mut lines)?;
@@ -223,9 +271,13 @@ impl Database {
 
             let existing = if id > 0 {
                 tx.query_row(
-                    "SELECT number, updated_at FROM vouchers WHERE id = ?1",
+                    "SELECT number, updated_at, is_temporary FROM vouchers WHERE id = ?1",
                     params![id],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                    |row| Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                    )),
                 )
                 .optional()
                 .map_err(db::db_error)?
@@ -235,7 +287,10 @@ impl Database {
             if id > 0 && existing.is_none() {
                 return Err("سند حسابداری یافت نشد.".to_string());
             }
-            if let (Some(expected), Some((_, current))) =
+            if existing.as_ref().is_some_and(|(_, _, is_temporary)| !*is_temporary) {
+                return Err("این سند دائمی است و قابل ویرایش نیست.".to_string());
+            }
+            if let (Some(expected), Some((_, current, _))) =
                 (expected_updated_at.as_deref(), existing.as_ref())
             {
                 if expected != current {
@@ -245,7 +300,7 @@ impl Database {
                 }
             }
 
-            let existing_number = existing.as_ref().map(|(number, _)| *number);
+            let existing_number = existing.as_ref().map(|(number, _, _)| *number);
             let number = match (requested_number, existing_number) {
                 (number, _) if number > 0 => number,
                 (_, Some(current_number)) => current_number,
@@ -336,8 +391,75 @@ impl Database {
                 .map_err(db::db_error)?;
             }
 
+            if let Some((key, signature)) = &idempotency {
+                tx.execute(
+                    "DELETE FROM voucher_save_idempotency
+                      WHERE created_at < datetime('now', 'localtime', '-30 days')",
+                    [],
+                ).map_err(db::db_error)?;
+                tx.execute(
+                    "INSERT INTO voucher_save_idempotency
+                        (idempotency_key, payload_signature, voucher_id)
+                     VALUES (?1, ?2, ?3)",
+                    params![key, signature, voucher_id],
+                ).map_err(db::db_error)?;
+            }
+
             tx.commit().map_err(db::db_error)?;
             fetch_voucher_by_id(conn, voucher_id)
+        })
+    }
+
+    /// Permanently finalizes a saved temporary voucher. The operation is
+    /// one-way and uses the same optimistic concurrency token as regular saves.
+    pub fn set_voucher_permanent(
+        &self,
+        id: i64,
+        expected_updated_at: Option<&str>,
+    ) -> Result<Voucher, String> {
+        if id <= 0 {
+            return Err("شناسه سند نامعتبر است.".to_string());
+        }
+        let expected = expected_updated_at
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "نسخه سند مشخص نیست؛ سند را دوباره بارگذاری کنید.".to_string())?
+            .to_string();
+
+        self.with_conn(move |conn| {
+            let tx = conn.transaction().map_err(db::db_error)?;
+            let current = tx
+                .query_row(
+                    "SELECT updated_at, is_temporary FROM vouchers WHERE id = ?1",
+                    params![id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+                )
+                .optional()
+                .map_err(db::db_error)?
+                .ok_or_else(|| "سند حسابداری یافت نشد.".to_string())?;
+
+            if !current.1 {
+                return Err("این سند قبلاً دائمی شده است.".to_string());
+            }
+            if current.0 != expected {
+                return Err("سند پس از باز شدن تغییر کرده است؛ دوباره بارگذاری کنید.".to_string());
+            }
+
+            let affected = tx
+                .execute(
+                    &format!(
+                        "UPDATE vouchers SET is_temporary = 0, updated_at = {TOUCHED_AT}
+                         WHERE id = ?1 AND updated_at = ?2 AND is_temporary = 1"
+                    ),
+                    params![id, expected],
+                )
+                .map_err(db::db_error)?;
+            if affected != 1 {
+                return Err("دائمی‌کردن سند انجام نشد؛ سند را دوباره بارگذاری کنید.".to_string());
+            }
+
+            tx.commit().map_err(db::db_error)?;
+            fetch_voucher_by_id(conn, id)
         })
     }
 
@@ -353,15 +475,18 @@ impl Database {
         self.with_conn(move |conn| {
             let current = conn
                 .query_row(
-                    "SELECT updated_at FROM vouchers WHERE id = ?1",
+                    "SELECT updated_at, is_temporary FROM vouchers WHERE id = ?1",
                     params![id],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
                 )
                 .optional()
                 .map_err(db::db_error)?;
-            let Some(current) = current else {
+            let Some((current, is_temporary)) = current else {
                 return Err("سند حسابداری یافت نشد.".to_string());
             };
+            if !is_temporary {
+                return Err("این سند دائمی است و قابل حذف نیست.".to_string());
+            }
             if current != expected {
                 return Err(
                     "این سند پس از باز شدن تغییر کرده است؛ فهرست یا سند را دوباره بارگذاری کنید و حذف را تکرار کنید."

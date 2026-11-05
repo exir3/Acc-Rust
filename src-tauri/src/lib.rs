@@ -75,6 +75,7 @@ pub fn run() {
             get_voucher,
             transfer_voucher_lines,
             save_voucher,
+            set_voucher_permanent,
             delete_voucher,
             export_voucher_excel,
             import_voucher_excel,

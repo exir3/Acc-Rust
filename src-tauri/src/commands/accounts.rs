@@ -18,6 +18,7 @@ pub(crate) fn list_account_groups(
             "main",
             "voucher-list",
             "trial-balance",
+            "voucher",
             "account-groups",
             "account-definition",
         ],
@@ -118,7 +119,7 @@ pub(crate) fn create_account(
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
-    require_window(&window, &["main", "account-groups", "account-definition"])?;
+    require_window(&window, &["main", "voucher", "account-groups", "account-definition"])?;
     let account = state.database.create_account_active(
         &code,
         &name,

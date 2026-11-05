@@ -83,6 +83,12 @@ function bindVoucherGrid() {
   });
 
   tbody.addEventListener('dblclick', (ev) => {
+    const descriptionInput = ev.target.closest('.vf-desc-input');
+    if (descriptionInput) {
+      ev.preventDefault();
+      openSavedDescriptions(descriptionInput.closest('tr'));
+      return;
+    }
     const input = ev.target.closest('.vf-code-input, .vf-detail1-input');
     if (input) {
       ev.preventDefault();

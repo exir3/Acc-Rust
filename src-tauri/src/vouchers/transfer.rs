@@ -50,15 +50,22 @@ impl Database {
 
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db::db_error)?;
-            let (source_date, source_type) = tx
+            let (source_date, source_type, source_is_temporary) = tx
                 .query_row(
-                    "SELECT date, type FROM vouchers WHERE id = ?1 AND number = ?2",
+                    "SELECT date, type, is_temporary FROM vouchers WHERE id = ?1 AND number = ?2",
                     params![source_id, source_number],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                    )),
                 )
                 .optional()
                 .map_err(db::db_error)?
                 .ok_or_else(|| "سند مبدأ پس از بازخوانی پیدا نشد؛ فرم را تازه‌سازی کنید.".to_string())?;
+            if is_move && !source_is_temporary {
+                return Err("سند مبدأ دائمی است و انتقال یا تغییر ردیف‌های آن مجاز نیست.".to_string());
+            }
 
             let source_lines = {
                 let mut stmt = tx.prepare(
@@ -147,18 +154,25 @@ impl Database {
 
             let existing_target = tx
                 .query_row(
-                    "SELECT id, type FROM vouchers WHERE number = ?1",
+                    "SELECT id, type, is_temporary FROM vouchers WHERE number = ?1",
                     params![target_number],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                    |row| Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)? != 0,
+                    )),
                 )
                 .optional()
                 .map_err(db::db_error)?;
-            if existing_target.as_ref().map(|(id, _)| *id) == Some(source_id) {
+            if existing_target.as_ref().is_some_and(|(_, _, is_temporary)| !*is_temporary) {
+                return Err("سند مقصد دائمی است و دریافت ردیف جدید در آن مجاز نیست.".to_string());
+            }
+            if existing_target.as_ref().map(|(id, _, _)| *id) == Some(source_id) {
                 return Err("سند مقصد نمی‌تواند همان سند مبدأ باشد.".to_string());
             }
             let target_type = existing_target
                 .as_ref()
-                .map(|(_, kind)| kind.clone())
+                .map(|(_, kind, _)| kind.clone())
                 .unwrap_or_else(|| source_type.clone());
 
             // The selected lines join the target voucher, so they must agree
@@ -170,7 +184,7 @@ impl Database {
             assert_voucher_type_matches_lines(&tx, &target_type, &selected_lines)?;
 
             let (target_id, target_count, target_debit, target_credit, created_target) =
-                if let Some((id, _)) = existing_target {
+                if let Some((id, _, _)) = existing_target {
                     let totals = tx.query_row(
                         "SELECT COUNT(*), COALESCE(SUM(debit), 0), COALESCE(SUM(credit), 0)
                            FROM voucher_lines WHERE voucher_id = ?1",
@@ -184,8 +198,8 @@ impl Database {
                     (id, totals.0, totals.1, totals.2, false)
                 } else {
                     tx.execute(
-                        "INSERT INTO vouchers (number, date, type, description)
-                         VALUES (?1, ?2, ?3, '')",
+                        "INSERT INTO vouchers (number, date, type, description, is_temporary)
+                         VALUES (?1, ?2, ?3, '', 1)",
                         params![target_number, source_date, source_type],
                     ).map_err(db::db_error)?;
                     (tx.last_insert_rowid(), 0, 0, 0, true)

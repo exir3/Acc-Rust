@@ -251,6 +251,10 @@
               <svg class="ico vf-ic-green"><use href="#i-save" /></svg>
               <span>ذخیره F2</span>
             </button>
+            <label class="vf-permanent-toggle" title="پس از ذخیره، سند غیرقابل‌ویرایش و غیرقابل‌حذف می‌شود">
+              <input id="vfPermanentToggle" type="checkbox" />
+              <span>سند دائمی</span>
+            </label>
             <button type="button" class="vf-tool" data-action="copy" title="کپی سند جاری">
               <svg class="ico vf-ic-indigo"><use href="#i-copy" /></svg>
               <span>کپی سند</span>
@@ -262,6 +266,10 @@
           </div>
 
           <div class="vf-tool-group" role="group" aria-label="ردیف‌های سند">
+            <button type="button" class="vf-tool" data-action="saved-descriptions" title="شرح‌های ذخیره‌شده و قابل استفاده مجدد">
+              <svg class="ico vf-ic-indigo"><use href="#i-list" /></svg>
+              <span>شرح‌های آماده</span>
+            </button>
             <button type="button" class="vf-tool" data-action="add-row" title="ایجاد ردیف">
               <svg class="ico vf-ic-green"><use href="#i-plus" /></svg>
               <span>ایجاد ردیف</span>
@@ -430,6 +438,10 @@
             <svg class="ico" aria-hidden="true"><use href="#i-check" /></svg>
             <span>F2 انتخاب</span>
           </button>
+          <button type="button" class="ap-tool" id="accountPickerCreate" title="تعریف حساب جدید (Insert)">
+            <svg class="ico" aria-hidden="true"><use href="#i-plus" /></svg>
+            <span>تعریف حساب Insert</span>
+          </button>
         </div>
         <div class="ap-toolbar-group">
           <button type="button" class="ap-tool" id="accountPickerBack" title="بازگشت (Escape)">
@@ -569,6 +581,31 @@
     </section>
   </div>
 
+  <!-- ═══ Reusable descriptions ═════════════════════════════════════════ -->
+  <div class="modal vf-saved-descriptions-modal" id="vfSavedDescriptionsModal" hidden>
+    <section class="ap-window vf-saved-descriptions-window" role="dialog" aria-modal="true" aria-labelledby="vfSavedDescriptionsTitle">
+      <div class="ap-titlebar">
+        <button class="ap-close" id="vfSavedDescriptionsClose" type="button" title="بستن" aria-label="بستن شرح‌های ذخیره‌شده">
+          <svg class="ico"><use href="#i-close" /></svg>
+        </button>
+        <span class="ap-title" id="vfSavedDescriptionsTitle">شرح‌های ذخیره‌شده</span>
+      </div>
+      <div class="vf-saved-descriptions-content">
+        <label for="vfSavedDescriptionInput">شرح جدید یا شرح انتخاب‌شده برای ویرایش</label>
+        <div class="vf-saved-description-entry">
+          <input id="vfSavedDescriptionInput" type="text" maxlength="500" autocomplete="off" />
+          <button type="button" class="ap-tool ap-tool-select" id="vfSavedDescriptionAdd">افزودن</button>
+          <button type="button" class="ap-tool" id="vfSavedDescriptionUpdate" disabled>ویرایش</button>
+        </div>
+        <div id="vfSavedDescriptionRows" class="vf-saved-description-list" role="listbox" aria-label="شرح‌های ذخیره‌شده"></div>
+        <p class="vf-saved-description-help">برای استفاده مجدد، شرح را انتخاب کنید. شرح‌ها در همین دستگاه ذخیره می‌شوند.</p>
+      </div>
+      <div class="vf-transfer-footer">
+        <button type="button" class="ap-tool" id="vfSavedDescriptionsCancel">بستن</button>
+      </div>
+    </section>
+  </div>
+
   <!-- ═══ Confirmation dialog ═══════════════════════════════════════════ -->
   <div class="modal" id="vfConfirmModal" hidden>
     <div class="ap-window vf-confirm" role="alertdialog" aria-modal="true" aria-labelledby="vfConfirmTitle" aria-describedby="vfConfirmText">
@@ -595,6 +632,7 @@
   <script src="js/voucher/grid-editing.js"></script>
   <script src="js/voucher/row-actions.js"></script>
   <script src="js/voucher/persistence.js"></script>
+  <script src="js/voucher/descriptions.js"></script>
   <script src="js/voucher/account-picker.js"></script>
   <script src="js/voucher/confirm.js"></script>
   <script src="js/voucher/doc-meta.js"></script>

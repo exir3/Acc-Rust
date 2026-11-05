@@ -90,7 +90,7 @@ pub struct VoucherTransferResult {
     pub source: Option<Voucher>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoucherInput {
     #[serde(default)]
@@ -201,8 +201,7 @@ pub struct BulkVoucherDeletePreview {
     pub plan_token: String,
     pub total_matched: usize,
     pub deletable_count: usize,
-    /// Reserved for parity with the WebApp form. This application has no
-    /// permanent-voucher flag, so every matched voucher is deletable.
+    /// Permanent vouchers are included in the preview as locked records.
     pub locked_count: usize,
     pub locked_sample: Vec<BulkVoucherDeleteSample>,
     pub deletable_sample: Vec<BulkVoucherDeleteSample>,
@@ -251,6 +250,7 @@ pub struct Voucher {
     pub number: i64,
     pub date: String,
     pub updated_at: String,
+    pub is_temporary: bool,
     #[serde(rename = "type")]
     pub voucher_type: String,
     pub description: String,
@@ -268,6 +268,7 @@ pub struct VoucherSummary {
     pub number: i64,
     pub date: String,
     pub updated_at: String,
+    pub is_temporary: bool,
     #[serde(rename = "type")]
     pub voucher_type: String,
     pub description: String,

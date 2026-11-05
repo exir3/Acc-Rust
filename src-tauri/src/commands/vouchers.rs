@@ -92,16 +92,33 @@ pub(crate) fn transfer_voucher_lines(
 pub(crate) fn save_voucher(
     input: VoucherInput,
     expected_updated_at: Option<String>,
+    idempotency_key: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<vouchers::Voucher, String> {
     require_window(&window, &["main", "voucher"])?;
-    let saved = state
-        .database
-        .save_voucher_if_unchanged(input, expected_updated_at.as_deref())?;
+    let saved = state.database.save_voucher_idempotent(
+        input,
+        expected_updated_at.as_deref(),
+        idempotency_key.as_deref(),
+    )?;
     notify_vouchers_changed(&app);
     Ok(saved)
+}
+
+#[tauri::command(async)]
+pub(crate) fn set_voucher_permanent(
+    id: i64,
+    expected_updated_at: Option<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<vouchers::Voucher, String> {
+    require_window(&window, &["main", "voucher"])?;
+    let permanent = state.database.set_voucher_permanent(id, expected_updated_at.as_deref())?;
+    notify_vouchers_changed(&app);
+    Ok(permanent)
 }
 
 #[tauri::command(async)]

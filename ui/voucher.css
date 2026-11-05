@@ -310,3 +310,106 @@ body.voucher-page {
   .vf-transfer-content,.vf-excel-preview-content { padding:7px; }
   .vf-transfer-table,.vf-excel-preview-table { min-width:850px; }
 }
+
+
+/* ── WebApp parity: permanent documents and reusable descriptions ── */
+.vf-permanent-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid #d5a64a;
+  border-radius: 5px;
+  background: #fff8e7;
+  color: #765316;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.vf-permanent-toggle input { accent-color: #9a6a10; }
+.vf-permanent-toggle:has(input:disabled) { opacity: .8; cursor: not-allowed; }
+
+.vf-saved-descriptions-modal,
+.vf-quick-account-modal { z-index: 820; }
+.vf-saved-descriptions-window,
+.vf-quick-account-window {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(82vh, 700px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.vf-saved-descriptions-content,
+.vf-quick-account-form {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+}
+.vf-saved-description-entry {
+  display: flex;
+  gap: 7px;
+}
+.vf-saved-description-entry input,
+.vf-quick-account-form input,
+.vf-quick-account-form select {
+  min-width: 0;
+  width: 100%;
+  height: 34px;
+  border: 1px solid #bdc8d5;
+  border-radius: 4px;
+  padding: 5px 8px;
+  background: #fff;
+  color: #1e293b;
+}
+.vf-saved-description-entry input { flex: 1; }
+.vf-saved-description-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 310px;
+  overflow: auto;
+}
+.vf-saved-description-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #dbe2ea;
+  border-radius: 5px;
+  padding: 6px;
+  background: #fff;
+}
+.vf-saved-description-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.vf-saved-description-empty,
+.vf-saved-description-help { color: #667085; font-size: 12px; margin: 4px 0; }
+.vf-quick-account-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.vf-quick-account-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+}
+.vf-quick-account-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-start;
+  gap: 8px;
+  padding-top: 6px;
+}
+#vfQuickAccountError { grid-column: 1 / -1; color: #b42318; font-size: 12px; }
+.vf-saved-descriptions-window .vf-transfer-footer { margin-top: auto; }
+
+@media (max-width: 640px) {
+  .vf-quick-account-form { grid-template-columns: 1fr; }
+  .vf-quick-account-actions, #vfQuickAccountError { grid-column: 1; }
+  .vf-saved-description-entry { flex-wrap: wrap; }
+}

@@ -3,6 +3,10 @@
 /* ── Excel and account ledger ───────────────────────────────── */
 
 async function importVoucherFromExcel() {
+  if (isLockedVoucher()) {
+    toast('سند دائمی است و ورود ردیف جدید در آن مجاز نیست.', 'error');
+    return;
+  }
   if (state.busy) return;
   if (!invoke) {
     toast('دریافت از اکسل فقط در نسخه دسکتاپ ممکن است.', 'error');

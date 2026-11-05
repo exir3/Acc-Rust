@@ -66,6 +66,7 @@ function fillGrid(lines) {
 
 function startNew(number) {
   state.voucher = null;
+  state.makePermanent = false;
   state.restoredConflict = false;
   state.overflowVoucherLines = 0;
   state.dirty = false;
@@ -82,6 +83,7 @@ function startNew(number) {
 
 function loadVoucher(voucher) {
   state.voucher = voucher;
+  state.makePermanent = voucher.isTemporary === false;
   state.restoredConflict = false;
   state.dirty = false;
   state.activeRow = null;
@@ -91,7 +93,13 @@ function loadVoucher(voucher) {
   $('#vfDocDesc').value = voucher.description || '';
   updateDescCounter();
   fillGrid(voucher.lines || []);
-  setStatus('ok', `سند شماره ${vfFa(voucher.number)} ذخیره‌شده`);
+  setStatus(
+    voucher.isTemporary === false ? 'warn' : 'ok',
+    voucher.isTemporary === false
+      ? `سند شماره ${vfFa(voucher.number)} دائمی — فقط‌خواندنی`
+      : `سند شماره ${vfFa(voucher.number)} ذخیره‌شده — موقت`
+  );
+  refreshFormState();
 }
 
 function collectDraft() {
@@ -116,6 +124,7 @@ function collectDraft() {
     date: toAsciiDigits($('#vfDocDate')?.value || '').replace(/-/g, '/').replace(/[^\d/]/g, ''),
     voucherType: $('#vfDocType')?.value || VOUCHER_TYPES[0],
     description: $('#vfDocDesc')?.value || '',
+    isPermanent: Boolean(state.makePermanent),
     lines,
   };
 }
@@ -193,7 +202,32 @@ function validateDraft(draft) {
   return '';
 }
 
+let saveIdempotencySignature = null;
+let saveIdempotencyKey = null;
+
+function getSaveIdempotencyKey(signature) {
+  if (saveIdempotencySignature !== signature) {
+    saveIdempotencySignature = signature;
+    saveIdempotencyKey = null;
+  }
+  if (!saveIdempotencyKey) {
+    const random = globalThis.crypto;
+    if (random && typeof random.randomUUID === 'function') {
+      saveIdempotencyKey = random.randomUUID();
+    } else if (random && typeof random.getRandomValues === 'function') {
+      saveIdempotencyKey = Array.from(random.getRandomValues(new Uint32Array(4)), (n) => n.toString(36)).join('');
+    } else {
+      saveIdempotencyKey = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    }
+  }
+  return saveIdempotencyKey;
+}
+
 async function saveVoucher(options = {}) {
+  if (isLockedVoucher()) {
+    toast('این سند دائمی است و قابل ویرایش یا ذخیره مجدد نیست.', 'error');
+    return null;
+  }
   if (state.restoredConflict) {
     toast('پایگاه داده بازیابی شده است؛ برای حفظ تغییرات فرم، آن را ذخیره نکنید. پنجره را ببندید و سند را دوباره باز کنید.', 'error');
     return null;
@@ -250,24 +284,47 @@ async function saveVoucher(options = {}) {
   let saveSnapshot = '';
   try {
     saveSnapshot = JSON.stringify(collectDraft());
+    const expectedUpdatedAt = state.voucher?.updatedAt || null;
+    const idempotencySignature = JSON.stringify({ draft, expectedUpdatedAt });
+    const idempotencyKey = getSaveIdempotencyKey(idempotencySignature);
     const saved = await invoke('save_voucher', {
       input: draft,
-      expectedUpdatedAt: state.voucher?.updatedAt || null,
+      expectedUpdatedAt,
+      idempotencyKey,
     });
-    state.busy = false;
+    let committedVoucher = saved;
     const currentDraft = collectDraft();
     if (JSON.stringify(currentDraft) !== saveSnapshot) {
+      state.busy = false;
       state.voucher = saved;
       if (currentDraft.number === draft.number) $('#vfDocNo').value = String(saved.number);
       state.dirty = true;
       setStatus('warn', 'تغییرات ذخیره‌نشده');
-      toast('نسخه اولیه سند ذخیره شد؛ ویرایش‌های جدید فرم حفظ شده‌اند و هنوز ذخیره نشده‌اند.', 'warning');
+      toast('نسخه اولیه سند ذخیره شد؛ ویرایش‌های جدید حفظ شده‌اند. برای دائمی‌سازی، تغییرات باقی‌مانده را ذخیره کنید.', 'warning');
     } else {
-      loadVoucher(saved);
+      let finalVoucher = saved;
+      if (draft.isPermanent && saved.isTemporary !== false) {
+        try {
+          setStatus('info', 'در حال دائمی‌کردن سند…');
+          finalVoucher = await invoke('set_voucher_permanent', {
+            id: saved.id,
+            expectedUpdatedAt: saved.updatedAt,
+          });
+        } catch (finalizeError) {
+          state.busy = false;
+          loadVoucher(saved);
+          toast(`سند ذخیره شد، اما دائمی‌سازی انجام نشد: ${errorText(finalizeError)}`, 'warning');
+          return saved;
+        }
+      }
+      state.busy = false;
+      loadVoucher(finalVoucher);
     }
 
     if (!options.silent) {
-      toast(`سند شماره ${vfFa(saved.number)} ذخیره شد.`, 'ok');
+      toast(draft.isPermanent && !state.dirty
+        ? `سند شماره ${vfFa(saved.number)} ذخیره و دائمی شد.`
+        : `سند شماره ${vfFa(saved.number)} ذخیره شد.`, 'ok');
     }
     try {
       await refreshNextNumber();
@@ -275,7 +332,7 @@ async function saveVoucher(options = {}) {
       state.nextNumber = Math.max(state.nextNumber || 1, Number(saved.number) + 1);
       toast(`سند ذخیره شد؛ دریافت شماره بعدی ناموفق بود: ${errorText(refreshError)}`, 'warning');
     }
-    return saved;
+    return committedVoucher;
   } catch (error) {
     state.busy = false;
     if (saveSnapshot && JSON.stringify(collectDraft()) !== saveSnapshot) state.dirty = true;
@@ -497,6 +554,7 @@ async function copyVoucher() {
   };
 
   state.voucher = null;
+  state.makePermanent = false;
   state.dirty = false;
   state.activeRow = null;
   $('#vfDocNo').value = String(state.nextNumber);
@@ -511,6 +569,10 @@ async function copyVoucher() {
 }
 
 async function deleteVoucher() {
+  if (isLockedVoucher()) {
+    toast('سند دائمی است و قابل حذف نیست.', 'error');
+    return;
+  }
   if (state.busy) return;
   if (state.overflowVoucherLines) {
     toast('حذف این سند از فرم محدودشده ممکن نیست.', 'error');

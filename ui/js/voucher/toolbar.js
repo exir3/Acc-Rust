@@ -40,6 +40,9 @@ function bindToolbar() {
         case 'balance':
           checkBalance();
           break;
+        case 'saved-descriptions':
+          openSavedDescriptions(state.activeRow);
+          break;
         case 'delete-voucher':
           await deleteVoucher();
           break;

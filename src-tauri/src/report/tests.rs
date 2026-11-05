@@ -40,6 +40,7 @@ mod tests {
             number: 1,
             date: "1405/01/01<script>alert(1)</script>".to_string(),
             updated_at: "1405-01-01 00:00:00.000".to_string(),
+            is_temporary: true,
             voucher_type: "<b>نوع</b>".to_string(),
             description: "<img src=x onerror=alert(1)>".to_string(),
             lines: vec![crate::vouchers::VoucherLine {
