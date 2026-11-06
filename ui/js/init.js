@@ -20,14 +20,22 @@ async function init() {
     state.filters = defaultFilters();
     state.ready = true;
     applyWallpaper(localStorage.getItem('hesabdari-workspace-wallpaper'));
-    await navigate(IS_TRIAL_POPUP ? 'trial' : IS_VOUCHER_LIST_POPUP ? 'vouchers' : 'workspace');
-    setStatus('آماده', 'ok');
+
+    if (IS_TRIAL_POPUP || IS_VOUCHER_LIST_POPUP) {
+      revealPopupsWithoutSelector();
+      await navigate(IS_TRIAL_POPUP ? 'trial' : 'vouchers');
+      setStatus('آماده', 'ok');
+      return;
+    }
+
+    await openCompanySelector({ startup: true });
   } catch (error) {
     renderFatal(errorText(error));
   }
 }
 
 function renderFatal(message) {
+  document.body.classList.remove('is-booting');
   const root = $('#page');
   if (!root) return;
   root.innerHTML = `<div class="card">

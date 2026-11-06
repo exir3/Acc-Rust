@@ -59,7 +59,9 @@ async function loadPagedList(kind, step, fetchPage, totalOf, rowsOf) {
 function updateBranding(settings) {
   if (!settings) return;
   const company = settings.companyName || 'واحد اقتصادی';
-  const fiscal = settings.fiscalYear || '—';
+  const selected = state.activeFiscalYear?.title || settings.fiscalYear || '—';
+  // Fiscal-year titles often already read «سال مالی ۱۴۰۵»; don't repeat the label.
+  const fiscal = String(selected).replace(/^سال مالی\s*/, '') || '—';
   const today = faDate(settings.today || '');
   const statusCompany = $('#statusCompany');
   const statusFiscal = $('#statusFiscal');

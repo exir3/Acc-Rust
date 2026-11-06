@@ -403,6 +403,9 @@ function runMenuItem(item) {
     case 'choose-wallpaper':
       $('#wallpaperPicker')?.click();
       return;
+    case 'company-selector':
+      void openCompanySelector();
+      return;
     case 'help':
       showHelpDialog();
       return;

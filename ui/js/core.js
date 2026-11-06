@@ -34,6 +34,38 @@ let VOUCHER_PAGE_SIZE = 200;
 let JOURNAL_PAGE_SIZE = 500;
 let LEDGER_PAGE_SIZE = 500;
 
+// The selected fiscal year is independent of `settings.fiscalYear` (the
+// default year shown in Settings) and is remembered across windows.
+const ACTIVE_FISCAL_YEAR_KEY = 'hesabdari-active-fiscal-year';
+
+function readActiveFiscalYear() {
+  try {
+    const raw = localStorage.getItem(`${ACTIVE_FISCAL_YEAR_KEY}-data`);
+    if (!raw) return null;
+    const year = JSON.parse(raw);
+    if (year && Number.isFinite(Number(year.id))) return year;
+  } catch {
+    // Ignore malformed persisted selection.
+  }
+  return null;
+}
+
+// Remembers the fiscal year chosen at the startup gate and keeps the status
+// bar in sync. Pass null to clear the selection (for example after a restore).
+function setActiveFiscalYear(year) {
+  state.activeFiscalYear = year || null;
+  if (year) {
+    localStorage.setItem(ACTIVE_FISCAL_YEAR_KEY, String(year.id));
+    localStorage.setItem(`${ACTIVE_FISCAL_YEAR_KEY}-title`, year.title || '');
+    localStorage.setItem(`${ACTIVE_FISCAL_YEAR_KEY}-data`, JSON.stringify(year));
+  } else {
+    localStorage.removeItem(ACTIVE_FISCAL_YEAR_KEY);
+    localStorage.removeItem(`${ACTIVE_FISCAL_YEAR_KEY}-title`);
+    localStorage.removeItem(`${ACTIVE_FISCAL_YEAR_KEY}-data`);
+  }
+  if (state.settings) updateBranding(state.settings);
+}
+
 const state = {
   page: 'workspace',
   settings: null,
@@ -43,6 +75,7 @@ const state = {
   groupsLoaded: false,
   databasePath: '',
   fiscalYears: [],
+  activeFiscalYear: readActiveFiscalYear(),
   legacyLevel4: null,
   filters: {},
   listOffsets: { vouchers: 0, journal: 0, ledger: 0 },
@@ -129,6 +162,7 @@ const MENU_BAR = [
     label: 'تنظیمات',
     size: 'compact',
     items: [
+      { label: 'انتخاب شرکت و سال مالی', icon: '🏢', command: 'company-selector' },
       { label: 'تنظیمات برنامه', icon: '⚙️', page: 'settings' },
       { label: 'تنظیمات گزارش‌ها', icon: '🖨️' },
       { label: 'تغییر تصویر پس‌زمینه', icon: '🖼️', command: 'choose-wallpaper' },

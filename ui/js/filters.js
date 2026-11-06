@@ -11,14 +11,23 @@ function currentYear() {
 function defaultFilters() {
   const today = state.settings?.today || '';
   const year = currentYear();
-  const from = year ? `${year}/01/01` : '';
+  const active = state.activeFiscalYear;
+  const start = active?.startDate || (year ? `${year}/01/01` : '');
+  let to = today;
+  if (active) {
+    const current = toEn(today || '');
+    const startValue = toEn(active.startDate || '');
+    const endValue = toEn(active.endDate || '');
+    if (!current || current < startValue || current > endValue) to = active.endDate || today;
+  }
+  const from = start || to;
   return {
-    vouchers: { from, to: today, search: '' },
-    journal: { from, to: today, search: '', scope: 'official' },
-    ledger: { accountCode: '', from, to: today, scope: 'official' },
+    vouchers: { from, to, search: '' },
+    journal: { from, to, search: '', scope: 'official' },
+    ledger: { accountCode: '', from, to, scope: 'official' },
     trial: {
       from,
-      to: today,
+      to,
       scope: 'official',
       accountFrom: '',
       accountTo: '',
@@ -29,8 +38,8 @@ function defaultFilters() {
       showAccountName: true,
       showPrintDateTime: true,
     },
-    income: { from, to: today, scope: 'official' },
-    balance: { asOf: today, scope: 'official' },
+    income: { from, to, scope: 'official' },
+    balance: { asOf: to, scope: 'official' },
   };
 }
 

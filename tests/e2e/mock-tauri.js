@@ -22,12 +22,15 @@
     accounts: clone(seed.accounts || []),
     groups: clone(seed.groups || []),
     vouchers: clone(seed.vouchers || []),
+    settings: clone(seed.settings || {}),
+    fiscalYears: clone(seed.fiscalYears || []),
     nextNumber: Number(seed.nextNumber) || 1,
     calls: [],
   };
 
   let nextAccountId = Math.max(0, ...backend.accounts.map((account) => Number(account.id) || 0)) + 1;
   let nextVoucherId = Math.max(0, ...backend.vouchers.map((voucher) => Number(voucher.id) || 0)) + 1;
+  let nextFiscalYearId = Math.max(0, ...backend.fiscalYears.map((year) => Number(year.id) || 0)) + 1;
   let nextLineId = 1 + Math.max(
     0,
     ...backend.vouchers.flatMap((voucher) => voucher.lines || []).map((line) => Number(line.id) || 0),
@@ -117,7 +120,64 @@
   }
 
   const handlers = {
-    get_settings: () => clone(seed.settings),
+    get_settings: () => clone(backend.settings),
+    save_settings: ({ companyName, fiscalYear }) => {
+      backend.settings.companyName = String(companyName ?? backend.settings.companyName ?? '');
+      backend.settings.fiscalYear = String(fiscalYear ?? backend.settings.fiscalYear ?? '');
+      return clone(backend.settings);
+    },
+    list_fiscal_years: () => ({ years: clone(backend.fiscalYears), databasePath: 'e2e.db' }),
+    get_voucher_count: () => backend.vouchers.length,
+
+    create_fiscal_year: ({ title, startDate, endDate, status }) => {
+      const year = {
+        id: nextFiscalYearId++,
+        title: String(title || ''),
+        startDate: String(startDate || ''),
+        endDate: String(endDate || ''),
+        status: String(status || 'open'),
+        voucherCount: 0,
+        createdAt: stamp(),
+        updatedAt: stamp(),
+      };
+      backend.fiscalYears.push(year);
+      return clone(year);
+    },
+
+    update_fiscal_year: ({ id, title, startDate, endDate, status }) => {
+      const year = backend.fiscalYears.find((item) => Number(item.id) === Number(id));
+      if (!year) throw new Error('سال مالی یافت نشد.');
+      year.title = String(title ?? year.title);
+      if (Number(year.voucherCount) === 0) {
+        year.startDate = String(startDate ?? year.startDate);
+        year.endDate = String(endDate ?? year.endDate);
+      }
+      year.status = String(status ?? year.status);
+      year.updatedAt = stamp();
+      return clone(year);
+    },
+
+    set_fiscal_year_status: ({ id, status }) => {
+      const year = backend.fiscalYears.find((item) => Number(item.id) === Number(id));
+      if (!year) throw new Error('سال مالی یافت نشد.');
+      year.status = String(status ?? year.status);
+      year.updatedAt = stamp();
+      return clone(year);
+    },
+
+    delete_fiscal_year: ({ id }) => {
+      const year = backend.fiscalYears.find((item) => Number(item.id) === Number(id));
+      if (!year) throw new Error('سال مالی یافت نشد.');
+      if (Number(year.voucherCount) > 0) {
+        throw new Error('سال مالی دارای سند قابل حذف نیست.');
+      }
+      backend.fiscalYears = backend.fiscalYears.filter((item) => Number(item.id) !== Number(id));
+      return null;
+    },
+
+    backup_database: () => '/e2e/backups/hesabdari-backup.db',
+    restore_database: () => '/e2e/backups/hesabdari-safety.db',
+
     list_accounts: () => ({ accounts: clone(backend.accounts), databasePath: 'e2e.db' }),
     list_account_groups: () => ({ groups: clone(backend.groups), databasePath: 'e2e.db' }),
     next_voucher_number: () => backend.nextNumber || nextFreeNumber(),

@@ -296,7 +296,10 @@ function bindSettings(root, data) {
       }
       button.disabled = true;
       try {
-        await invoke('set_fiscal_year_status', { id, status, reason, confirm });
+        const updated = await invoke('set_fiscal_year_status', { id, status, reason, confirm });
+        if (updated?.id && Number(state.activeFiscalYear?.id) === Number(updated.id)) {
+          setActiveFiscalYear({ ...state.activeFiscalYear, ...updated });
+        }
         toast(status === 'closed' ? 'سال مالی بسته شد.' : 'سال مالی باز شد.', 'ok');
         await navigate('settings', { force: true });
       } catch (error) {
@@ -318,6 +321,7 @@ function bindSettings(root, data) {
       button.disabled = true;
       try {
         await invoke('delete_fiscal_year', { id });
+        if (Number(state.activeFiscalYear?.id) === id) setActiveFiscalYear(null);
         toast('سال مالی حذف شد.', 'ok');
         await navigate('settings', { force: true });
       } catch (error) {
@@ -506,7 +510,7 @@ function openSettingsDialog() {
   });
 }
 
-function openFiscalYearDialog(year = null) {
+function openFiscalYearDialog(year = null, { onSaved } = {}) {
   const editing = Boolean(year);
   const lockedRange = editing && Number(year.voucherCount) > 0;
   const dialog = openDialog({
@@ -580,8 +584,9 @@ function openFiscalYearDialog(year = null) {
     if (submit) submit.disabled = true;
     if (errorBox) errorBox.hidden = true;
     try {
+      let saved;
       if (editing) {
-        await invoke('update_fiscal_year', {
+        saved = await invoke('update_fiscal_year', {
           id: year.id,
           title,
           startDate,
@@ -591,11 +596,18 @@ function openFiscalYearDialog(year = null) {
           confirm: reopeningFinal,
         });
       } else {
-        await invoke('create_fiscal_year', { title, startDate, endDate, status });
+        saved = await invoke('create_fiscal_year', { title, startDate, endDate, status });
       }
       closeDialog();
       toast(editing ? 'سال مالی ویرایش شد.' : 'سال مالی ایجاد شد.', 'ok');
-      await navigate('settings', { force: true });
+      if (saved?.id && Number(state.activeFiscalYear?.id) === Number(saved.id)) {
+        setActiveFiscalYear({ ...state.activeFiscalYear, ...saved });
+      }
+      if (typeof onSaved === 'function') {
+        await onSaved(saved);
+      } else {
+        await navigate('settings', { force: true });
+      }
     } catch (error) {
       if (errorBox) {
         errorBox.textContent = errorText(error);

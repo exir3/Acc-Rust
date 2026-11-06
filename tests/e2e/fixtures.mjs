@@ -57,12 +57,36 @@ export const SETTINGS = {
   },
 };
 
+export const FISCAL_YEARS = [
+  {
+    id: 1,
+    title: 'سال مالی ۱۴۰۴',
+    startDate: '1404/01/01',
+    endDate: '1404/12/29',
+    status: 'closed',
+    voucherCount: 24,
+    createdAt: '2026-11-05T08:00:00.000Z',
+    updatedAt: '2026-11-05T08:00:00.000Z',
+  },
+  {
+    id: 2,
+    title: 'سال مالی ۱۴۰۵',
+    startDate: '1405/01/01',
+    endDate: '1405/12/29',
+    status: 'open',
+    voucherCount: 7,
+    createdAt: '2026-11-05T08:00:00.000Z',
+    updatedAt: '2026-11-05T08:00:00.000Z',
+  },
+];
+
 /** A fresh copy of the seed so one test cannot leak state into another. */
 export function buildSeed(overrides = {}) {
   return {
     accounts: structuredClone(ACCOUNTS),
     groups: structuredClone(GROUPS),
     settings: structuredClone(SETTINGS),
+    fiscalYears: structuredClone(FISCAL_YEARS),
     vouchers: [],
     nextNumber: 1,
     ...overrides,
