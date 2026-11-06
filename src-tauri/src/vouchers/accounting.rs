@@ -156,24 +156,68 @@ pub(crate) enum StatementSection {
 }
 
 pub(crate) fn section_of(key: &str) -> Option<StatementSection> {
-    match key {
-        "current_asset" => Some(StatementSection::CurrentAsset),
-        "non_current_asset" => Some(StatementSection::NonCurrentAsset),
-        "equity" => Some(StatementSection::Equity),
-        "current_liability" => Some(StatementSection::CurrentLiability),
-        "non_current_liability" => Some(StatementSection::NonCurrentLiability),
-        "revenue" => Some(StatementSection::Revenue),
-        "cogs" => Some(StatementSection::Cogs),
-        "selling_expense" => Some(StatementSection::SellingExpense),
-        "admin_expense" => Some(StatementSection::AdminExpense),
-        "other_operating" => Some(StatementSection::OtherOperating),
-        "finance_cost" => Some(StatementSection::FinanceCost),
-        "other_non_operating" => Some(StatementSection::OtherNonOperating),
-        "income_tax" => Some(StatementSection::IncomeTax),
-        "memorandum" => Some(StatementSection::Memorandum),
-        _ => None,
-    }
+    REPORT_SECTIONS
+        .iter()
+        .find(|entry| entry.0 == key)
+        .map(|entry| entry.1)
 }
+
+/// Statement class used by the UI classification matrix. Keeping the section
+/// key, its Rust enum and its reported class in one table prevents the UI and
+/// backend mappings from drifting apart; `report_section_mapping_matches_ui`
+/// also checks the table against `ui/js/pages/settings.js`.
+pub(crate) fn section_class(key: &str) -> Option<&'static str> {
+    REPORT_SECTIONS
+        .iter()
+        .find(|entry| entry.0 == key)
+        .map(|entry| entry.2)
+}
+
+pub(crate) const REPORT_SECTIONS: [(&str, StatementSection, &str); 14] = [
+    ("current_asset", StatementSection::CurrentAsset, "asset"),
+    (
+        "non_current_asset",
+        StatementSection::NonCurrentAsset,
+        "asset",
+    ),
+    ("equity", StatementSection::Equity, "equity"),
+    (
+        "current_liability",
+        StatementSection::CurrentLiability,
+        "liability",
+    ),
+    (
+        "non_current_liability",
+        StatementSection::NonCurrentLiability,
+        "liability",
+    ),
+    ("revenue", StatementSection::Revenue, "income"),
+    ("cogs", StatementSection::Cogs, "expense"),
+    (
+        "selling_expense",
+        StatementSection::SellingExpense,
+        "expense",
+    ),
+    ("admin_expense", StatementSection::AdminExpense, "expense"),
+    ("other_operating", StatementSection::OtherOperating, "dual"),
+    ("finance_cost", StatementSection::FinanceCost, "expense"),
+    (
+        "other_non_operating",
+        StatementSection::OtherNonOperating,
+        "dual",
+    ),
+    ("income_tax", StatementSection::IncomeTax, "expense"),
+    ("memorandum", StatementSection::Memorandum, "memorandum"),
+];
+
+pub(crate) const GROUP_TYPE_CLASSES: [(&str, &str); 6] = [
+    ("دارایی", "asset"),
+    ("بدهی", "liability"),
+    ("سرمایه", "equity"),
+    ("درآمد", "income"),
+    ("هزینه", "expense"),
+    ("سایر", "other"),
+];
 
 /// Group type is the primary classification. A group with a financial
 /// statement section uses that section first, so assigning a section in the
@@ -181,12 +225,12 @@ pub(crate) fn section_of(key: &str) -> Option<StatementSection> {
 /// section falls back to the conventional first digit of the account code
 /// (1/2/3 balance sheet, 4 income, 5-9 expenses).
 pub(crate) fn classify(group_type: &str, account_code: &str) -> AccountClass {
-    match group_type {
-        "دارایی" => AccountClass::Asset,
-        "بدهی" => AccountClass::Liability,
-        "سرمایه" => AccountClass::Equity,
-        "درآمد" => AccountClass::Income,
-        "هزینه" => AccountClass::Expense,
+    match group_type_class(group_type) {
+        Some("asset") => AccountClass::Asset,
+        Some("liability") => AccountClass::Liability,
+        Some("equity") => AccountClass::Equity,
+        Some("income") => AccountClass::Income,
+        Some("expense") => AccountClass::Expense,
         _ => match account_code.chars().next() {
             Some('1') => AccountClass::Asset,
             Some('2') => AccountClass::Liability,
@@ -197,30 +241,30 @@ pub(crate) fn classify(group_type: &str, account_code: &str) -> AccountClass {
     }
 }
 
+pub(crate) fn group_type_class(group_type: &str) -> Option<&'static str> {
+    GROUP_TYPE_CLASSES
+        .iter()
+        .find(|entry| entry.0 == group_type)
+        .map(|entry| entry.1)
+}
+
 pub(crate) fn classify_activity(activity: &AccountActivity, net: i64) -> AccountClass {
-    if let Some(section) = section_of(&activity.default_section) {
-        return match section {
-            StatementSection::CurrentAsset | StatementSection::NonCurrentAsset => {
-                AccountClass::Asset
-            }
-            StatementSection::CurrentLiability | StatementSection::NonCurrentLiability => {
-                AccountClass::Liability
-            }
-            StatementSection::Equity => AccountClass::Equity,
-            StatementSection::Revenue => AccountClass::Income,
-            StatementSection::Cogs
-            | StatementSection::SellingExpense
-            | StatementSection::AdminExpense
-            | StatementSection::FinanceCost
-            | StatementSection::IncomeTax => AccountClass::Expense,
-            StatementSection::OtherOperating | StatementSection::OtherNonOperating => {
+    if let Some(class) = section_class(&activity.default_section) {
+        return match class {
+            "asset" => AccountClass::Asset,
+            "liability" => AccountClass::Liability,
+            "equity" => AccountClass::Equity,
+            "income" => AccountClass::Income,
+            "expense" => AccountClass::Expense,
+            "memorandum" => AccountClass::Memorandum,
+            "dual" => {
                 if net < 0 {
                     AccountClass::Income
                 } else {
                     AccountClass::Expense
                 }
             }
-            StatementSection::Memorandum => AccountClass::Memorandum,
+            _ => return classify(&activity.group_type, &activity.account_code),
         };
     }
     if matches!(activity.group_code.as_str(), "10" | "11") {

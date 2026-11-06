@@ -297,6 +297,13 @@ impl Database {
                     return Err(error);
                 }
             }
+            if kind != SnapshotKind::Regular {
+                if let Some(directory) = destination.parent() {
+                    // Retention is best-effort: a successful snapshot must not
+                    // fail because Windows kept an old file locked.
+                    let _ = prune_snapshot_files(directory);
+                }
+            }
             Ok(())
         })
     }
@@ -952,6 +959,92 @@ pub(crate) fn prune_restore_safety_files(database_path: &Path) -> Result<usize, 
     })
 }
 
+/// Keeps a bounded number of pre-delete and legacy-migration snapshots. These
+/// snapshots are written by the application itself and have a signed sidecar
+/// manifest; the manifest is removed together with its SQLite file so a
+/// retained file never loses its proof of origin. Regular backups are handled
+/// separately by [`prune_backup_files`].
+pub(crate) fn prune_snapshot_files(directory: &Path) -> Result<usize, String> {
+    let mut removed = prune_snapshot_group(directory, "pre_delete_", PRE_DELETE_RETENTION)?;
+    removed += prune_snapshot_group(
+        directory,
+        "level4-migration-",
+        LEGACY_MIGRATION_SNAPSHOT_RETENTION,
+    )?;
+    Ok(removed)
+}
+
+fn prune_snapshot_group(directory: &Path, prefix: &str, keep: usize) -> Result<usize, String> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("خواندن پوشه snapshot ناموفق بود: {error}")),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("خواندن فایل snapshot ناموفق بود: {error}"))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("تعیین نوع فایل snapshot ناموفق بود: {error}"))?
+            .is_file()
+        {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(prefix) || !name.ends_with(".sqlite3") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(UNIX_EPOCH);
+        files.push((modified, name));
+    }
+    if files.len() <= keep {
+        return Ok(0);
+    }
+    // Newest first. The name is a deterministic tie-breaker; both snapshot
+    // naming schemes embed a high-resolution timestamp.
+    files.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    let victims: Vec<_> = files.into_iter().skip(keep).collect();
+    let total_bytes: u64 = victims
+        .iter()
+        .filter_map(|(_, name)| std::fs::metadata(directory.join(name)).ok())
+        .map(|metadata| metadata.len())
+        .sum();
+    eprintln!(
+        "[backup-retention] removing {} old '{prefix}*' snapshot(s), {} bytes",
+        victims.len(),
+        total_bytes
+    );
+    let mut removed = 0;
+    for (_, name) in victims {
+        let path = directory.join(&name);
+        // The manifest is the proof of origin and is useless without its file;
+        // delete the pair together. A missing manifest is fine (it may already
+        // have been cleaned up).
+        let manifest = directory.join(format!("{name}{SNAPSHOT_MANIFEST_SUFFIX}"));
+        match std::fs::remove_file(&manifest) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "حذف manifest snapshot قدیمی «{}» ناموفق بود: {error}",
+                    manifest.display()
+                ));
+            }
+        }
+        std::fs::remove_file(&path).map_err(|error| {
+            format!(
+                "حذف snapshot قدیمی «{}» ناموفق بود: {error}",
+                path.display()
+            )
+        })?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 fn prune_matching_files<F>(directory: &Path, keep: usize, matches: F) -> Result<usize, String>
 where
     F: Fn(&str) -> bool,
@@ -1002,3 +1095,5 @@ where
 
 const BACKUP_RETENTION: usize = 30;
 const RESTORE_SAFETY_RETENTION: usize = 5;
+const PRE_DELETE_RETENTION: usize = 10;
+const LEGACY_MIGRATION_SNAPSHOT_RETENTION: usize = 10;

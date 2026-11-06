@@ -32,13 +32,12 @@ const HEADER_LEN: usize = 96;
 const DEFAULT_M_COST: u32 = 19 * 1024;
 const DEFAULT_T_COST: u32 = 2;
 const DEFAULT_P_COST: u32 = 1;
-const MIN_M_COST: u32 = 8 * 1024;
-const MAX_M_COST: u32 = 1024 * 1024;
-const MAX_T_COST: u32 = 10;
-const MAX_P_COST: u32 = 8;
 const MIN_PASSWORD_CHARS: usize = 8;
 const MAX_PASSWORD_BYTES: usize = 1024;
-const MAX_PLAINTEXT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+// The whole file is still read into memory for AES-GCM. Keep the cap well
+// below the machine's expected RAM until chunked encryption is implemented;
+// peak use is roughly the ciphertext plus the decrypted copy.
+const MAX_PLAINTEXT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Rejects passwords that are too weak or unreasonably large before doing any
 /// expensive key derivation.
@@ -80,7 +79,10 @@ pub(crate) fn encrypt_backup_file(
     let metadata = std::fs::metadata(source)
         .map_err(|error| format!("خواندن اندازهٔ فایل پشتیبان ناموفق بود: {error}"))?;
     if metadata.len() > MAX_PLAINTEXT_BYTES {
-        return Err("حجم پایگاه داده برای پشتیبان رمزنگاری‌شده بیش از حد مجاز است.".to_string());
+        return Err(format!(
+            "حجم پایگاه داده برای پشتیبان رمزنگاری‌شده بیش از حد مجاز است (حداکثر {} مگابایت).",
+            MAX_PLAINTEXT_BYTES / (1024 * 1024)
+        ));
     }
     let plaintext = std::fs::read(source)
         .map_err(|error| format!("خواندن فایل پشتیبان برای رمزنگاری ناموفق بود: {error}"))?;
@@ -146,7 +148,10 @@ pub(crate) fn decrypt_backup_file(
     let metadata = std::fs::metadata(source)
         .map_err(|error| format!("خواندن اندازهٔ فایل پشتیبان ناموفق بود: {error}"))?;
     if metadata.len() > HEADER_LEN as u64 + MAX_PLAINTEXT_BYTES + TAG_LEN as u64 {
-        return Err("حجم فایل پشتیبان رمزنگاری‌شده بیش از حد مجاز است.".to_string());
+        return Err(format!(
+            "حجم فایل پشتیبان رمزنگاری‌شده بیش از حد مجاز است (حداکثر {} مگابایت داده).",
+            MAX_PLAINTEXT_BYTES / (1024 * 1024)
+        ));
     }
     let bytes = std::fs::read(source)
         .map_err(|error| format!("خواندن فایل پشتیبان رمزنگاری‌شده ناموفق بود: {error}"))?;
@@ -219,6 +224,7 @@ pub(crate) fn decrypt_backup_file(
     result
 }
 
+#[derive(Debug)]
 struct ParsedHeader {
     version: u16,
     kdf: u8,
@@ -255,11 +261,11 @@ fn parse_header(header: &[u8]) -> Result<ParsedHeader, String> {
     let mut plaintext_sha256 = [0u8; 32];
     plaintext_sha256.copy_from_slice(&header[64..96]);
 
-    if !(MIN_M_COST..=MAX_M_COST).contains(&m_cost)
-        || !(1..=MAX_T_COST).contains(&t_cost)
-        || !(1..=MAX_P_COST).contains(&p_cost)
-    {
-        return Err("پارامترهای KDF در فایل پشتیبان معتبر نیستند.".to_string());
+    if !kdf_params_allowed(m_cost, t_cost, p_cost) {
+        return Err(
+            "پارامترهای KDF در فایل پشتیبان مجاز نیستند؛ فایل ممکن است دست‌کاری شده باشد."
+                .to_string(),
+        );
     }
 
     Ok(ParsedHeader {
@@ -277,6 +283,14 @@ fn parse_header(header: &[u8]) -> Result<ParsedHeader, String> {
     })
 }
 
+fn kdf_params_allowed(m_cost: u32, t_cost: u32, p_cost: u32) -> bool {
+    // The header is authenticated only after key derivation. In format v1 the
+    // writer emits exactly one parameter set, so any other value is rejected
+    // before Argon2 can allocate memory or consume CPU. A future format version
+    // that needs other parameters must add its own explicit allowlist.
+    m_cost == DEFAULT_M_COST && t_cost == DEFAULT_T_COST && p_cost == DEFAULT_P_COST
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_header(
     schema_version: i64,
@@ -288,6 +302,9 @@ fn build_header(
     plaintext_len: u64,
     plaintext_sha256: &[u8; 32],
 ) -> Result<[u8; HEADER_LEN], String> {
+    if !kdf_params_allowed(m_cost, t_cost, p_cost) {
+        return Err("پارامترهای KDF برای پشتیبان رمزنگاری‌شده مجاز نیستند.".to_string());
+    }
     if !(4..=CURRENT_SCHEMA_VERSION).contains(&schema_version) {
         return Err("نسخهٔ schema برای پشتیبان رمزنگاری‌شده معتبر نیست.".to_string());
     }
@@ -330,4 +347,82 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn header_with_params(m_cost: u32, t_cost: u32, p_cost: u32) -> [u8; HEADER_LEN] {
+        let mut header = build_header(
+            CURRENT_SCHEMA_VERSION,
+            DEFAULT_M_COST,
+            DEFAULT_T_COST,
+            DEFAULT_P_COST,
+            &[1u8; SALT_LEN],
+            &[2u8; NONCE_LEN],
+            8,
+            &[3u8; 32],
+        )
+        .unwrap();
+        header[16..20].copy_from_slice(&m_cost.to_le_bytes());
+        header[20..24].copy_from_slice(&t_cost.to_le_bytes());
+        header[24..28].copy_from_slice(&p_cost.to_le_bytes());
+        header
+    }
+
+    #[test]
+    fn header_accepts_only_the_writer_kdf_allowlist() {
+        assert!(parse_header(&header_with_params(
+            DEFAULT_M_COST,
+            DEFAULT_T_COST,
+            DEFAULT_P_COST
+        ))
+        .is_ok());
+
+        for (m_cost, t_cost, p_cost) in [
+            (1024 * 1024, DEFAULT_T_COST, DEFAULT_P_COST),
+            (DEFAULT_M_COST, 10, DEFAULT_P_COST),
+            (DEFAULT_M_COST, DEFAULT_T_COST, 8),
+            (8 * 1024, DEFAULT_T_COST, DEFAULT_P_COST),
+        ] {
+            let error = parse_header(&header_with_params(m_cost, t_cost, p_cost)).unwrap_err();
+            assert!(
+                error.contains("KDF"),
+                "unexpected error for {m_cost}/{t_cost}/{p_cost}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn decrypt_rejects_a_tampered_expensive_header_before_key_derivation() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-portable-kdf-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.sqlite3");
+        let encrypted = dir.join("backup.hacc");
+        let tampered = dir.join("tampered.hacc");
+        let plain = dir.join("plain.sqlite3");
+        std::fs::write(&source, b"not really a database").unwrap();
+        encrypt_backup_file(
+            &source,
+            &encrypted,
+            "correct horse battery",
+            CURRENT_SCHEMA_VERSION,
+        )
+        .unwrap();
+
+        let mut bytes = std::fs::read(&encrypted).unwrap();
+        bytes[16..20].copy_from_slice(&(1024 * 1024u32).to_le_bytes());
+        std::fs::write(&tampered, bytes).unwrap();
+
+        let error = decrypt_backup_file(&tampered, &plain, "correct horse battery").unwrap_err();
+        assert!(error.contains("KDF"), "unexpected error: {error}");
+        assert!(!plain.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

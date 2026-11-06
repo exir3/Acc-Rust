@@ -16,11 +16,11 @@ jobs:
   verify:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -55,11 +55,11 @@ jobs:
   ui-e2e:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install frontend tooling
@@ -73,7 +73,7 @@ jobs:
 
       - name: Upload Playwright report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: |
@@ -85,11 +85,11 @@ jobs:
   security-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install frontend tooling
@@ -113,12 +113,13 @@ jobs:
     env:
       WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      RELEASE_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -131,7 +132,7 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Require signing for release builds
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release && env.WINDOWS_CERTIFICATE_BASE64 == '' }}
+        if: ${{ env.RELEASE_BUILD == 'true' && (env.WINDOWS_CERTIFICATE_BASE64 == '' || env.WINDOWS_CERTIFICATE_PASSWORD == '') }}
         shell: pwsh
         run: throw "Release builds require WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD."
 
@@ -188,21 +189,33 @@ jobs:
           }
 
       - name: Verify Windows signatures
-        if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}
         shell: pwsh
         run: |
-          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match 'x64' } |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $signtool) { throw "signtool.exe was not found." }
           $exe = "src-tauri/target/release/Hesabdari.exe"
           $installers = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
           if (-not (Test-Path $exe)) { throw "The application executable was not produced." }
           if (-not $installers) { throw "NSIS installer was not produced." }
           $targets = @($exe) + @($installers | ForEach-Object { $_.FullName })
+
+          if ($env:WINDOWS_CERTIFICATE_BASE64 -ne '') {
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match 'x64' } |
+              Select-Object -First 1 -ExpandProperty FullName
+            if (-not $signtool) { throw "signtool.exe was not found." }
+            foreach ($target in $targets) {
+              & $signtool verify /pa /v $target
+              if ($LASTEXITCODE -ne 0) { throw "Signature verification failed for $target." }
+            }
+          }
+
+          $invalid = @()
           foreach ($target in $targets) {
-            & $signtool verify /pa /v $target
-            if ($LASTEXITCODE -ne 0) { throw "Signature verification failed for $target." }
+            $signature = Get-AuthenticodeSignature $target
+            Write-Host "$target -> $($signature.Status)"
+            if ($signature.Status -ne 'Valid') { $invalid += $target }
+          }
+          if ($env:RELEASE_BUILD -eq 'true' -and $invalid.Count -gt 0) {
+            throw "Every official release artifact must have a valid Authenticode signature. Invalid: $($invalid -join ', ')"
           }
 
       - name: Verify installer exists
@@ -213,21 +226,13 @@ jobs:
           $installer | ForEach-Object { Write-Host $_.FullName }
 
       - name: Record artifact hashes and signature metadata
+        id: metadata
         shell: pwsh
         run: |
           $exe = "src-tauri/target/release/Hesabdari.exe"
           $installers = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
           if (-not (Test-Path $exe)) { throw "The application executable was not produced." }
           if (-not $installers) { throw "NSIS installer was not produced." }
-          $signed = $env:WINDOWS_CERTIFICATE_BASE64 -ne ''
-          $exeSignature = Get-AuthenticodeSignature $exe
-          $certificate = if ($exeSignature.SignerCertificate) {
-            [ordered]@{
-              subject = $exeSignature.SignerCertificate.Subject
-              thumbprint = $exeSignature.SignerCertificate.Thumbprint
-              notAfter = $exeSignature.SignerCertificate.NotAfter.ToUniversalTime().ToString("o")
-            }
-          } else { $null }
           $artifacts = @()
           foreach ($file in (@($exe) + @($installers | ForEach-Object { $_.FullName }))) {
             $signature = Get-AuthenticodeSignature $file
@@ -238,22 +243,39 @@ jobs:
               signatureStatus = $signature.Status.ToString()
             }
           }
+          $signed = @($artifacts | Where-Object { $_.signatureStatus -ne 'Valid' }).Count -eq 0
+          $releaseBuild = $env:RELEASE_BUILD -eq 'true'
+          if ($releaseBuild -and -not $signed) {
+            throw "Every official release artifact must have a valid Authenticode signature."
+          }
+          $exeSignature = Get-AuthenticodeSignature $exe
+          $certificate = if ($exeSignature.SignerCertificate) {
+            [ordered]@{
+              subject = $exeSignature.SignerCertificate.Subject
+              thumbprint = $exeSignature.SignerCertificate.Thumbprint
+              notAfter = $exeSignature.SignerCertificate.NotAfter.ToUniversalTime().ToString("o")
+            }
+          } else { $null }
           $metadata = [ordered]@{
             builtAt = (Get-Date).ToUniversalTime().ToString("o")
             commit = $env:GITHUB_SHA
             ref = $env:GITHUB_REF
+            releaseBuild = $releaseBuild
             signed = $signed
             certificate = $certificate
             artifacts = $artifacts
           }
           $metadata | ConvertTo-Json -Depth 6 | Set-Content -Path "release-metadata.json" -Encoding utf8
           Get-Content "release-metadata.json"
+          "release=$($releaseBuild.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          "signed=$($signed.ToString().ToLower())" >> $env:GITHUB_OUTPUT
 
-      - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v7
         with:
-          name: windows-installer-${{ env.WINDOWS_CERTIFICATE_BASE64 != '' && 'signed' || 'unsigned' }}
+          name: windows-${{ steps.metadata.outputs.release == 'true' && 'release' || 'build' }}-${{ steps.metadata.outputs.signed == 'true' && 'signed' || 'unsigned' }}
           path: |
+            src-tauri/target/release/Hesabdari.exe
             src-tauri/target/release/bundle/nsis/*.exe
             release-metadata.json
           if-no-files-found: error

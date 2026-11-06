@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::db::backup::{
-    prune_backup_files, prune_restore_safety_files, validate_backup_connection,
+    prune_backup_files, prune_restore_safety_files, prune_snapshot_files,
+    validate_backup_connection,
 };
 use crate::db::common::{
     BULK_DELETE_SNAPSHOT_KEY, CURRENT_SCHEMA_VERSION, LEGACY_DB_FILE_NAME, LEGACY_IDENTIFIER,
@@ -483,6 +484,70 @@ mod tests {
             })
             .count();
         assert_eq!(safety_copies, 5);
+        assert!(dir.join("notes.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snapshot_retention_prunes_old_pre_delete_and_migration_pairs() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-snapshot-retention-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = SystemTime::now() - Duration::from_secs(120);
+
+        let mut names = Vec::new();
+        for index in 1..=12 {
+            let pre_delete = format!("pre_delete_20260101_000000_{index:02}.sqlite3");
+            let migration = format!("level4-migration-{index:02}.sqlite3");
+            for name in [&pre_delete, &migration] {
+                let path = dir.join(name);
+                std::fs::write(&path, b"snapshot").unwrap();
+                let modified = base + Duration::from_secs(index);
+                std::fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(modified)
+                    .unwrap();
+                std::fs::write(
+                    dir.join(format!("{name}.manifest.json")),
+                    b"{\"kind\":\"test\"}",
+                )
+                .unwrap();
+            }
+            names.push((pre_delete, migration));
+        }
+        std::fs::write(dir.join("hesabdari-backup-1.sqlite3"), b"regular").unwrap();
+        std::fs::write(dir.join("snapshot-integrity.key"), [7u8; 32]).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"keep").unwrap();
+
+        assert_eq!(prune_snapshot_files(&dir).unwrap(), 4);
+        for (pre_delete, migration) in names {
+            let pre_path = dir.join(&pre_delete);
+            let migration_path = dir.join(&migration);
+            let pre_manifest = dir.join(format!("{pre_delete}.manifest.json"));
+            let migration_manifest = dir.join(format!("{migration}.manifest.json"));
+            if pre_delete.contains("_01.") || pre_delete.contains("_02.") {
+                assert!(!pre_path.exists());
+                assert!(!pre_manifest.exists());
+            } else {
+                assert!(pre_path.exists());
+                assert!(pre_manifest.exists());
+            }
+            if migration.contains("-01.") || migration.contains("-02.") {
+                assert!(!migration_path.exists());
+                assert!(!migration_manifest.exists());
+            } else {
+                assert!(migration_path.exists());
+                assert!(migration_manifest.exists());
+            }
+        }
+        assert!(dir.join("hesabdari-backup-1.sqlite3").exists());
+        assert!(dir.join("snapshot-integrity.key").exists());
         assert!(dir.join("notes.txt").exists());
 
         let _ = std::fs::remove_dir_all(&dir);

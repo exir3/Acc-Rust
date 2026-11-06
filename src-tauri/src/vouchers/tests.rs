@@ -1,9 +1,13 @@
 use super::*;
 use crate::db;
-use crate::vouchers::accounting::{classify, AccountClass};
+use crate::vouchers::accounting::{
+    classify, group_type_class, section_class, section_of, AccountClass, GROUP_TYPE_CLASSES,
+    REPORT_SECTIONS,
+};
 use crate::vouchers::model::{serialize_exact_amount, CLOSING_FINAL, CLOSING_TEMPORARY};
 use crate::vouchers::validation::{checked_add, checked_neg, checked_sub, checked_sum};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 fn line(account_code: &str, debit: i64, credit: i64) -> VoucherLineInput {
     VoucherLineInput {
@@ -2050,6 +2054,71 @@ fn classifies_accounts_by_group_or_code() {
     assert_eq!(classify("سایر", "4101"), AccountClass::Income);
     assert_eq!(classify("سایر", "5101"), AccountClass::Expense);
     assert_eq!(classify("سایر", "9101"), AccountClass::Expense);
+}
+
+fn js_object_entries(source: &str, name: &str) -> BTreeMap<String, String> {
+    let marker = format!("const {name} = {{");
+    let start = source
+        .find(&marker)
+        .unwrap_or_else(|| panic!("{name} was not found in ui/js/pages/settings.js"))
+        + marker.len();
+    let end = source[start..]
+        .find("};")
+        .unwrap_or_else(|| panic!("{name} object was not terminated"))
+        + start;
+    source[start..end]
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                return None;
+            }
+            let (key, value) = line.split_once(':')?;
+            let clean = |text: &str| {
+                text.trim()
+                    .trim_end_matches(',')
+                    .trim()
+                    .trim_matches(|character| character == '\'' || character == '"')
+                    .to_string()
+            };
+            Some((clean(key), clean(value)))
+        })
+        .collect()
+}
+
+/// The UI warning matrix comments that it must stay in sync with the Rust
+/// report classifier. This test fails as soon as either side adds, removes or
+/// reclasses a report section or group type.
+#[test]
+fn report_section_mapping_matches_ui() {
+    let source = include_str!("../../../ui/js/pages/settings.js");
+
+    let ui_sections = js_object_entries(source, "SECTION_CLASSES");
+    let rust_sections: BTreeMap<String, String> = REPORT_SECTIONS
+        .iter()
+        .map(|(key, _, class)| ((*key).to_string(), (*class).to_string()))
+        .collect();
+    assert_eq!(ui_sections, rust_sections);
+    for key in rust_sections.keys() {
+        assert!(section_of(key).is_some(), "section_of({key}) is missing");
+        assert!(
+            section_class(key).is_some(),
+            "section_class({key}) is missing"
+        );
+    }
+
+    let ui_groups = js_object_entries(source, "GROUP_TYPE_CLASSES");
+    let rust_groups: BTreeMap<String, String> = GROUP_TYPE_CLASSES
+        .iter()
+        .map(|(group, class)| ((*group).to_string(), (*class).to_string()))
+        .collect();
+    assert_eq!(ui_groups, rust_groups);
+    for group in rust_groups.keys() {
+        assert!(
+            group_type_class(group).is_some(),
+            "group_type_class({group}) is missing"
+        );
+    }
 }
 
 #[test]
