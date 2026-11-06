@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::report::layout::portable_base_style;
-use crate::vouchers::{BalanceSheetReport, TrialBalanceReport, Voucher, VoucherLine};
+use crate::vouchers::{BalanceSheetReport, TrialBalanceReport, Voucher};
 
 mod tests {
     use super::*;

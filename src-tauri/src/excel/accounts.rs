@@ -14,7 +14,49 @@ use std::collections::BTreeMap;
 pub struct AccountImportResult {
     pub created_count: usize,
     pub skipped_count: usize,
+    pub created_codes: Vec<String>,
+    pub skipped_codes: Vec<String>,
     pub errors: Vec<String>,
+    pub error_count: usize,
+    pub aborted: bool,
+}
+
+/// Read-only result of parsing a workbook, shown before any account is written.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountImportPreview {
+    pub file_path: String,
+    pub created_count: usize,
+    pub skipped_count: usize,
+    pub created_codes: Vec<String>,
+    pub skipped_codes: Vec<String>,
+    pub errors: Vec<String>,
+    pub error_count: usize,
+    /// True when the whole file is valid and can be written in one transaction.
+    pub atomic_ready: bool,
+}
+
+struct PlannedAccountRow {
+    excel_row: usize,
+    new_accounts: Vec<db::NewAccount>,
+    error: Option<String>,
+}
+
+struct AccountWorkbookPlan {
+    rows: Vec<PlannedAccountRow>,
+    created_codes: Vec<String>,
+    skipped_codes: Vec<String>,
+    errors: Vec<String>,
+    error_count: usize,
+}
+
+impl AccountWorkbookPlan {
+    fn new_accounts(&self) -> Vec<db::NewAccount> {
+        self.rows
+            .iter()
+            .flat_map(|row| row.new_accounts.iter().cloned())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -235,20 +277,23 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<AccountExportRe
     }))
 }
 
-/// Import accounts from the WebApp 11-column workbook. Each hierarchy level is
-/// validated and saved before its children; existing matching accounts are skipped.
-pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportResult>, String> {
-    let Some(path) = rfd::FileDialog::new()
+fn account_import_path() -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new()
         .set_title("ورودی اکسل حساب‌ها")
         .add_filter("Excel", &["xlsx"])
         .pick_file()
-    else {
-        return Ok(None);
-    };
+}
 
-    ensure_excel_file_size(&path)?;
+/// Parse and validate a workbook without writing anything. The plan keeps one
+/// entry per spreadsheet row so the caller can preview the whole file and then
+/// choose between an all-or-nothing import and a valid-rows-only import.
+fn plan_account_workbook(
+    database: &db::Database,
+    path: &std::path::Path,
+) -> Result<AccountWorkbookPlan, String> {
+    ensure_excel_file_size(path)?;
     let mut workbook =
-        open_workbook_auto(&path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
+        open_workbook_auto(path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
     let range = match workbook.worksheet_range_at(0) {
         Some(Ok(range)) => range,
         Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
@@ -271,14 +316,18 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
             .unwrap_or(Data::Empty)
     };
 
-    let mut accounts = database.list_accounts()?.accounts;
+    let accounts = database.list_accounts()?.accounts;
     let groups = database.list_account_groups()?.groups;
     let group_codes: std::collections::BTreeSet<String> =
         groups.into_iter().map(|group| group.code).collect();
-    let mut created_count = 0usize;
-    let mut skipped_count = 0usize;
-    let mut errors = Vec::new();
-    let mut error_count = 0usize;
+    let mut planned: BTreeMap<String, db::NewAccount> = BTreeMap::new();
+    let mut plan = AccountWorkbookPlan {
+        rows: Vec::new(),
+        created_codes: Vec::new(),
+        skipped_codes: Vec::new(),
+        errors: Vec::new(),
+        error_count: 0,
+    };
 
     let first_excel_row = range.start().map(|(row, _)| row as usize).unwrap_or(0);
     for (offset, row) in range.rows().skip(header_row + 1).enumerate() {
@@ -314,7 +363,7 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
         {
             continue;
         }
-        let row_result = (|| -> Result<(usize, usize), String> {
+        let row_result = (|| -> Result<(Vec<db::NewAccount>, Vec<String>), String> {
             let group_code = parse_code(&raw_group_code, "کد گروه")?;
             if !group_codes.contains(&group_code) {
                 return Err(format!(
@@ -348,9 +397,8 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
             }
             let mut parent_code = String::new();
             let mut parent_nature = "debtor".to_string();
-            let mut row_created = 0usize;
-            let mut row_skipped = 0usize;
-            let mut pending: Vec<db::NewAccount> = Vec::new();
+            let mut row_new: Vec<db::NewAccount> = Vec::new();
+            let mut row_skipped: Vec<String> = Vec::new();
             for (level_index, (_, raw_name, raw_nature)) in cells.iter().enumerate() {
                 if raw_name.trim().is_empty() {
                     break;
@@ -379,12 +427,29 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                             db::to_fa_digits(&code)
                         ));
                     }
-                    row_skipped += 1;
+                    row_skipped.push(code.clone());
                     parent_code = code;
                     parent_nature = nature;
                     continue;
                 }
-                pending.push(db::NewAccount::new(
+                if let Some(planned_account) = planned.get(&code) {
+                    if planned_account.level != level
+                        || planned_account.group_code != group_code
+                        || planned_account.parent_code != parent_code
+                        || planned_account.name != name
+                        || planned_account.nature != nature
+                    {
+                        return Err(format!(
+                            "کد «{}» در همین فایل با مشخصات متفاوت تکرار شده است.",
+                            db::to_fa_digits(&code)
+                        ));
+                    }
+                    row_skipped.push(code.clone());
+                    parent_code = code;
+                    parent_nature = nature;
+                    continue;
+                }
+                row_new.push(db::NewAccount::new(
                     &code,
                     &name,
                     level,
@@ -396,40 +461,151 @@ pub fn import_accounts(database: &db::Database) -> Result<Option<AccountImportRe
                 parent_code = code;
                 parent_nature = nature;
             }
-            if !pending.is_empty() {
-                let created = database.create_accounts_atomic(pending)?;
-                row_created += created.len();
-                accounts.extend(created);
-            }
-            Ok((row_created, row_skipped))
+            Ok((row_new, row_skipped))
         })();
         match row_result {
-            Ok((row_created, row_skipped)) => {
-                created_count += row_created;
-                skipped_count += row_skipped;
+            Ok((new_accounts, skipped_codes)) => {
+                for account in &new_accounts {
+                    planned.insert(account.code.clone(), account.clone());
+                    plan.created_codes.push(account.code.clone());
+                }
+                plan.skipped_codes.extend(skipped_codes.iter().cloned());
+                plan.rows.push(PlannedAccountRow {
+                    excel_row,
+                    new_accounts,
+                    error: None,
+                });
             }
             Err(error) => {
-                error_count += 1;
-                if errors.len() < MAX_IMPORT_ERRORS {
-                    errors.push(format!("ردیف {}: {}", db::to_fa_digits(excel_row), error));
+                plan.error_count += 1;
+                if plan.errors.len() < MAX_IMPORT_ERRORS {
+                    plan.errors
+                        .push(format!("ردیف {}: {}", db::to_fa_digits(excel_row), error));
                 }
+                plan.rows.push(PlannedAccountRow {
+                    excel_row,
+                    new_accounts: Vec::new(),
+                    error: Some(error),
+                });
             }
         }
     }
 
-    if error_count > errors.len() {
-        errors.push(format!(
+    if plan.error_count > plan.errors.len() {
+        plan.errors.push(format!(
             "{} خطای دیگر ثبت نشد؛ مجموع خطاها {} مورد است.",
-            db::to_fa_digits(error_count - errors.len()),
-            db::to_fa_digits(error_count)
+            db::to_fa_digits(plan.error_count - plan.errors.len()),
+            db::to_fa_digits(plan.error_count)
         ));
     }
+    Ok(plan)
+}
 
-    Ok(Some(AccountImportResult {
-        created_count,
-        skipped_count,
-        errors,
+/// Read the workbook and report what would happen, without writing to the
+/// database. The returned path is used by the confirmed import call.
+pub fn preview_accounts(database: &db::Database) -> Result<Option<AccountImportPreview>, String> {
+    let Some(path) = account_import_path() else {
+        return Ok(None);
+    };
+    let plan = plan_account_workbook(database, &path)?;
+    Ok(Some(AccountImportPreview {
+        file_path: path.to_string_lossy().to_string(),
+        created_count: plan.created_codes.len(),
+        skipped_count: plan.skipped_codes.len(),
+        created_codes: plan.created_codes,
+        skipped_codes: plan.skipped_codes,
+        errors: plan.errors,
+        error_count: plan.error_count,
+        atomic_ready: plan.error_count == 0,
     }))
+}
+
+/// Import a previously previewed file. `mode` is `"atomic"` (the whole file is
+/// written in one transaction and any error changes nothing) or `"partial"`
+/// (valid rows are written and invalid rows are reported).
+pub fn import_accounts(
+    database: &db::Database,
+    file_path: &str,
+    mode: &str,
+) -> Result<AccountImportResult, String> {
+    let path = std::path::PathBuf::from(file_path);
+    let plan = plan_account_workbook(database, &path)?;
+    apply_account_plan(database, plan, mode)
+}
+
+fn apply_account_plan(
+    database: &db::Database,
+    plan: AccountWorkbookPlan,
+    mode: &str,
+) -> Result<AccountImportResult, String> {
+    let partial = mode.eq_ignore_ascii_case("partial");
+    if !partial && plan.error_count > 0 {
+        return Ok(AccountImportResult {
+            created_count: 0,
+            skipped_count: 0,
+            created_codes: Vec::new(),
+            skipped_codes: Vec::new(),
+            errors: plan.errors,
+            error_count: plan.error_count,
+            aborted: true,
+        });
+    }
+
+    let mut result = if partial {
+        AccountImportResult {
+            created_count: 0,
+            skipped_count: plan.skipped_codes.len(),
+            created_codes: Vec::new(),
+            skipped_codes: plan.skipped_codes,
+            errors: plan.errors,
+            error_count: plan.error_count,
+            aborted: false,
+        }
+    } else {
+        let created = database.create_accounts_atomic(plan.new_accounts())?;
+        AccountImportResult {
+            created_count: created.len(),
+            skipped_count: plan.skipped_codes.len(),
+            created_codes: created.into_iter().map(|account| account.code).collect(),
+            skipped_codes: plan.skipped_codes,
+            errors: plan.errors,
+            error_count: plan.error_count,
+            aborted: false,
+        }
+    };
+
+    if partial {
+        for row in plan.rows {
+            if row.error.is_some() || row.new_accounts.is_empty() {
+                continue;
+            }
+            match database.create_accounts_atomic(row.new_accounts) {
+                Ok(created) => result
+                    .created_codes
+                    .extend(created.into_iter().map(|account| account.code)),
+                Err(error) => {
+                    result.error_count += 1;
+                    if result.errors.len() < MAX_IMPORT_ERRORS {
+                        result.errors.push(format!(
+                            "ردیف {}: {}",
+                            db::to_fa_digits(row.excel_row),
+                            error
+                        ));
+                    }
+                }
+            }
+        }
+        result.created_count = result.created_codes.len();
+    }
+
+    if result.error_count > result.errors.len() {
+        result.errors.push(format!(
+            "{} خطای دیگر ثبت نشد؛ مجموع خطاها {} مورد است.",
+            db::to_fa_digits(result.error_count - result.errors.len()),
+            db::to_fa_digits(result.error_count)
+        ));
+    }
+    Ok(result)
 }
 
 pub(crate) trait EmptyFallback {

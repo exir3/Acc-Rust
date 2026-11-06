@@ -232,3 +232,42 @@ pub(crate) fn apply_legacy_level4_migration(
     let _ = app.emit("database-restored", ());
     Ok(result)
 }
+
+#[tauri::command(async)]
+pub(crate) fn preview_legacy_level4_resolution(
+    account_code: String,
+    detail1_code: String,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::LegacyLevel4ResolutionPreview, String> {
+    require_window(&window, &["main"])?;
+    state
+        .database
+        .preview_legacy_level4_resolution(&account_code, &detail1_code)
+}
+
+/// Applies an operator-chosen mapping for one ambiguous level-4 account. The
+/// command writes its own backup before touching any line.
+#[tauri::command(async)]
+pub(crate) fn resolve_legacy_level4_account(
+    account_code: String,
+    detail1_code: String,
+    confirm: bool,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::LegacyLevel4MigrationResult, String> {
+    require_window(&window, &["main"])?;
+    if !confirm {
+        return Err("برای تبدیل حساب سطح ۴، تأیید صریح لازم است.".to_string());
+    }
+    let database_path = std::path::PathBuf::from(state.database.path_string());
+    let backup_path = db::legacy_migration_backup_path(&database_path);
+    let result =
+        state
+            .database
+            .resolve_legacy_level4_account(&account_code, &detail1_code, &backup_path)?;
+    notify_accounts_changed(&app);
+    let _ = app.emit("database-restored", ());
+    Ok(result)
+}

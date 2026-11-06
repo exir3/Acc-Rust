@@ -11,6 +11,12 @@ use std::path::Path;
 
 /* ── Import ─────────────────────────────────────────────────── */
 
+/// Returned when the operator cancels a long bulk import. Callers treat it as
+/// an ordinary error, so an in-flight transaction is rolled back instead of
+/// leaving a partially imported workbook behind.
+pub(crate) const BULK_IMPORT_CANCELLED: &str =
+    "ورود دسته‌جمعی اسناد توسط کاربر لغو شد؛ هیچ سندی ثبت نشد.";
+
 #[derive(Default)]
 pub(crate) struct ImportColumns {
     pub(crate) account_code: Option<usize>,
@@ -340,6 +346,16 @@ pub(crate) fn add_imported_account(
 /// Cover sheets and other unrelated tabs are skipped instead of making the
 /// import depend on the workbook's tab order.
 pub fn import_vouchers() -> Result<Option<BulkVoucherImport>, String> {
+    import_vouchers_with_progress(&mut |_, _| {}, &|| false)
+}
+
+/// Same as [`import_vouchers`], but reports parsed rows and lets the caller
+/// abort a long parse. The import stays all-or-nothing; cancelling never
+/// publishes a partial workbook.
+pub fn import_vouchers_with_progress(
+    on_progress: &mut dyn FnMut(usize, usize),
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<Option<BulkVoucherImport>, String> {
     let Some(path) = rfd::FileDialog::new()
         .set_title("ورود دسته‌جمعی اسناد از اکسل")
         .add_filter("Excel", &["xlsx", "xlsm", "xls", "xlsb", "ods"])
@@ -348,10 +364,19 @@ pub fn import_vouchers() -> Result<Option<BulkVoucherImport>, String> {
         return Ok(None);
     };
 
-    parse_bulk_vouchers(&path).map(Some)
+    parse_bulk_vouchers_with_progress(&path, on_progress, is_cancelled).map(Some)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
+    parse_bulk_vouchers_with_progress(path, &mut |_, _| {}, &|| false)
+}
+
+pub(crate) fn parse_bulk_vouchers_with_progress(
+    path: &Path,
+    on_progress: &mut dyn FnMut(usize, usize),
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<BulkVoucherImport, String> {
     ensure_excel_file_size(path)?;
     let mut workbook =
         open_workbook_auto(path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
@@ -362,13 +387,22 @@ pub(crate) fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, Stri
 
     let mut empty_matching_sheet = None;
     for sheet_name in sheet_names {
+        if is_cancelled() {
+            return Err(BULK_IMPORT_CANCELLED.to_string());
+        }
         let range = workbook
             .worksheet_range(&sheet_name)
             .map_err(|error| format!("خواندن کاربرگ «{sheet_name}» ناموفق بود: {error}"))?;
         if find_bulk_columns(&range).is_none() {
             continue;
         }
-        match parse_bulk_voucher_sheet(path, &sheet_name, &range) {
+        match parse_bulk_voucher_sheet_with_progress(
+            path,
+            &sheet_name,
+            &range,
+            on_progress,
+            is_cancelled,
+        ) {
             Ok(import) => return Ok(import),
             Err(error) if error == "در فایل اکسل هیچ ردیف سندی پیدا نشد." =>
             {
@@ -388,10 +422,21 @@ pub(crate) fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, Stri
     Err("در هیچ‌یک از کاربرگ‌های فایل، ستون‌های لازم برای ورود دسته‌جمعی اسناد پیدا نشد. ستون‌های شماره سند، تاریخ، کد و عنوان کل، کد و عنوان معین، بدهکار و بستانکار الزامی هستند. در صورت وجود ستون کد تفصیلی ۱، عنوان تفصیلی ۱ نیز باید وجود داشته باشد.".to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn parse_bulk_voucher_sheet(
     path: &Path,
     sheet_name: &str,
     range: &calamine::Range<Data>,
+) -> Result<BulkVoucherImport, String> {
+    parse_bulk_voucher_sheet_with_progress(path, sheet_name, range, &mut |_, _| {}, &|| false)
+}
+
+pub(crate) fn parse_bulk_voucher_sheet_with_progress(
+    path: &Path,
+    sheet_name: &str,
+    range: &calamine::Range<Data>,
+    on_progress: &mut dyn FnMut(usize, usize),
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Result<BulkVoucherImport, String> {
     ensure_sheet_dimensions(range, MAX_BULK_IMPORT_ROWS, MAX_BULK_IMPORT_COLUMNS)?;
     let Some((header_row, columns)) = find_bulk_columns(range) else {
@@ -413,7 +458,14 @@ pub(crate) fn parse_bulk_voucher_sheet(
     let mut last_voucher_number = None::<i64>;
 
     let first_excel_row = range.start().map(|(row, _)| row as usize).unwrap_or(0);
+    let total_rows = range.height().saturating_sub(header_row + 1);
     for (offset, row) in range.rows().skip(header_row + 1).enumerate() {
+        if offset % 64 == 0 {
+            if is_cancelled() {
+                return Err(BULK_IMPORT_CANCELLED.to_string());
+            }
+            on_progress(offset, total_rows);
+        }
         // Range rows are relative to its used area, which may not start at A1.
         let excel_row = first_excel_row + header_row + offset + 2;
         let raw_number = cell_text(&read(row, columns.voucher_number));
@@ -731,6 +783,11 @@ pub(crate) fn parse_bulk_voucher_sheet(
             ));
         }
     }
+
+    if is_cancelled() {
+        return Err(BULK_IMPORT_CANCELLED.to_string());
+    }
+    on_progress(total_rows, total_rows);
 
     if vouchers.is_empty() {
         return Err("در فایل اکسل هیچ ردیف سندی پیدا نشد.".to_string());

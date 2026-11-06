@@ -101,6 +101,9 @@ jobs:
   desktop-build:
     needs: [verify, ui-e2e, security-audit]
     runs-on: windows-latest
+    env:
+      WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -120,6 +123,27 @@ jobs:
 
       - name: Build Windows desktop app
         run: npm run build
+
+      - name: Sign Windows installer (optional)
+        if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'x64' } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe was not found." }
+          $pfx = Join-Path $env:RUNNER_TEMP "acc-rust-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+          try {
+            $installers = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe"
+            if (-not $installers) { throw "No NSIS installer found to sign." }
+            foreach ($installer in $installers) {
+              & $signtool sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD /tr "http://timestamp.digicert.com" /td sha256 /fd sha256 $installer.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Signing failed for $($installer.Name)." }
+            }
+          } finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Verify installer exists
         shell: pwsh

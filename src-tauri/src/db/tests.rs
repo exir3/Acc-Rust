@@ -1400,6 +1400,133 @@ mod tests {
     }
 
     #[test]
+    fn manual_level4_resolution_maps_an_ambiguous_account_to_a_chosen_detail() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-level4-resolution-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = file_database(&dir.join("hesabdari.sqlite3"));
+
+        let voucher_id = db
+            .with_conn(|conn| {
+                // The parent is a level-3 account, but the group mismatch makes
+                // the automatic conversion refuse this row.
+                conn.execute(
+                    "INSERT INTO accounts
+                        (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
+                     VALUES ('110201001001', 'سطح چهار مبهم', 4, '2', 'debtor', '110201001', 'حساب تفصیلی', 1)",
+                    [],
+                )
+                .map_err(db_error)?;
+                conn.execute(
+                    "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'سند حسابداری عادی')",
+                    [],
+                )
+                .map_err(db_error)?;
+                let voucher_id = conn.last_insert_rowid();
+                conn.execute(
+                    "INSERT INTO voucher_lines
+                        (voucher_id, row_no, account_id, account_code, legacy_level4_pending, debit, credit)
+                     VALUES (?1, 1, NULL, '110201001001', 1, 1000, 0)",
+                    params![voucher_id],
+                )
+                .map_err(db_error)?;
+                conn.execute(
+                    "INSERT INTO voucher_lines
+                        (voucher_id, row_no, account_id, account_code, legacy_level4_pending, debit, credit)
+                     SELECT ?1, 2, id, code, 0, 0, 1000 FROM accounts WHERE code = '110101'",
+                    params![voucher_id],
+                )
+                .map_err(db_error)?;
+                Ok(voucher_id)
+            })
+            .unwrap();
+
+        let analysis = db.analyze_legacy_level4().unwrap();
+        assert_eq!(analysis.convertible_line_count, 0);
+        assert_eq!(analysis.ambiguous_line_count, 1);
+
+        let preview = db
+            .preview_legacy_level4_resolution("110201001001", "110201001")
+            .unwrap();
+        assert_eq!(preview.line_count, 1);
+        assert_eq!(preview.voucher_count, 1);
+        assert_eq!(preview.total_debit, 1000);
+        assert_eq!(preview.total_credit, 0);
+        assert_eq!(preview.balance, 1000);
+        assert_eq!(preview.target_account_code, "110201");
+
+        let backup = dir.join("resolution-backup.sqlite3");
+        let result = db
+            .resolve_legacy_level4_account("110201001001", "110201001", &backup)
+            .unwrap();
+        assert_eq!(result.converted_lines, 1);
+        assert_eq!(result.pending_lines, 0);
+        assert_eq!(result.removed_accounts, 1);
+        assert!(backup.is_file());
+
+        db.with_conn(|conn| {
+            let (account_code, detail1, pending): (String, Option<String>, i64) = conn
+                .query_row(
+                    "SELECT account_code, detail1_code, legacy_level4_pending
+                       FROM voucher_lines WHERE voucher_id=?1 AND row_no=1",
+                    params![voucher_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(db_error)?;
+            assert_eq!(account_code, "110201");
+            assert_eq!(detail1.as_deref(), Some("110201001"));
+            assert_eq!(pending, 0);
+            let totals: (i64, i64) = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(debit),0), COALESCE(SUM(credit),0)
+                       FROM voucher_lines WHERE voucher_id=?1",
+                    params![voucher_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(db_error)?;
+            assert_eq!(totals, (1000, 1000));
+            let level4: i64 = conn
+                .query_row("SELECT COUNT(*) FROM accounts WHERE level=4", [], |row| {
+                    row.get(0)
+                })
+                .map_err(db_error)?;
+            assert_eq!(level4, 0);
+            Ok(())
+        })
+        .unwrap();
+
+        // The mandatory pre-migration backup intentionally contains the
+        // ambiguous level-4 hierarchy; restoring it must accept that snapshot
+        // and bring the pending row back unchanged.
+        db.restore_from(&backup).unwrap();
+        db.with_conn(|conn| {
+            let level4: i64 = conn
+                .query_row("SELECT COUNT(*) FROM accounts WHERE level=4", [], |row| {
+                    row.get(0)
+                })
+                .map_err(db_error)?;
+            assert_eq!(level4, 1);
+            let (account_code, pending): (String, i64) = conn
+                .query_row(
+                    "SELECT account_code, legacy_level4_pending
+                       FROM voucher_lines WHERE voucher_id=?1 AND row_no=1",
+                    params![voucher_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(db_error)?;
+            assert_eq!(account_code, "110201001001");
+            assert_eq!(pending, 1);
+            Ok(())
+        })
+        .unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_detail_account_used_in_vouchers_cannot_be_reparented() {
         let db = test_database();
         let detail = db

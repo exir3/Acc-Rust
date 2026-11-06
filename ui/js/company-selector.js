@@ -430,7 +430,7 @@ async function openCompanySelector({ startup = false } = {}) {
 
   const app = $('.accounting-app');
   if (app) app.inert = true;
-  document.title = 'انتخاب سال مالی — نرم‌افزار حسابداری';
+  document.title = 'انتخاب سال مالی شرکت جاری — نرم‌افزار حسابداری';
 
   bindCompanySelector();
   await refreshCompanySelector({ preserveSelection: false, focus: true });

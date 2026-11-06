@@ -31,8 +31,9 @@ pub use connection::initialize;
 pub use model::{
     Account, AccountGroup, AccountGroupList, AccountList, AuditLogEntry, AuditLogList,
     BulkAccountDeleteFailure, BulkAccountDeleteResult, Database, FiscalYear, FiscalYearList,
-    LegacyLevel4Account, LegacyLevel4Analysis, LegacyLevel4MigrationResult, Limits, NewAccount,
-    Settings, ACCOUNT_GROUP_SECTIONS, ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES, MAX_ACCOUNT_LEVEL,
+    LegacyLevel4Account, LegacyLevel4Analysis, LegacyLevel4MigrationResult,
+    LegacyLevel4ResolutionPreview, Limits, NewAccount, Settings, ACCOUNT_GROUP_SECTIONS,
+    ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES, MAX_ACCOUNT_LEVEL,
 };
 
 pub(crate) use fiscal_years::{ensure_open_period, ensure_year_accepts_date};

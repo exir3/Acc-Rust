@@ -219,6 +219,24 @@ pub struct LegacyLevel4MigrationResult {
     pub backup_path: String,
 }
 
+/// Before/after view of mapping one ambiguous level-4 account to a real
+/// level-3 (detail 1) account and its level-2 base account.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyLevel4ResolutionPreview {
+    pub account_code: String,
+    pub account_name: String,
+    pub line_count: i64,
+    pub voucher_count: i64,
+    pub total_debit: i64,
+    pub total_credit: i64,
+    pub balance: i64,
+    pub target_account_code: String,
+    pub target_account_name: String,
+    pub target_detail1_code: String,
+    pub target_detail1_name: String,
+}
+
 /// Holds the single write connection. SQLite access is cheap and the forms
 /// have very little traffic, so one mutex-guarded connection keeps ordering
 /// guarantees simple.
@@ -232,6 +250,7 @@ pub struct Database {
 }
 
 /// A validated-at-save account definition used by batch creation.
+#[derive(Debug, Clone)]
 pub struct NewAccount {
     pub code: String,
     pub name: String,

@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::db::audit;
 use crate::db::common::{
     db_error, to_fa_digits, BULK_DELETE_SNAPSHOT_KEY, BULK_DELETE_SNAPSHOT_VALUE,
-    CURRENT_SCHEMA_VERSION,
+    CURRENT_SCHEMA_VERSION, LEGACY_LEVEL4_SNAPSHOT_VALUE,
 };
 use crate::db::model::Database;
 use crate::db::schema::{
@@ -16,9 +16,49 @@ use crate::db::schema::{
 };
 use crate::vouchers::MAX_VOUCHER_NUMBER;
 
+/// What a backup file is allowed to contain beyond a regular backup. Both
+/// snapshot kinds are written by the application itself and marked in
+/// `app_meta`, so restore can apply exactly the same narrow exception.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapshotKind {
+    Regular,
+    BulkDelete,
+    LegacyLevel4Migration,
+}
+
+impl SnapshotKind {
+    fn marker_value(self) -> Option<&'static str> {
+        match self {
+            Self::Regular => None,
+            Self::BulkDelete => Some(BULK_DELETE_SNAPSHOT_VALUE),
+            Self::LegacyLevel4Migration => Some(LEGACY_LEVEL4_SNAPSHOT_VALUE),
+        }
+    }
+
+    fn from_marker(value: Option<&str>) -> Self {
+        match value {
+            Some(BULK_DELETE_SNAPSHOT_VALUE) => Self::BulkDelete,
+            Some(LEGACY_LEVEL4_SNAPSHOT_VALUE) => Self::LegacyLevel4Migration,
+            _ => Self::Regular,
+        }
+    }
+
+    /// A snapshot is a reversible archive of the exact live state, so it may
+    /// contain an old voucher that already violates current balancing rules.
+    fn preserve_legacy_voucher_structure(self) -> bool {
+        !matches!(self, Self::Regular)
+    }
+
+    /// Legacy level-4 accounts have a level-3 parent but may carry a different
+    /// group code. The migration needs to back them up before mapping them.
+    fn allow_legacy_level4_hierarchy(self) -> bool {
+        matches!(self, Self::LegacyLevel4Migration)
+    }
+}
+
 impl Database {
     pub fn backup_to(&self, destination: &Path) -> Result<(), String> {
-        self.backup_to_internal(destination, false)
+        self.backup_to_internal(destination, SnapshotKind::Regular)
     }
 
     /// Creates a reversible pre-delete snapshot. Unlike a user-selected backup,
@@ -27,14 +67,17 @@ impl Database {
     /// schema, account hierarchy, line-level constraints and foreign keys are
     /// still validated. A marker lets restore apply this same narrow exception.
     pub(crate) fn backup_to_for_bulk_delete(&self, destination: &Path) -> Result<(), String> {
-        self.backup_to_internal(destination, true)
+        self.backup_to_internal(destination, SnapshotKind::BulkDelete)
     }
 
-    pub(crate) fn backup_to_internal(
-        &self,
-        destination: &Path,
-        preserve_legacy_voucher_structure: bool,
-    ) -> Result<(), String> {
+    /// Creates the mandatory backup taken before resolving a legacy level-4
+    /// account. The source database intentionally contains a level-4 account
+    /// whose hierarchy is still inconsistent, so this snapshot must accept it.
+    pub(crate) fn backup_to_for_legacy_migration(&self, destination: &Path) -> Result<(), String> {
+        self.backup_to_internal(destination, SnapshotKind::LegacyLevel4Migration)
+    }
+
+    fn backup_to_internal(&self, destination: &Path, kind: SnapshotKind) -> Result<(), String> {
         let current_path = PathBuf::from(self.path_string());
         if same_path(&current_path, destination) {
             return Err("مسیر پشتیبان نمی‌تواند همان مسیر پایگاه دادهٔ فعال باشد.".to_string());
@@ -52,21 +95,17 @@ impl Database {
                         .map_err(db_error)?;
                 }
 
-                if preserve_legacy_voucher_structure {
-                    validate_backup_connection_with_options(&target, true)?;
+                validate_backup_connection_with_options(&target, kind)?;
+                if let Some(marker) = kind.marker_value() {
                     target
                         .execute(
                             "INSERT INTO app_meta(key, value) VALUES (?1, ?2)
                              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                            params![BULK_DELETE_SNAPSHOT_KEY, BULK_DELETE_SNAPSHOT_VALUE],
+                            params![BULK_DELETE_SNAPSHOT_KEY, marker],
                         )
                         .map_err(db_error)?;
-                    Ok(())
-                } else {
-                    // Do not publish a regular backup containing invalid
-                    // accounting data or references.
-                    validate_backup_connection(&target)
                 }
+                Ok(())
             })();
             drop(target);
             if let Err(error) = validation {
@@ -85,12 +124,8 @@ impl Database {
 
         let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| format!("باز کردن فایل پشتیبان ناموفق بود: {error}"))?;
-        let is_bulk_delete_snapshot = is_bulk_delete_snapshot_file(&source)?;
-        if is_bulk_delete_snapshot {
-            validate_backup_connection_with_options(&source, true)?;
-        } else {
-            validate_backup_connection(&source)?;
-        }
+        let snapshot_kind = snapshot_kind(&source)?;
+        validate_backup_connection_with_options(&source, snapshot_kind)?;
         let safety_path = unique_sibling_path(&current_path, "before-restore");
 
         self.with_conn(|target| {
@@ -114,11 +149,11 @@ impl Database {
                 // envelope. A v5 migration failure (for example, legacy level-4
                 // accounts) rolls the whole restore back to the active database.
                 apply_schema_migrations(target)?;
-                validate_backup_connection_with_options(target, is_bulk_delete_snapshot)
+                validate_backup_connection_with_options(target, snapshot_kind)
             })
             .and_then(|()| reset_schema_triggers(target))
             .and_then(|()| {
-                if is_bulk_delete_snapshot {
+                if snapshot_kind.marker_value().is_some() {
                     target
                         .execute(
                             "DELETE FROM app_meta WHERE key = ?1",
@@ -195,13 +230,14 @@ fn reset_schema_triggers(conn: &Connection) -> Result<(), String> {
     ensure_permanent_voucher_guards(conn)
 }
 
+#[cfg(test)]
 pub(crate) fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
-    validate_backup_connection_with_options(conn, false)
+    validate_backup_connection_with_options(conn, SnapshotKind::Regular)
 }
 
-fn is_bulk_delete_snapshot_file(conn: &Connection) -> Result<bool, String> {
+fn snapshot_kind(conn: &Connection) -> Result<SnapshotKind, String> {
     if !table_exists(conn, "app_meta")? {
-        return Ok(false);
+        return Ok(SnapshotKind::Regular);
     }
     let value = conn
         .query_row(
@@ -211,12 +247,12 @@ fn is_bulk_delete_snapshot_file(conn: &Connection) -> Result<bool, String> {
         )
         .optional()
         .map_err(db_error)?;
-    Ok(value.as_deref() == Some(BULK_DELETE_SNAPSHOT_VALUE))
+    Ok(SnapshotKind::from_marker(value.as_deref()))
 }
 
 fn validate_backup_connection_with_options(
     conn: &Connection,
-    preserve_legacy_voucher_structure: bool,
+    kind: SnapshotKind,
 ) -> Result<(), String> {
     let integrity: String = conn
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
@@ -454,15 +490,24 @@ fn validate_backup_connection_with_options(
             "حساب «{code}» در فایل پشتیبان حساب بالاتر معتبری ندارد."
         ));
     }
-    if let Some(code) = backup_first_text(
-        conn,
+    let hierarchy_check = if kind.allow_legacy_level4_hierarchy() {
+        // A legacy level-4 account keeps its level-3 parent but may still carry
+        // a different group code until the operator maps it explicitly.
+        "SELECT a.code
+           FROM accounts a
+           JOIN accounts p ON p.code = a.parent_code
+          WHERE (a.level <> p.level + 1 OR a.group_code <> p.group_code)
+            AND NOT (a.level = 4 AND p.level = 3)
+          LIMIT 1"
+    } else {
         "SELECT a.code
            FROM accounts a
            JOIN accounts p ON p.code = a.parent_code
           WHERE a.level <> p.level + 1
              OR a.group_code <> p.group_code
-          LIMIT 1",
-    )? {
+          LIMIT 1"
+    };
+    if let Some(code) = backup_first_text(conn, hierarchy_check)? {
         return Err(format!(
             "ساختار حساب «{code}» با حساب بالاتر آن در فایل پشتیبان سازگار نیست."
         ));
@@ -589,7 +634,7 @@ fn validate_backup_connection_with_options(
     // database state. It may contain an old voucher with an invalid aggregate
     // row count/balance; all SQLite, schema, foreign-key and line-level checks
     // above still run. Regular backups remain fully strict.
-    if !preserve_legacy_voucher_structure {
+    if !kind.preserve_legacy_voucher_structure() {
         if let Some(number) = backup_first_text(
             conn,
             &format!(

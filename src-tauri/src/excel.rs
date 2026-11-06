@@ -15,9 +15,13 @@ mod export;
 mod import;
 mod model;
 
-pub use accounts::{export_accounts, import_accounts, AccountExportResult, AccountImportResult};
+pub use accounts::{
+    export_accounts, import_accounts, preview_accounts, AccountExportResult, AccountImportPreview,
+    AccountImportResult,
+};
 pub use export::export_voucher;
 pub use import::{import_voucher, import_vouchers};
+pub(crate) use import::{import_vouchers_with_progress, BULK_IMPORT_CANCELLED};
 pub use model::{BulkVoucherImport, BulkVoucherPreview, ImportedAccount, InferredGroupMapping};
 
 #[cfg(test)]

@@ -11,6 +11,9 @@ pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 10;
 // even when an old document already violates the current balancing rules.
 pub(crate) const BULK_DELETE_SNAPSHOT_KEY: &str = "backup_snapshot_kind";
 pub(crate) const BULK_DELETE_SNAPSHOT_VALUE: &str = "bulk-delete-preimage-v1";
+// A legacy level-4 migration backup deliberately captures level-4 accounts
+// whose parent hierarchy is inconsistent; the migration then resolves them.
+pub(crate) const LEGACY_LEVEL4_SNAPSHOT_VALUE: &str = "legacy-level4-migration-v1";
 pub(crate) const LEGACY_DB_FILE_NAME: &str = "audit-analyzer.sqlite3";
 pub(crate) const LEGACY_IDENTIFIER: &str = "ir.audit.account-analyzer";
 /// Built-in groups whose account nature determines whether a row is income or expense.

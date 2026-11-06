@@ -1103,47 +1103,113 @@
 
     openConfirm({
       title: 'ورودی اکسل',
-      message: 'حساب‌ها از فایل اکسل مطابق قالب WebApp وارد شوند؟',
+      message: 'حساب‌ها از فایل اکسل مطابق قالب WebApp وارد شوند؟ ابتدا یک پیش‌نمایش بدون تغییر داده‌ها ساخته می‌شود.',
       confirmLabel: 'انتخاب فایل',
       tone: 'info',
       onConfirm: async () => {
-        state.importing = true;
         clearError();
-        renderAll();
         try {
-          const result = await invoke('import_account_excel');
-          if (!result) return;
+          const preview = await invoke('preview_account_excel_import');
+          if (!preview) return;
 
-          state.mode = 'view';
-          state.refreshQueued = false;
-          await loadData({ keepSelection: false });
+          const created = Number(preview.createdCount) || 0;
+          const skipped = Number(preview.skippedCount) || 0;
+          const errorCount = Number(preview.errorCount) || 0;
+          const summary = `${toFaDigits(created)} حساب جدید و ${toFaDigits(skipped)} حساب موجود`
+            + (errorCount ? `؛ ${toFaDigits(errorCount)} خطا` : '');
 
-          const created = Number(result.createdCount) || 0;
-          const skipped = Number(result.skippedCount) || 0;
-          const errors = Array.isArray(result.errors) ? result.errors : [];
-
-          toast(
-            `${toFaDigits(created)} حساب جدید و ${toFaDigits(skipped)} حساب موجود`
-              + (errors.length ? `؛ ${toFaDigits(errors.length)} خطا` : ''),
-            errors.length ? 'warn' : 'ok',
-          );
-          if (errors.length > 0) {
-            showResult({
-              title: 'نتیجه ورودی اکسل',
+          if (errorCount > 0) {
+            openConfirm({
+              title: 'پیش‌نمایش ورود اکسل',
+              message: `${summary}. ورود یکپارچه ممکن نیست؛ فقط ردیف‌های معتبر وارد شوند؟`,
+              confirmLabel: 'ورود ردیف‌های معتبر',
               tone: 'warn',
-              message: `${toFaDigits(created)} حساب ایجاد شد و ${toFaDigits(skipped)} حساب موجود بود.`,
-              list: errors,
+              onConfirm: () => applyAccountImport(preview.filePath, 'partial'),
             });
+            return;
           }
+          if (created === 0) {
+            showResult({
+              title: 'پیش‌نمایش ورود اکسل',
+              message: 'حساب جدیدی برای ورود وجود ندارد.',
+              list: preview.skippedCodes || [],
+            });
+            return;
+          }
+          openConfirm({
+            title: 'پیش‌نمایش ورود اکسل',
+            message: `${summary}. همه حساب‌ها در یک تراکنش وارد شوند؟`,
+            confirmLabel: 'ورود یکپارچه',
+            tone: 'info',
+            onConfirm: () => applyAccountImport(preview.filePath, 'atomic'),
+          });
         } catch (error) {
           showError(errorText(error));
-        } finally {
-          state.importing = false;
-          renderAll();
-          maybeQueuedRefresh();
         }
       },
     });
+  }
+
+  async function applyAccountImport(filePath, mode) {
+    state.importing = true;
+    renderAll();
+    try {
+      const result = await invoke('import_account_excel', { filePath, mode });
+      if (!result) return;
+
+      const created = Number(result.createdCount) || 0;
+      const skipped = Number(result.skippedCount) || 0;
+      const errorCount = Number(result.errorCount) || 0;
+      const errors = Array.isArray(result.errors) ? result.errors : [];
+
+      if (result.aborted) {
+        showResult({
+          title: 'ورود اکسل انجام نشد',
+          tone: 'warn',
+          message: `به دلیل وجود ${toFaDigits(errorCount)} خطا هیچ تغییری اعمال نشد.`,
+          list: errors,
+        });
+        return;
+      }
+
+      state.mode = 'view';
+      state.refreshQueued = false;
+      await loadData({ keepSelection: false });
+
+      toast(
+        `${toFaDigits(created)} حساب جدید و ${toFaDigits(skipped)} حساب موجود`
+          + (errorCount ? `؛ ${toFaDigits(errorCount)} خطا` : ''),
+        errorCount ? 'warn' : 'ok',
+      );
+      if (errorCount > 0 || created > 0) {
+        showResult({
+          title: 'نتیجه ورود اکسل',
+          tone: errorCount ? 'warn' : 'ok',
+          message: `${toFaDigits(created)} حساب ایجاد شد و ${toFaDigits(skipped)} حساب موجود بود.`,
+          list: accountImportDetails(result),
+        });
+      }
+    } catch (error) {
+      showError(errorText(error));
+    } finally {
+      state.importing = false;
+      renderAll();
+      maybeQueuedRefresh();
+    }
+  }
+
+  function accountImportDetails(result) {
+    const lines = [];
+    const created = Array.isArray(result.createdCodes) ? result.createdCodes : [];
+    const skipped = Array.isArray(result.skippedCodes) ? result.skippedCodes : [];
+    const errors = Array.isArray(result.errors) ? result.errors : [];
+    const limit = 100;
+    const codes = (values) => values.slice(0, limit).map((code) => toFaDigits(code)).join('، ')
+      + (values.length > limit ? ` و ${toFaDigits(values.length - limit)} مورد دیگر` : '');
+    if (created.length) lines.push(`ایجادشده: ${codes(created)}`);
+    if (skipped.length) lines.push(`موجود/ردشده: ${codes(skipped)}`);
+    lines.push(...errors);
+    return lines;
   }
 
   /* ── Window close guard ──────────────────────────────────────── */

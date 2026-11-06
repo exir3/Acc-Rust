@@ -323,8 +323,25 @@ impl Database {
         import: crate::excel::BulkVoucherImport,
         renumber_conflicts: bool,
     ) -> Result<usize, String> {
+        self.import_vouchers_with_progress(import, renumber_conflicts, &mut |_, _| {}, &|| false)
+    }
+
+    /// Imports a parsed workbook while reporting per-voucher progress and
+    /// honouring an operator cancellation. Everything runs in one SQLite
+    /// transaction, so a cancellation surfaces as an error and rolls the whole
+    /// workbook back instead of leaving a partial import behind.
+    pub fn import_vouchers_with_progress(
+        &self,
+        import: crate::excel::BulkVoucherImport,
+        renumber_conflicts: bool,
+        on_progress: &mut dyn FnMut(usize, usize),
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<usize, String> {
         if import.vouchers.is_empty() {
             return Err("فایلی برای ورود وجود ندارد.".to_string());
+        }
+        if is_cancelled() {
+            return Err(crate::excel::BULK_IMPORT_CANCELLED.to_string());
         }
 
         let payload_hash = import_payload_hash(&import);
@@ -332,8 +349,15 @@ impl Database {
         let sheet_name = import.sheet_name.clone();
 
         let mut prepared = Vec::with_capacity(import.vouchers.len());
+        let total_vouchers = import.vouchers.len();
         let mut numbers = HashSet::new();
-        for input in import.vouchers {
+        for (index, input) in import.vouchers.into_iter().enumerate() {
+            if index % 32 == 0 {
+                if is_cancelled() {
+                    return Err(crate::excel::BULK_IMPORT_CANCELLED.to_string());
+                }
+                on_progress(index, total_vouchers);
+            }
             let date = normalize_date(&input.date, "تاریخ سند")?;
             let voucher_type = validate_voucher_type(&input.voucher_type)?;
             let description = validate_description(&input.description, "شرح سند", MAX_DESCRIPTION)?;
@@ -420,6 +444,10 @@ impl Database {
             .collect();
         let inferred_group_count = inferred_group_mappings.len();
         let imported_count = prepared.len();
+        if is_cancelled() {
+            return Err(crate::excel::BULK_IMPORT_CANCELLED.to_string());
+        }
+        on_progress(imported_count, imported_count);
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db::db_error)?;
             let previous = tx
@@ -434,6 +462,10 @@ impl Database {
                 let count = usize::try_from(count)
                     .map_err(|_| "تعداد سندهای دسته ورودی معتبر نیست.".to_string())?;
                 return Ok(count);
+            }
+            if is_cancelled() {
+                // Dropping the transaction rolls back; nothing is committed.
+                return Err(crate::excel::BULK_IMPORT_CANCELLED.to_string());
             }
             let mut imported_numbers = Vec::with_capacity(prepared.len());
             let incoming_numbers: HashSet<i64> = prepared.iter().map(|item| item.0).collect();
@@ -553,7 +585,15 @@ impl Database {
                 .map_err(db::db_error)?;
             }
 
-            for (number, date, voucher_type, description, mut lines) in prepared {
+            for (index, (number, date, voucher_type, description, mut lines)) in
+                prepared.into_iter().enumerate()
+            {
+                if is_cancelled() {
+                    return Err(crate::excel::BULK_IMPORT_CANCELLED.to_string());
+                }
+                if index % 10 == 0 {
+                    on_progress(index, imported_count);
+                }
                 normalize_voucher_line_accounts(&tx, &mut lines)?;
                 validate_voucher_line_accounts(&tx, None, &lines)?;
                 assert_voucher_type_matches_lines(&tx, &voucher_type, &lines)?;
@@ -606,6 +646,7 @@ impl Database {
                     "ورود گروهی از فایل اکسل",
                 )?;
             }
+            on_progress(imported_count, imported_count);
             let numbers_text = imported_numbers
                 .iter()
                 .map(i64::to_string)

@@ -4,7 +4,6 @@ use super::*;
 use crate::excel::accounts::*;
 use crate::excel::common::*;
 use crate::excel::import::*;
-use crate::excel::model::*;
 use calamine::Data;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -395,6 +394,65 @@ mod tests {
     }
 
     #[test]
+    fn bulk_import_parse_honours_cancellation_and_reports_progress() {
+        let mut range = calamine::Range::new((0, 0), (2, 7));
+        for (column, value) in [
+            "شماره سند",
+            "تاریخ سند",
+            "کد کل",
+            "عنوان کل",
+            "کد معین",
+            "عنوان معین",
+            "بدهکار",
+            "بستانکار",
+        ]
+        .iter()
+        .enumerate()
+        {
+            range.set_value((0, column as u32), text(value));
+        }
+        let rows = [
+            [
+                "1",
+                "1405/01/01",
+                "1101",
+                "صندوق",
+                "110101",
+                "صندوق اصلی",
+                "100",
+                "",
+            ],
+            ["", "", "4101", "درآمد", "410101", "درآمد فروش", "", "100"],
+        ];
+        for (row_index, row) in rows.iter().enumerate() {
+            for (column, value) in row.iter().enumerate() {
+                range.set_value(((row_index + 1) as u32, column as u32), text(value));
+            }
+        }
+
+        let error = parse_bulk_voucher_sheet_with_progress(
+            Path::new("cancel.xlsx"),
+            "اسناد",
+            &range,
+            &mut |_, _| {},
+            &|| true,
+        )
+        .unwrap_err();
+        assert_eq!(error, BULK_IMPORT_CANCELLED);
+
+        let mut last_progress = None;
+        parse_bulk_voucher_sheet_with_progress(
+            Path::new("cancel.xlsx"),
+            "اسناد",
+            &range,
+            &mut |processed, total| last_progress = Some((processed, total)),
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(last_progress, Some((2, 2)));
+    }
+
+    #[test]
     fn bulk_import_rejects_non_contiguous_voucher_number_blocks() {
         let mut range = calamine::Range::new((0, 0), (3, 7));
         for (column, value) in [
@@ -711,5 +769,121 @@ mod tests {
         let database = crate::db::memory_database();
         assert_eq!(database.import_vouchers(import, false).unwrap(), 5282);
         assert_eq!(database.get_voucher(1).unwrap().unwrap().lines.len(), 598);
+    }
+
+    fn write_account_import_workbook(path: &Path) {
+        let mut workbook = rust_xlsxwriter::Workbook::new();
+        let sheet = workbook.add_worksheet();
+        let headers = [
+            "کد گروه",
+            "ماهیت",
+            "کد کل",
+            "عنوان کل",
+            "ماهیت کل",
+            "کد معین",
+            "عنوان معین",
+            "ماهیت معین",
+            "کد تفصیلی 1",
+            "عنوان تفصیلی 1",
+            "ماهیت تفصیلی 1",
+        ];
+        for (column, header) in headers.iter().enumerate() {
+            sheet
+                .write_string(0, column as u16, *header)
+                .expect("header");
+        }
+        let rows = [
+            [
+                "1",
+                "بدهکار",
+                "980001",
+                "کل آزمون",
+                "بدهکار",
+                "980001001",
+                "معین آزمون",
+                "بدهکار",
+                "980001001001",
+                "تفصیلی آزمون",
+                "بدهکار",
+            ],
+            [
+                "99",
+                "بدهکار",
+                "980002",
+                "کل نامعتبر",
+                "بدهکار",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ],
+        ];
+        for (index, row) in rows.iter().enumerate() {
+            for (column, value) in row.iter().enumerate() {
+                sheet
+                    .write_string(index as u32 + 1, column as u16, *value)
+                    .expect("cell");
+            }
+        }
+        workbook.save(path).expect("save workbook");
+    }
+
+    fn account_import_test_path(name: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or(0);
+        let directory = std::env::temp_dir().join(format!("hesabdari-account-import-{stamp}"));
+        std::fs::create_dir_all(&directory).expect("temp directory");
+        directory.join(name)
+    }
+
+    #[test]
+    fn account_import_atomic_writes_nothing_when_any_row_is_invalid() {
+        let database = crate::db::memory_database();
+        let path = account_import_test_path("atomic.xlsx");
+        write_account_import_workbook(&path);
+
+        let result = import_accounts(&database, path.to_str().unwrap(), "atomic")
+            .expect("atomic import result");
+        assert!(result.aborted);
+        assert_eq!(result.created_count, 0);
+        assert_eq!(result.skipped_count, 0);
+        assert!(result.error_count > 0);
+        assert!(database
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .iter()
+            .all(|account| !account.code.starts_with("9800")));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn account_import_partial_keeps_valid_rows_and_reports_the_rest() {
+        let database = crate::db::memory_database();
+        let path = account_import_test_path("partial.xlsx");
+        write_account_import_workbook(&path);
+
+        let result = import_accounts(&database, path.to_str().unwrap(), "partial")
+            .expect("partial import result");
+        assert!(!result.aborted);
+        assert_eq!(result.created_count, 3);
+        assert_eq!(result.created_codes.len(), 3);
+        assert!(result
+            .created_codes
+            .iter()
+            .any(|code| code == "980001001001"));
+        assert!(result.error_count > 0);
+        assert!(result.errors.iter().any(|error| error.contains("ردیف")));
+
+        let accounts = database.list_accounts().unwrap().accounts;
+        assert!(accounts.iter().any(|account| account.code == "980001001"));
+        assert!(!accounts.iter().any(|account| account.code == "980002"));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

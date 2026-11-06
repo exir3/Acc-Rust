@@ -199,7 +199,7 @@ const MENU_BAR = [
     label: 'تنظیمات',
     size: 'compact',
     items: [
-      { label: 'انتخاب سال مالی', icon: '🏢', command: 'company-selector' },
+      { label: 'انتخاب سال مالی شرکت جاری', icon: '🏢', command: 'company-selector' },
       { label: 'تنظیمات برنامه', icon: '⚙️', page: 'settings' },
       { label: 'تنظیمات گزارش‌ها', icon: '🖨️' },
       { label: 'تغییر تصویر پس‌زمینه', icon: '🖼️', command: 'choose-wallpaper' },

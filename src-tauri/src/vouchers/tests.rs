@@ -551,6 +551,69 @@ fn bulk_import_is_atomic_and_supports_large_vouchers() {
 }
 
 #[test]
+fn bulk_import_cancellation_rolls_back_every_voucher_and_account() {
+    let db = db::memory_database();
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "cancel.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        accounts: vec![
+            crate::excel::ImportedAccount {
+                code: "903".to_string(),
+                name: "حساب کل لغو".to_string(),
+                parent_code: String::new(),
+                group_code: "1".to_string(),
+                level: 1,
+                nature: "debtor".to_string(),
+                nature_is_explicit: false,
+                group_is_inferred: false,
+            },
+            crate::excel::ImportedAccount {
+                code: "903101".to_string(),
+                name: "حساب معین لغو".to_string(),
+                parent_code: "903".to_string(),
+                group_code: "1".to_string(),
+                level: 2,
+                nature: "debtor".to_string(),
+                nature_is_explicit: false,
+                group_is_inferred: false,
+            },
+        ],
+        vouchers: (1..=2)
+            .map(|number| VoucherInput {
+                id: None,
+                number: Some(number),
+                date: "1405/01/01".to_string(),
+                voucher_type: VOUCHER_TYPES[0].to_string(),
+                description: String::new(),
+                fiscal_year_id: None,
+                lines: vec![line("903101", 100, 0), line("110101", 0, 100)],
+            })
+            .collect(),
+    };
+
+    // The import checks cancellation at start, before the transaction, after
+    // opening it, and once per voucher. Let the first voucher be written, then
+    // cancel before the second so the rollback is observable.
+    let checks = std::cell::Cell::new(0);
+    let error = db
+        .import_vouchers_with_progress(import, false, &mut |_, _| {}, &|| {
+            let next = checks.get() + 1;
+            checks.set(next);
+            next >= 5
+        })
+        .unwrap_err();
+    assert_eq!(error, crate::excel::BULK_IMPORT_CANCELLED);
+    assert!(db.get_voucher(1).unwrap().is_none());
+    assert!(db.get_voucher(2).unwrap().is_none());
+    assert!(!db
+        .list_accounts()
+        .unwrap()
+        .accounts
+        .iter()
+        .any(|account| account.code == "903101"));
+}
+
+#[test]
 fn bulk_import_preview_reports_inferred_groups_and_audits_them() {
     let db = db::memory_database();
     let import = crate::excel::BulkVoucherImport {

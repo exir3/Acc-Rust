@@ -223,17 +223,25 @@ pub(crate) fn export_account_excel(
 }
 
 #[tauri::command(async)]
+pub(crate) fn preview_account_excel_import(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<excel::AccountImportPreview>, String> {
+    require_window(&window, &["main", "account-groups", "account-definition"])?;
+    excel::preview_accounts(&state.database)
+}
+
+#[tauri::command(async)]
 pub(crate) fn import_account_excel(
+    file_path: String,
+    mode: String,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
-) -> Result<Option<excel::AccountImportResult>, String> {
+) -> Result<excel::AccountImportResult, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    let result = excel::import_accounts(&state.database)?;
-    if result
-        .as_ref()
-        .is_some_and(|result| result.created_count > 0)
-    {
+    let result = excel::import_accounts(&state.database, &file_path, &mode)?;
+    if result.created_count > 0 {
         notify_accounts_changed(&app);
     }
     Ok(result)

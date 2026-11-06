@@ -1,5 +1,7 @@
 //! Voucher commands.
 
+use std::sync::atomic::Ordering;
+
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::commands::state::{
@@ -176,17 +178,41 @@ pub(crate) fn import_voucher_excel(
 
 #[tauri::command(async)]
 pub(crate) fn analyze_bulk_voucher_excel(
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<excel::BulkVoucherPreview>, String> {
     require_window(&window, &["main"])?;
     *lock(&state.bulk_voucher_import) = None;
-    let Some(import) = excel::import_vouchers()? else {
+    state.bulk_import_cancel.store(false, Ordering::Relaxed);
+    let cancel = state.bulk_import_cancel.clone();
+    let Some(import) = excel::import_vouchers_with_progress(
+        &mut |processed: usize, total: usize| {
+            let _ = app.emit(
+                "bulk-import-progress",
+                serde_json::json!({ "stage": "parse", "processed": processed, "total": total }),
+            );
+        },
+        &|| cancel.load(Ordering::Relaxed),
+    )?
+    else {
         return Ok(None);
     };
     let preview = state.database.preview_bulk_import(&import)?;
     *lock(&state.bulk_voucher_import) = Some(import);
     Ok(Some(preview))
+}
+
+/// Lets the operator abort a parse or commit in progress. The import is
+/// transactional, so a cancellation rolls back instead of writing a subset.
+#[tauri::command(async)]
+pub(crate) fn cancel_bulk_voucher_import(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main"])?;
+    state.bulk_import_cancel.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -200,7 +226,19 @@ pub(crate) fn commit_bulk_voucher_excel(
     let import = lock(&state.bulk_voucher_import)
         .clone()
         .ok_or_else(|| "ابتدا فایل اکسل را انتخاب و تحلیل کنید.".to_string())?;
-    let imported_count = state.database.import_vouchers(import, renumber_conflicts)?;
+    state.bulk_import_cancel.store(false, Ordering::Relaxed);
+    let cancel = state.bulk_import_cancel.clone();
+    let imported_count = state.database.import_vouchers_with_progress(
+        import,
+        renumber_conflicts,
+        &mut |processed: usize, total: usize| {
+            let _ = app.emit(
+                "bulk-import-progress",
+                serde_json::json!({ "stage": "commit", "processed": processed, "total": total }),
+            );
+        },
+        &|| cancel.load(Ordering::Relaxed),
+    )?;
     *lock(&state.bulk_voucher_import) = None;
     notify_accounts_changed(&app);
     notify_vouchers_changed(&app);

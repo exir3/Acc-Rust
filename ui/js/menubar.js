@@ -243,11 +243,16 @@ function openBulkVoucherImport() {
   }
 
   const steps = ['انتخاب فایل اکسل', 'اعتبارسنجی ساختار', 'تطبیق کدینگ حساب', 'صدور نهایی سند'];
+  let unlistenProgress = null;
   const dialog = openDialog({
     title: 'ورود دسته‌جمعی اسناد از اکسل',
     wide: true,
     body: '',
     actions: [],
+    onClose: () => {
+      unlistenProgress?.();
+      unlistenProgress = null;
+    },
   });
   if (!dialog) return;
 
@@ -275,6 +280,56 @@ function openBulkVoucherImport() {
         <div class="bulk-import-content">${content}</div>
       </section>`;
   };
+
+  const setBulkProgress = (percent, label = '') => {
+    const safePercent = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+    const track = dialog.body.querySelector('.bulk-import-progress-track > i');
+    if (track) track.style.width = `${safePercent}%`;
+    const counter = dialog.body.querySelector('.bulk-import-progress-line > span');
+    if (counter) counter.textContent = `پیشرفت فرآیند: ${toFa(safePercent)}٪`;
+    const detail = dialog.body.querySelector('#bulkImportProgressText');
+    if (detail && label) detail.textContent = label;
+  };
+
+  const showBusy = (step, title, detail) => {
+    renderWizard(step, `<div class="bulk-import-loading">
+      <span class="bulk-import-wave"><i></i><i></i><i></i><i></i><i></i></span>
+      <strong>${title}</strong>
+      <small id="bulkImportProgressText">${detail}</small>
+      <div class="form-actions" style="justify-content:center;margin-top:12px">
+        <button type="button" class="btn" id="bulkImportCancel">${icon('i-close')}<span>لغو ورود</span></button>
+      </div>
+    </div>`);
+    dialog.setActions([]);
+    const cancelButton = dialog.body.querySelector('#bulkImportCancel');
+    cancelButton?.addEventListener('click', async () => {
+      cancelButton.disabled = true;
+      const label = cancelButton.querySelector('span');
+      if (label) label.textContent = 'در حال لغو…';
+      try {
+        await invoke('cancel_bulk_voucher_import');
+      } catch (error) {
+        cancelButton.disabled = false;
+        if (label) label.textContent = 'لغو ورود';
+        toast(errorText(error), 'error');
+      }
+    });
+  };
+
+  const eventApi = window.__TAURI__?.event;
+  if (eventApi && typeof eventApi.listen === 'function') {
+    Promise.resolve(eventApi.listen('bulk-import-progress', (event) => {
+      const payload = event?.payload || {};
+      const processed = Math.max(0, Number(payload.processed) || 0);
+      const total = Math.max(0, Number(payload.total) || 0);
+      const percent = total > 0 ? (processed / total) * 100 : 0;
+      const stage = payload.stage === 'commit' ? 'ثبت سند' : 'خواندن ردیف';
+      setBulkProgress(percent, `${stage} ${toFa(processed)} از ${toFa(total)}`);
+    })).then((unlisten) => {
+      unlistenProgress = unlisten;
+      if (dialog.modal.hidden) unlisten?.();
+    }).catch(() => {});
+  }
 
   const selectContent = (message = '') => `
     ${message ? `<div class="note" data-tone="danger" role="alert">${esc(message)}</div>` : ''}
@@ -319,8 +374,7 @@ function openBulkVoucherImport() {
           const renumberConflicts = Boolean(activeDialog.body.querySelector('#bulkImportRenumber')?.checked);
           button.disabled = true;
           activeDialog.body.querySelectorAll('button').forEach((item) => { item.disabled = true; });
-          renderWizard(3, '<div class="bulk-import-loading"><span class="bulk-import-wave"><i></i><i></i><i></i><i></i><i></i></span><strong>در حال ثبت اسناد و حساب‌های جدید…</strong><small>ثبت در پایگاه داده به‌صورت تراکنشی انجام می‌شود.</small></div>');
-          activeDialog.setActions([]);
+          showBusy(3, 'در حال ثبت اسناد و حساب‌های جدید…', 'ثبت در پایگاه داده به‌صورت تراکنشی انجام می‌شود؛ در صورت لغو، هیچ سندی ثبت نمی‌شود.');
           try {
             const count = await invoke('commit_bulk_voucher_excel', { renumberConflicts });
             renderWizard(4, `<section class="bulk-import-result" role="status"><span class="bulk-import-result-icon">${icon('i-check')}</span><h2>ورود اسناد با موفقیت تکمیل شد</h2><p><strong>${toFa(count)}</strong> سند حسابداری ثبت شد.</p><div class="note">فایل «${esc(preview.fileName)}» پردازش شد و اطلاعات ثبت‌شده در فهرست اسناد قابل مشاهده است.</div></section>`);
@@ -348,8 +402,7 @@ function openBulkVoucherImport() {
   const selectFile = async () => {
     if (selecting) return;
     selecting = true;
-    renderWizard(1, '<div class="bulk-import-loading"><span class="bulk-import-wave"><i></i><i></i><i></i><i></i><i></i></span><strong>فایل در حال بررسی و اسناد در حال اعتبارسنجی هستند…</strong><small>ساختار ستون‌ها، تاریخ‌ها، تراز اسناد و کدینگ حساب کنترل می‌شود.</small></div>');
-    dialog.setActions([]);
+    showBusy(1, 'فایل در حال بررسی و اسناد در حال اعتبارسنجی هستند…', 'ساختار ستون‌ها، تاریخ‌ها، تراز اسناد و کدینگ حساب کنترل می‌شود.');
     try {
       const preview = await invoke('analyze_bulk_voucher_excel');
       if (!preview) {

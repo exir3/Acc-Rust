@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::{db, excel, report};
@@ -36,6 +37,9 @@ pub struct AppState {
     pub(crate) database: db::Database,
     /// Parsed workbook awaiting the user's bulk-import confirmation.
     pub(crate) bulk_voucher_import: Mutex<Option<excel::BulkVoucherImport>>,
+    /// Set by the cancel command; the running parse or commit checks it and
+    /// aborts, rolling back the import transaction.
+    pub(crate) bulk_import_cancel: Arc<AtomicBool>,
     /// Reorganization preview awaiting explicit confirmation.
     pub(crate) reorganization_preview: Mutex<Option<(String, String)>>,
     /// Bulk-delete preview token awaiting explicit confirmation.

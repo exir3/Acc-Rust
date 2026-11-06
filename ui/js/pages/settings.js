@@ -31,23 +31,76 @@ const AUDIT_ACTION_LABELS = {
   reorganize: 'ادغام/بازشماره‌گذاری',
 };
 
+const SECTION_LABELS = {
+  non_current_asset: 'دارایی غیرجاری',
+  current_asset: 'دارایی جاری',
+  equity: 'حقوق مالکانه',
+  non_current_liability: 'بدهی غیرجاری',
+  current_liability: 'بدهی جاری',
+  revenue: 'درآمد عملیاتی',
+  cogs: 'بهای تمام‌شده',
+  selling_expense: 'هزینه‌های فروش',
+  admin_expense: 'هزینه‌های اداری',
+  other_operating: 'سایر درآمد/هزینه عملیاتی',
+  finance_cost: 'هزینه‌های مالی',
+  other_non_operating: 'سایر درآمد/هزینه غیرعملیاتی',
+  income_tax: 'مالیات بر درآمد',
+  memorandum: 'حساب‌های انتظامی',
+};
+
+// Which statement class each report section feeds. Mirrors
+// `classify_activity` in src-tauri/src/vouchers/accounting.rs.
+const SECTION_CLASSES = {
+  current_asset: 'asset',
+  non_current_asset: 'asset',
+  current_liability: 'liability',
+  non_current_liability: 'liability',
+  equity: 'equity',
+  revenue: 'income',
+  cogs: 'expense',
+  selling_expense: 'expense',
+  admin_expense: 'expense',
+  finance_cost: 'expense',
+  income_tax: 'expense',
+  other_operating: 'dual',
+  other_non_operating: 'dual',
+  memorandum: 'memorandum',
+};
+
+const GROUP_TYPE_CLASSES = {
+  'دارایی': 'asset',
+  'بدهی': 'liability',
+  'سرمایه': 'equity',
+  'درآمد': 'income',
+  'هزینه': 'expense',
+  'سایر': 'other',
+};
+
 PAGES.settings = {
   actions: () => [
     { label: 'ویرایش مشخصات', icon: 'i-edit', primary: true, onClick: () => openSettingsDialog() },
   ],
   load: async () => {
-    const [settings, fiscalYears, auditLogs, legacy] = await Promise.all([
+    const [settings, fiscalYears, auditLogs, legacy, groups] = await Promise.all([
       invoke('get_settings'),
       invoke('list_fiscal_years'),
       invoke('get_audit_logs', { limit: 100 }),
       invoke('analyze_legacy_level4').catch(() => null),
+      invoke('list_account_groups').catch(() => ({ groups: [] })),
     ]);
     state.settings = settings;
     state.fiscalYears = fiscalYears.years || [];
     state.legacyLevel4 = legacy;
     state.auditLogs = auditLogs;
+    state.accountGroups = groups.groups || [];
     updateBranding(settings);
-    return { settings, fiscalYears: state.fiscalYears, auditLogs, legacy };
+    return {
+      settings,
+      fiscalYears: state.fiscalYears,
+      auditLogs,
+      legacy,
+      accountGroups: state.accountGroups,
+    };
   },
   render: renderSettings,
   bind: bindSettings,
@@ -98,9 +151,14 @@ function renderSettings(data) {
         <button type="button" class="btn" data-backup-database>${icon('i-save')}<span>تهیه پشتیبان</span></button>
         <button type="button" class="btn" data-restore-database>${icon('i-refresh')}<span>بازیابی پشتیبان</span></button>
       </div>
+      <div class="form-note" style="margin-top:10px">
+        برنامه ۳۰ نسخهٔ پشتیبان آخر و ۵ نسخهٔ ایمنی پیش از بازیابی را نگه می‌دارد.
+        پوشهٔ پشتیبان حاوی داده مالی است؛ دسترسی آن را به حساب کاربری ویندوز محدود و روی درایو رمزنگاری‌شده نگهداری کنید.
+      </div>
     </div>
   </div>
   ${fiscalYearsCard(data.fiscalYears || [])}
+  ${classificationCard(data.accountGroups || state.accountGroups || [])}
   ${legacyLevel4Card(data.legacy)}
   ${auditLogCard(data.auditLogs)}`;
 }
@@ -149,6 +207,91 @@ function fiscalYearsCard(years) {
   </div>`;
 }
 
+function classificationWarnings(group) {
+  const warnings = [];
+  const section = group.defaultSection || '';
+  const typeClass = GROUP_TYPE_CLASSES[group.type] || 'other';
+  const sectionClass = section ? SECTION_CLASSES[section] : '';
+  if (!section) {
+    if (group.type === 'سایر') {
+      warnings.push({
+        tone: 'warn',
+        text: 'بخش پیش‌فرض ندارد؛ طبقه‌بندی از پیشوند کد حساب حدس زده می‌شود.',
+      });
+    } else if (group.code === '10' || group.code === '11') {
+      warnings.push({
+        tone: 'warn',
+        text: 'گروه با ماهیت دوگانه است و بخش پیش‌فرض ندارد؛ مانده بدهکار/بستانکار به‌طور خودکار تفسیر می‌شود.',
+      });
+    } else {
+      warnings.push({
+        tone: 'info',
+        text: 'بخش پیش‌فرض تعیین نشده؛ طبقه‌بندی فقط از نوع گروه استفاده می‌کند.',
+      });
+    }
+  } else if (typeClass !== 'other' && sectionClass !== 'dual' && sectionClass !== typeClass) {
+    warnings.push({
+      tone: 'error',
+      text: `بخش «${SECTION_LABELS[section] || section}» با نوع گروه «${group.type}» ناسازگار است.`,
+    });
+  } else if (typeClass === 'other' && sectionClass === 'dual') {
+    warnings.push({
+      tone: 'info',
+      text: 'گروه سایر با بخش عملیاتی/غیرعملیاتی؛ جهت مانده، درآمد یا هزینه بودن را تعیین می‌کند.',
+    });
+  }
+  return warnings;
+}
+
+function classificationCard(groups) {
+  const items = (groups || []).map((group) => {
+    const warnings = classificationWarnings(group);
+    const severity = warnings.some((item) => item.tone === 'error')
+      ? 'error'
+      : (warnings.some((item) => item.tone === 'warn') ? 'warn' : 'ok');
+    const status = severity === 'error'
+      ? badge('ناسازگار', 'error')
+      : (severity === 'warn' ? badge('نیازمند بازبینی', 'warn') : badge('سازگار', 'ok'));
+    const detail = warnings.length
+      ? warnings.map((item) => `<div class="form-note" style="margin:2px 0">${esc(item.text)}</div>`).join('')
+      : '<span class="muted">—</span>';
+    return `<tr>
+      <td class="mono center">${toFa(group.code)}</td>
+      <td>${esc(group.name)}</td>
+      <td>${esc(group.type)}</td>
+      <td>${group.defaultSection ? esc(SECTION_LABELS[group.defaultSection] || group.defaultSection) : '—'}</td>
+      <td class="center">${toFa(group.accountCount || 0)}</td>
+      <td class="center">${status}</td>
+      <td>${detail}</td>
+    </tr>`;
+  }).join('');
+  const warnings = (groups || []).filter((group) => classificationWarnings(group)
+    .some((item) => item.tone === 'error' || item.tone === 'warn')).length;
+
+  return `
+  <div class="card" style="grid-column:1/-1;margin-top:12px">
+    <div class="section-head">
+      <h2>${icon('i-balance')} ماتریس طبقه‌بندی صورت‌های مالی</h2>
+      ${warnings ? badge(`${toFa(warnings)} گروه نیازمند بازبینی`, 'warn') : badge('طبقه‌بندی کامل', 'ok')}
+    </div>
+    <div class="table-wrap short">
+      <table class="data-table">
+        <thead><tr>
+          <th style="width:80px">کد</th><th>گروه</th><th style="width:90px">نوع</th>
+          <th>بخش پیش‌فرض</th><th style="width:70px">حساب</th>
+          <th style="width:110px">وضعیت</th><th>توضیح</th>
+        </tr></thead>
+        <tbody>${items || `<tr><td colspan="7" class="center muted">گروه حسابی تعریف نشده است.</td></tr>`}</tbody>
+      </table>
+    </div>
+    <div class="form-note">
+      نوع گروه و بخش پیش‌فرض، جای هر حساب را در ترازنامه و صورت سود و زیان تعیین می‌کنند.
+      گروه‌های «سایر» بدون بخش پیش‌فرض بر اساس پیشوند کد حساب طبقه‌بندی می‌شوند؛ برای کدینگ سفارشی این بخش را صریح تعیین کنید.
+    </div>
+  </div>`;
+}
+
+
 function legacyLevel4Card(legacy) {
   if (!legacy || !legacy.accountCount) return '';
   const accounts = legacy.accounts || [];
@@ -159,7 +302,8 @@ function legacyLevel4Card(legacy) {
       <td class="mono center">${toFa(account.parentCode) || '—'}</td>
       <td class="center">${toFa(account.lineCount)}</td>
       <td class="center">${account.convertible ? badge('قابل تبدیل', 'ok') : badge('نیازمند بررسی', 'warn')}</td>
-    </tr>`).join('') : `<tr><td colspan="5" class="center muted">حساب سطح ۴ ثبت نشده است.</td></tr>`;
+      <td class="center"><button type="button" class="btn btn-sm" data-legacy-resolve="${esc(account.code)}">تعیین مقصد</button></td>
+    </tr>`).join('') : `<tr><td colspan="6" class="center muted">حساب سطح ۴ ثبت نشده است.</td></tr>`;
 
   return `
   <div class="card" style="grid-column:1/-1;margin-top:12px">
@@ -176,7 +320,7 @@ function legacyLevel4Card(legacy) {
       <table class="data-table">
         <thead><tr>
           <th style="width:120px">کد</th><th>عنوان</th><th style="width:120px">حساب والد</th>
-          <th style="width:70px">ردیف</th><th style="width:120px">وضعیت</th>
+          <th style="width:70px">ردیف</th><th style="width:120px">وضعیت</th><th style="width:110px">عملیات</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -332,6 +476,11 @@ function bindSettings(root, data) {
   });
   root.querySelector('[data-legacy-migrate]')?.addEventListener('click', () => {
     openLegacyMigrationDialog(data?.legacy || state.legacyLevel4);
+  });
+  root.querySelectorAll('[data-legacy-resolve]').forEach((button) => {
+    button.addEventListener('click', () => {
+      void openLegacyResolutionDialog(button.dataset.legacyResolve);
+    });
   });
   root.querySelector('[data-backup-database]')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
@@ -687,5 +836,152 @@ function openLegacyMigrationDialog(analysis) {
   dialog.foot.querySelector('#legacyRun').disabled = true;
   dialog.body.querySelector('#legacyConfirm')?.addEventListener('change', (event) => {
     dialog.foot.querySelector('#legacyRun').disabled = !event.currentTarget.checked;
+  });
+}
+
+async function openLegacyResolutionDialog(accountCode) {
+  let accounts;
+  try {
+    accounts = await ensureAccounts();
+  } catch (error) {
+    toast(errorText(error), 'error');
+    return;
+  }
+  const account = accounts.find((item) => item.code === accountCode);
+  if (!account) {
+    toast('حساب سطح ۴ انتخاب‌شده پیدا نشد.', 'error');
+    return;
+  }
+  const activeBaseCodes = new Set(
+    accounts
+      .filter((item) => item.level === 2 && item.isActive !== false)
+      .map((item) => item.code),
+  );
+  const candidates = accounts
+    .filter((item) => item.level === 3
+      && item.isActive !== false
+      && activeBaseCodes.has(item.parentCode))
+    .sort((a, b) => a.code.localeCompare(b.code));
+  if (!candidates.length) {
+    toast('تفصیلی ۱ فعالی زیر یک معین فعال وجود ندارد؛ ابتدا ساختار حساب را کامل کنید.', 'warn');
+    return;
+  }
+
+  const options = candidates
+    .map((item) => `<option value="${esc(item.code)}">${esc(item.code)} — ${esc(item.name)}</option>`)
+    .join('');
+  let previewed = false;
+
+  const dialog = openDialog({
+    title: 'تعیین مقصد حساب سطح ۴',
+    wide: true,
+    body: `
+      <div class="note" data-tone="info">
+        حساب سطح ۴ «${esc(account.code)} — ${esc(account.name)}» به تفصیلی ۱ انتخابی و معین والد آن متصل می‌شود. مبالغ ردیف‌ها تغییر نمی‌کنند.
+      </div>
+      <label class="field" style="display:block;margin-top:10px">
+        <span>حساب تفصیلی ۱ مقصد</span>
+        <select class="input" id="legacyResolutionTarget">${options}</select>
+      </label>
+      <div class="report-summary" id="legacyResolutionPreview" style="margin-top:10px" hidden></div>
+      <label class="tbp-filter-check" style="display:flex;gap:7px;align-items:center;margin-top:12px">
+        <input type="checkbox" id="legacyResolutionConfirm" disabled />
+        از تهیه پشتیبان و تبدیل این حساب مطمئن هستم.
+      </label>
+      <div class="form-error" id="legacyResolutionError" hidden></div>`,
+    actions: [
+      {
+        id: 'legacyResolutionPreviewButton',
+        label: 'پیش‌نمایش',
+        onClick: async (_result, button) => {
+          const target = dialog?.body.querySelector('#legacyResolutionTarget')?.value || '';
+          const errorBox = dialog?.body.querySelector('#legacyResolutionError');
+          const previewBox = dialog?.body.querySelector('#legacyResolutionPreview');
+          const confirm = dialog?.body.querySelector('#legacyResolutionConfirm');
+          button.disabled = true;
+          if (errorBox) errorBox.hidden = true;
+          try {
+            const preview = await invoke('preview_legacy_level4_resolution', {
+              accountCode,
+              detail1Code: target,
+            });
+            previewed = true;
+            if (previewBox) {
+              previewBox.hidden = false;
+              previewBox.innerHTML = `
+                <div class="kpi"><span>ردیف‌های متأثر</span><strong>${toFa(preview.lineCount)}</strong></div>
+                <div class="kpi"><span>اسناد</span><strong>${toFa(preview.voucherCount)}</strong></div>
+                <div class="kpi"><span>جمع بدهکار</span><strong>${toFa(preview.totalDebit)}</strong></div>
+                <div class="kpi"><span>جمع بستانکار</span><strong>${toFa(preview.totalCredit)}</strong></div>
+                <div class="kpi"><span>مانده</span><strong>${toFa(preview.balance)}</strong></div>
+                <div class="kpi"><span>مقصد</span><strong>${esc(preview.targetAccountCode)} / ${esc(preview.targetDetail1Code)}</strong></div>`;
+            }
+            if (confirm) {
+              confirm.checked = false;
+              confirm.disabled = false;
+            }
+            const run = dialog?.foot.querySelector('#legacyResolutionRun');
+            if (run) run.disabled = true;
+          } catch (error) {
+            previewed = false;
+            if (errorBox) {
+              errorBox.textContent = errorText(error);
+              errorBox.hidden = false;
+            }
+          } finally {
+            button.disabled = false;
+          }
+        },
+      },
+      {
+        id: 'legacyResolutionRun',
+        label: 'اجرای تبدیل',
+        primary: true,
+        onClick: async (_result, button) => {
+          const target = dialog?.body.querySelector('#legacyResolutionTarget')?.value || '';
+          const confirm = dialog?.body.querySelector('#legacyResolutionConfirm');
+          const errorBox = dialog?.body.querySelector('#legacyResolutionError');
+          if (!previewed || !confirm?.checked) return;
+          button.disabled = true;
+          if (errorBox) errorBox.hidden = true;
+          try {
+            const result = await invoke('resolve_legacy_level4_account', {
+              accountCode,
+              detail1Code: target,
+              confirm: true,
+            });
+            closeDialog();
+            toast(
+              `تبدیل انجام شد: ${toFa(result.convertedLines)} ردیف، ${toFa(result.pendingLines)} ردیف باقی‌مانده. پشتیبان: ${result.backupPath}`,
+              'ok',
+            );
+            await Promise.all([ensureAccounts(true), ensureGroups(true)]);
+            await navigate('settings', { force: true });
+          } catch (error) {
+            if (errorBox) {
+              errorBox.textContent = errorText(error);
+              errorBox.hidden = false;
+            }
+            button.disabled = false;
+          }
+        },
+      },
+    ],
+  });
+  if (!dialog) return;
+  dialog.foot.querySelector('#legacyResolutionRun').disabled = true;
+  dialog.body.querySelector('#legacyResolutionTarget')?.addEventListener('change', () => {
+    previewed = false;
+    const previewBox = dialog.body.querySelector('#legacyResolutionPreview');
+    if (previewBox) previewBox.hidden = true;
+    const confirm = dialog.body.querySelector('#legacyResolutionConfirm');
+    if (confirm) {
+      confirm.checked = false;
+      confirm.disabled = true;
+    }
+    dialog.foot.querySelector('#legacyResolutionRun').disabled = true;
+  });
+  dialog.body.querySelector('#legacyResolutionConfirm')?.addEventListener('change', (event) => {
+    dialog.foot.querySelector('#legacyResolutionRun').disabled = !(previewed && event.currentTarget.checked);
   });
 }
