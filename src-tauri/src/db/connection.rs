@@ -110,6 +110,18 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
         .map_err(|e| format!("ساخت پوشه پایگاه داده ناموفق بود: {e}"))?;
 
     let path = data_dir.join(DB_FILE_NAME);
+    if cfg!(debug_assertions) {
+        // The smoke test only sees the child process; make the effective paths
+        // visible before the first fallible database step.
+        eprintln!("[hesabdari] data directory: {}", data_dir.display());
+        eprintln!("[hesabdari] database path: {}", path.display());
+        if let Some(value) = std::env::var_os("HESABDARI_SMOKE_DATA_DIR") {
+            eprintln!(
+                "[hesabdari] HESABDARI_SMOKE_DATA_DIR={}",
+                PathBuf::from(value).display()
+            );
+        }
+    }
 
     // Preserve databases created beside older executable builds while moving
     // the active database to the writable per-user application data directory.

@@ -189,4 +189,4 @@ override فقط در build debug فعال است، بنابراین release هر
 
 ## مستندات بیشتر
 
-- [گزارش بررسی فنی و اولویت‌بندی اصلاحات](Docs/Acc-Rust-Technical-Review-2026-11-06.md)
+- [گزارش بررسی فنی و اولویت‌بندی اصلاحات](Docs/Acc-Rust-Technical-Audit-2026-11-06-fa.md)

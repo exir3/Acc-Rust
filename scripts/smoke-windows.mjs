@@ -21,6 +21,21 @@ const DB_FILE_NAME = 'hesabdari.sqlite3';
 const SQLITE_HEADER = 'SQLite format 3\u0000';
 const POLL_INTERVAL_MS = 500;
 const WEBVIEW2_POLL_INTERVAL_MS = 1000;
+// `db::initialize` mirrors its failure here because a GUI build may not have
+// a usable console handle when it is launched by CI.
+const STARTUP_LOG = path.join(tmpdir(), 'hesabdari-startup-error.log');
+
+async function readStartupLog() {
+  try {
+    return (await readFile(STARTUP_LOG, 'utf8')).trim();
+  } catch {
+    return '';
+  }
+}
+
+function startupLogSuffix(log) {
+  return log ? `\nStartup log:\n${log}` : '';
+}
 
 function readArg(name, fallback) {
   const index = process.argv.indexOf(name);
@@ -127,6 +142,10 @@ async function main() {
     mkdir(userProfile, { recursive: true }),
   ]);
 
+  // Remove any log from an earlier run so a stale message cannot explain a
+  // failure in this run.
+  await rm(STARTUP_LOG, { force: true });
+
   const env = {
     ...process.env,
     HESABDARI_SMOKE_DATA_DIR: dataDir,
@@ -153,7 +172,8 @@ async function main() {
     while (Date.now() < deadline) {
       if (child.exitCode !== null) {
         throw new Error(
-          `Tauri app exited before creating the database (code ${child.exitCode}).\n${stderr}`,
+          `Tauri app exited before creating the database (code ${child.exitCode}).\n${stderr}` +
+            startupLogSuffix(await readStartupLog()),
         );
       }
       try {
@@ -171,7 +191,8 @@ async function main() {
       throw new Error(
         `Tauri app did not create ${databasePath} within ${timeoutMs}ms.\n` +
           'The executable must be a debug build that honors HESABDARI_SMOKE_DATA_DIR.\n' +
-          stderr,
+          stderr +
+          startupLogSuffix(await readStartupLog()),
       );
     }
 
@@ -187,7 +208,8 @@ async function main() {
     while (Date.now() < webView2Deadline) {
       if (child.exitCode !== null) {
         throw new Error(
-          `Tauri app exited after database creation (code ${child.exitCode}).\n${stderr}`,
+          `Tauri app exited after database creation (code ${child.exitCode}).\n${stderr}` +
+            startupLogSuffix(await readStartupLog()),
         );
       }
       webView2Count = await countWebView2Descendants(child.pid);
@@ -203,7 +225,8 @@ async function main() {
 
     if (child.exitCode !== null) {
       throw new Error(
-        `Tauri app exited after WebView2 started (code ${child.exitCode}).\n${stderr}`,
+        `Tauri app exited after WebView2 started (code ${child.exitCode}).\n${stderr}` +
+          startupLogSuffix(await readStartupLog()),
       );
     }
 

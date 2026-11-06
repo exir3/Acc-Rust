@@ -2608,6 +2608,58 @@ fn bulk_import_replays_a_completed_batch_without_duplicates() {
 }
 
 #[test]
+fn import_payload_hash_is_versioned_sha256_and_detects_small_changes() {
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "fingerprint.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        accounts: Vec::new(),
+        vouchers: vec![{
+            let mut imported = cash_sale("1405/01/10", 2_000);
+            imported.number = Some(1);
+            imported
+        }],
+    };
+
+    let hash = super::import::import_payload_hash(&import);
+    assert!(hash.starts_with("sha256-v1:"), "{hash}");
+    assert_eq!(hash.len(), "sha256-v1:".len() + 64);
+
+    let mut changed = import.clone();
+    changed.vouchers[0].description.push('ا');
+    assert_ne!(hash, super::import::import_payload_hash(&changed));
+}
+
+#[test]
+fn legacy_fnv_import_batch_is_still_treated_as_a_replay() {
+    let db = db::memory_database();
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "legacy-replay.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        accounts: Vec::new(),
+        vouchers: vec![{
+            let mut imported = cash_sale("1405/01/10", 3_000);
+            imported.number = Some(1);
+            imported
+        }],
+    };
+    let legacy_hash = super::import::legacy_import_payload_hash(&import);
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO import_batches
+                (payload_hash, file_name, sheet_name, voucher_count, imported_numbers)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![legacy_hash, "legacy-replay.xlsx", "اسناد", 1_i64, "1"],
+        )
+        .map_err(db::db_error)?;
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(db.import_vouchers(import, false).unwrap(), 1);
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 0);
+}
+
+#[test]
 fn audit_snapshots_keep_the_full_before_and_after_image() {
     let db = db::memory_database();
     let saved = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();

@@ -13,15 +13,93 @@ use crate::vouchers::validation::{
 };
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
-/// Deterministic FNV-1a fingerprint of the parsed workbook. It identifies a
-/// retry of the same import without adding a hashing dependency.
-struct PayloadHasher {
+/// Versioned domain separator for the canonical import fingerprint.
+const PAYLOAD_HASH_PREFIX: &str = "sha256-v1:";
+
+/// Receives the canonical field stream of a parsed workbook. Both the current
+/// SHA-256 fingerprint and the legacy FNV-1a lookup use the same traversal, so
+/// a change in one field can never be silently ignored by only one of them.
+trait PayloadSink {
+    fn text(&mut self, value: &str);
+    fn number(&mut self, value: i64) {
+        self.text(&value.to_string());
+    }
+    fn flag(&mut self, value: bool);
+}
+
+fn visit_import_payload(import: &crate::excel::BulkVoucherImport, sink: &mut impl PayloadSink) {
+    sink.text(&import.file_name);
+    sink.text(&import.sheet_name);
+    for account in &import.accounts {
+        sink.text(&account.code);
+        sink.text(&account.name);
+        sink.text(&account.parent_code);
+        sink.text(&account.group_code);
+        sink.number(account.level);
+        sink.text(&account.nature);
+        sink.flag(account.nature_is_explicit);
+        sink.flag(account.group_is_inferred);
+    }
+    for voucher in &import.vouchers {
+        sink.number(voucher.id.unwrap_or(0));
+        sink.number(voucher.number.unwrap_or(0));
+        sink.text(&voucher.date);
+        sink.text(&voucher.voucher_type);
+        sink.text(&voucher.description);
+        for line in &voucher.lines {
+            sink.number(line.id.unwrap_or(0));
+            sink.text(&line.account_code);
+            sink.text(line.detail1_code.as_deref().unwrap_or(""));
+            sink.text(&line.description);
+            sink.number(line.debit);
+            sink.number(line.credit);
+        }
+    }
+}
+
+/// Collision-resistant, versioned fingerprint of the parsed workbook. It
+/// identifies a retry of the same import; the version prefix makes a future
+/// canonical-encoding change explicit instead of silently comparing hashes
+/// produced by different algorithms.
+struct Sha256PayloadHasher {
+    hasher: Sha256,
+}
+
+impl Sha256PayloadHasher {
+    fn new() -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(PAYLOAD_HASH_PREFIX.as_bytes());
+        Self { hasher }
+    }
+
+    fn finish(self) -> String {
+        format!("{PAYLOAD_HASH_PREFIX}{:x}", self.hasher.finalize())
+    }
+}
+
+impl PayloadSink for Sha256PayloadHasher {
+    fn text(&mut self, value: &str) {
+        // Length-prefix each field so concatenation cannot create the same
+        // stream from different field boundaries.
+        self.hasher.update((value.len() as u64).to_le_bytes());
+        self.hasher.update(value.as_bytes());
+    }
+
+    fn flag(&mut self, value: bool) {
+        self.hasher.update([u8::from(value)]);
+    }
+}
+
+/// Previous 64-bit FNV-1a fingerprint. New batches are written with SHA-256,
+/// but existing `import_batches` rows must still be recognized after upgrade.
+struct LegacyFnvHasher {
     state: u64,
 }
 
-impl PayloadHasher {
+impl LegacyFnvHasher {
     fn new() -> Self {
         Self {
             state: 0xcbf2_9ce4_8422_2325,
@@ -35,53 +113,33 @@ impl PayloadHasher {
         }
     }
 
-    fn text(&mut self, value: &str) {
-        self.write(value.as_bytes());
-        self.write(&[0]);
-    }
-
-    fn number(&mut self, value: i64) {
-        self.text(&value.to_string());
-    }
-
-    fn flag(&mut self, value: bool) {
-        self.write(&[u8::from(value)]);
-    }
-
     fn finish(self) -> String {
         format!("{:016x}", self.state)
     }
 }
 
-fn import_payload_hash(import: &crate::excel::BulkVoucherImport) -> String {
-    let mut hasher = PayloadHasher::new();
-    hasher.text(&import.file_name);
-    hasher.text(&import.sheet_name);
-    for account in &import.accounts {
-        hasher.text(&account.code);
-        hasher.text(&account.name);
-        hasher.text(&account.parent_code);
-        hasher.text(&account.group_code);
-        hasher.number(account.level);
-        hasher.text(&account.nature);
-        hasher.flag(account.nature_is_explicit);
-        hasher.flag(account.group_is_inferred);
+impl PayloadSink for LegacyFnvHasher {
+    fn text(&mut self, value: &str) {
+        self.write(value.as_bytes());
+        self.write(&[0]);
     }
-    for voucher in &import.vouchers {
-        hasher.number(voucher.id.unwrap_or(0));
-        hasher.number(voucher.number.unwrap_or(0));
-        hasher.text(&voucher.date);
-        hasher.text(&voucher.voucher_type);
-        hasher.text(&voucher.description);
-        for line in &voucher.lines {
-            hasher.number(line.id.unwrap_or(0));
-            hasher.text(&line.account_code);
-            hasher.text(line.detail1_code.as_deref().unwrap_or(""));
-            hasher.text(&line.description);
-            hasher.number(line.debit);
-            hasher.number(line.credit);
-        }
+
+    fn flag(&mut self, value: bool) {
+        self.write(&[u8::from(value)]);
     }
+}
+
+pub(super) fn import_payload_hash(import: &crate::excel::BulkVoucherImport) -> String {
+    let mut hasher = Sha256PayloadHasher::new();
+    visit_import_payload(import, &mut hasher);
+    hasher.finish()
+}
+
+/// Read-only compatibility path so a workbook imported before the SHA-256
+/// change is still treated as a replay instead of being imported twice.
+pub(super) fn legacy_import_payload_hash(import: &crate::excel::BulkVoucherImport) -> String {
+    let mut hasher = LegacyFnvHasher::new();
+    visit_import_payload(import, &mut hasher);
     hasher.finish()
 }
 
@@ -464,6 +522,7 @@ impl Database {
         // same final groups.
         let manual_group_mappings = apply_group_overrides(&mut import.accounts, group_overrides)?;
         let payload_hash = import_payload_hash(&import);
+        let legacy_payload_hash = legacy_import_payload_hash(&import);
         let file_name = import.file_name.clone();
         let sheet_name = import.sheet_name.clone();
 
@@ -587,8 +646,8 @@ impl Database {
             let tx = conn.transaction().map_err(db::db_error)?;
             let previous = tx
                 .query_row(
-                    "SELECT voucher_count FROM import_batches WHERE payload_hash = ?1",
-                    params![&payload_hash],
+                    "SELECT voucher_count FROM import_batches WHERE payload_hash IN (?1, ?2)",
+                    params![&payload_hash, &legacy_payload_hash],
                     |row| row.get::<_, i64>(0),
                 )
                 .optional()

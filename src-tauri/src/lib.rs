@@ -25,6 +25,18 @@ pub fn run() {
                 Ok(())
             }
             Err(message) => {
+                // A modal dialog is invisible to CI and to a post-mortem log.
+                // Mirror the startup failure to stderr and a temp file so the
+                // Windows smoke test and users can see the real cause.
+                let log_path = std::env::temp_dir().join("hesabdari-startup-error.log");
+                let log_line = format!(
+                    "version={} data_dir_override={:?}\n{message}\n",
+                    env!("CARGO_PKG_VERSION"),
+                    std::env::var_os("HESABDARI_SMOKE_DATA_DIR")
+                );
+                let _ = std::fs::write(&log_path, log_line);
+                eprintln!("[hesabdari] startup failed: {message}");
+                eprintln!("[hesabdari] startup log: {}", log_path.display());
                 let _ = rfd::MessageDialog::new()
                     .set_level(rfd::MessageLevel::Error)
                     .set_title("خطا در راه‌اندازی")
