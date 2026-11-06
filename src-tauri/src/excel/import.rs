@@ -6,7 +6,7 @@ use crate::excel::common::*;
 use crate::excel::model::{BulkImportColumns, BulkVoucherImport, ImportedAccount};
 use crate::vouchers::{VoucherInput, VoucherLineInput, MAX_VOUCHER_NUMBER};
 use calamine::{open_workbook_auto, Data, Reader};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 /* ── Import ─────────────────────────────────────────────────── */
@@ -263,6 +263,19 @@ pub(crate) fn imported_account_nature(
     }
 }
 
+/// Key for the in-progress account map. Level-1 and level-2 codes are global,
+/// so a repeated code with a different parent keeps colliding and is reported.
+/// A level-3 (تفصیلی) code may legitimately be used under more than one معین
+/// in real workbooks (a floating detail account), so its parent participates
+/// in the key and the conflicts are resolved after parsing.
+fn imported_account_key(level: i64, parent_code: &str, code: &str) -> String {
+    if level == 3 {
+        format!("3\u{1f}{parent_code}\u{1f}{code}")
+    } else {
+        format!("{level}\u{1f}{code}")
+    }
+}
+
 // The import pipeline passes each parsed column explicitly; grouping them into
 // a struct would only move the same fields behind another name.
 #[allow(clippy::too_many_arguments)]
@@ -297,7 +310,8 @@ pub(crate) fn add_imported_account(
         nature_is_explicit,
         group_is_inferred,
     };
-    if let Some(existing) = accounts.get_mut(&code) {
+    let key = imported_account_key(account.level, &account.parent_code, &account.code);
+    if let Some(existing) = accounts.get_mut(&key) {
         if existing.parent_code != account.parent_code
             || existing.level != account.level
             || existing.group_code != account.group_code
@@ -337,9 +351,112 @@ pub(crate) fn add_imported_account(
                 db::to_fa_digits(&code)
             ));
         }
-        accounts.insert(code, account);
+        accounts.insert(key, account);
     }
     Ok(())
+}
+
+/// Resolves level-3 codes that appear under more than one معین. The database
+/// model requires every تفصیلی to be a direct child of exactly one معین, while
+/// many real workbooks reuse a floating detail code across several accounts.
+/// Those rows are split into per-parent detail accounts with a deterministic,
+/// unique numeric code so the voucher pairing stays valid. A detail code used
+/// by a single parent keeps its original code.
+fn finalize_imported_accounts(
+    accounts: BTreeMap<String, ImportedAccount>,
+    vouchers: &mut BTreeMap<i64, VoucherInput>,
+) -> Vec<ImportedAccount> {
+    let mut used_codes: BTreeSet<String> = accounts
+        .values()
+        .filter(|account| account.level != 3)
+        .map(|account| account.code.clone())
+        .collect();
+    let mut finalized: Vec<ImportedAccount> = accounts
+        .values()
+        .filter(|account| account.level != 3)
+        .cloned()
+        .collect();
+
+    let mut details_by_code: BTreeMap<String, Vec<&ImportedAccount>> = BTreeMap::new();
+    for account in accounts.values().filter(|account| account.level == 3) {
+        details_by_code
+            .entry(account.code.clone())
+            .or_default()
+            .push(account);
+    }
+
+    let mut remapped_details = HashMap::<(String, String), String>::new();
+    for (code, mut rows) in details_by_code {
+        rows.sort_by(|left, right| {
+            left.parent_code
+                .cmp(&right.parent_code)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        let parent_count = rows
+            .iter()
+            .map(|account| account.parent_code.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        if parent_count == 1 && used_codes.insert(code.clone()) {
+            if let Some(account) = rows.into_iter().next() {
+                finalized.push(account.clone());
+            }
+            continue;
+        }
+        for account in rows {
+            let scoped_code =
+                scoped_detail_code(&account.parent_code, &account.code, &mut used_codes);
+            remapped_details.insert(
+                (account.parent_code.clone(), account.code.clone()),
+                scoped_code.clone(),
+            );
+            let mut scoped = account.clone();
+            scoped.code = scoped_code;
+            finalized.push(scoped);
+        }
+    }
+
+    if !remapped_details.is_empty() {
+        for voucher in vouchers.values_mut() {
+            for line in &mut voucher.lines {
+                let Some(detail_code) = line.detail1_code.as_ref() else {
+                    continue;
+                };
+                if let Some(scoped_code) =
+                    remapped_details.get(&(line.account_code.clone(), detail_code.clone()))
+                {
+                    line.detail1_code = Some(scoped_code.clone());
+                }
+            }
+        }
+    }
+
+    finalized.sort_by(|left, right| {
+        left.level
+            .cmp(&right.level)
+            .then_with(|| left.code.cmp(&right.code))
+    });
+    finalized
+}
+
+/// Builds a numeric detail code from its parent and original code. The
+/// combined value is shortened only for very long legacy codes; a numeric
+/// suffix keeps it unique when the plain concatenation is already taken.
+fn scoped_detail_code(
+    parent_code: &str,
+    detail_code: &str,
+    used_codes: &mut BTreeSet<String>,
+) -> String {
+    let combined = format!("{parent_code}{detail_code}");
+    let base: String = combined.chars().take(44).collect();
+    let mut candidate = base.clone();
+    let mut suffix = 2u64;
+    while used_codes.contains(&candidate) {
+        candidate = format!("{base}{suffix}");
+        suffix += 1;
+    }
+    used_codes.insert(candidate.clone());
+    candidate
 }
 
 /// Selects and parses the first worksheet containing the bulk-voucher layout.
@@ -468,6 +585,32 @@ pub(crate) fn parse_bulk_voucher_sheet_with_progress(
         }
         // Range rows are relative to its used area, which may not start at A1.
         let excel_row = first_excel_row + header_row + offset + 2;
+        let debit = cell_amount(&read(row, columns.debit)).map_err(|error| {
+            format!("بدهکار ردیف {} اکسل: {error}", db::to_fa_digits(excel_row))
+        })?;
+        let credit = cell_amount(&read(row, columns.credit)).map_err(|error| {
+            format!(
+                "بستانکار ردیف {} اکسل: {error}",
+                db::to_fa_digits(excel_row)
+            )
+        })?;
+        // A zero/zero row is an empty transfer line in legacy workbooks; it
+        // carries no accounting entry and must not create an empty voucher.
+        if debit == 0 && credit == 0 {
+            continue;
+        }
+        if debit < 0 || credit < 0 || debit > MAX_AMOUNT || credit > MAX_AMOUNT {
+            return Err(format!(
+                "مبلغ ردیف {} اکسل خارج از محدوده مجاز است.",
+                db::to_fa_digits(excel_row)
+            ));
+        }
+        if debit > 0 && credit > 0 {
+            return Err(format!(
+                "در ردیف {} اکسل هم بدهکار و هم بستانکار مقدار دارد.",
+                db::to_fa_digits(excel_row)
+            ));
+        }
         let raw_number = cell_text(&read(row, columns.voucher_number));
         let number = if raw_number.is_empty() {
             if is_total_row(row) {
@@ -579,7 +722,7 @@ pub(crate) fn parse_bulk_voucher_sheet_with_progress(
             // A vertically merged group-code cell is populated only on the
             // first row. Reuse the group already assigned to this general
             // account before falling back to the built-in prefix mapping.
-            if let Some(existing) = accounts.get(&general_code) {
+            if let Some(existing) = accounts.get(&imported_account_key(1, "", &general_code)) {
                 (existing.group_code.clone(), existing.group_is_inferred)
             } else {
                 (imported_group_code(&general_code)?.to_string(), true)
@@ -667,33 +810,6 @@ pub(crate) fn parse_bulk_voucher_sheet_with_progress(
                 "شرح ردیف {} اکسل بیشتر از {} کاراکتر است.",
                 db::to_fa_digits(excel_row),
                 db::to_fa_digits(MAX_LINE_DESCRIPTION)
-            ));
-        }
-        let debit = cell_amount(&read(row, columns.debit)).map_err(|error| {
-            format!("بدهکار ردیف {} اکسل: {error}", db::to_fa_digits(excel_row))
-        })?;
-        let credit = cell_amount(&read(row, columns.credit)).map_err(|error| {
-            format!(
-                "بستانکار ردیف {} اکسل: {error}",
-                db::to_fa_digits(excel_row)
-            )
-        })?;
-        if debit < 0 || credit < 0 || debit > MAX_AMOUNT || credit > MAX_AMOUNT {
-            return Err(format!(
-                "مبلغ ردیف {} اکسل خارج از محدوده مجاز است.",
-                db::to_fa_digits(excel_row)
-            ));
-        }
-        if debit == 0 && credit == 0 {
-            return Err(format!(
-                "ردیف {} اکسل مبلغ بدهکار یا بستانکار ندارد.",
-                db::to_fa_digits(excel_row)
-            ));
-        }
-        if debit > 0 && credit > 0 {
-            return Err(format!(
-                "در ردیف {} اکسل هم بدهکار و هم بستانکار مقدار دارد.",
-                db::to_fa_digits(excel_row)
             ));
         }
 
@@ -819,6 +935,8 @@ pub(crate) fn parse_bulk_voucher_sheet_with_progress(
         }
     }
 
+    let mut accounts = finalize_imported_accounts(accounts, &mut vouchers);
+    infer_missing_natures(&mut accounts, &vouchers);
     Ok(BulkVoucherImport {
         file_name: path
             .file_name()
@@ -830,8 +948,49 @@ pub(crate) fn parse_bulk_voucher_sheet_with_progress(
             .into_iter()
             .filter_map(|number| vouchers.remove(&number))
             .collect(),
-        accounts: accounts.into_values().collect(),
+        accounts,
     })
+}
+
+/// Fills the nature of accounts whose group alone cannot decide it (the
+/// «سایر درآمدها و هزینه‌ها» groups) from how the workbook actually posts to
+/// them. An explicit nature from the file is never overwritten. A row used
+/// only on the debit side is an expense/debtor account and a credit-only row is
+/// income/creditor; mixed usage is dual, which the reporting layer splits by
+/// balance.
+fn infer_missing_natures(accounts: &mut [ImportedAccount], vouchers: &BTreeMap<i64, VoucherInput>) {
+    let mut usage = HashMap::<String, (bool, bool)>::new();
+    for voucher in vouchers.values() {
+        for line in &voucher.lines {
+            let debit = line.debit > 0;
+            for code in [Some(&line.account_code), line.detail1_code.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                let entry = usage.entry(code.clone()).or_insert((false, false));
+                if debit {
+                    entry.0 = true;
+                } else {
+                    entry.1 = true;
+                }
+            }
+        }
+    }
+    for account in accounts {
+        if account.nature_is_explicit || account.nature != "unknown" {
+            continue;
+        }
+        let Some((debit, credit)) = usage.get(&account.code) else {
+            continue;
+        };
+        account.nature = match (*debit, *credit) {
+            (true, true) => "dual",
+            (true, false) => "debtor",
+            (false, true) => "creditor",
+            (false, false) => continue,
+        }
+        .to_string();
+    }
 }
 
 /// Asks for a workbook and returns the voucher lines it contains.

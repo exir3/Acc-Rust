@@ -1398,7 +1398,11 @@ input, textarea, select { user-select: text; }
 }
 .modal[hidden] { display: none; }
 .dialog {
+  display: flex;
+  flex-direction: column;
   width: min(480px, 92vw);
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
   background: var(--surface);
   border: 1px solid var(--line-2);
   border-radius: 12px;
@@ -1406,6 +1410,7 @@ input, textarea, select { user-select: text; }
   overflow: hidden;
 }
 .dialog-head {
+  flex: 0 0 auto;
   padding: 15px 20px 12px;
   font-size: 15px;
   font-weight: 700;
@@ -1415,13 +1420,24 @@ input, textarea, select { user-select: text; }
     linear-gradient(100deg, #0d2340, #153f6d);
   border-bottom: 1px solid #0a1c33;
 }
-.dialog-body { padding: 16px 20px 18px; font-size: 12.5px; color: var(--text-2); line-height: 1.95; user-select: text; }
+.dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 20px 18px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.95;
+  user-select: text;
+}
 .dialog-body .about-logo { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .dialog-body .about-logo .ico { width: 40px; height: 40px; }
 .dialog-body .about-logo b { font-size: 14px; color: #102a4d; display: block; }
 .dialog-body .about-logo span { font-size: 11.5px; }
 .dialog-foot {
   display: flex;
+  flex: 0 0 auto;
   justify-content: flex-start;
   gap: 8px;
   padding: 12px 20px;

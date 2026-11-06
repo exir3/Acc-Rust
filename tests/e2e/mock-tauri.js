@@ -280,6 +280,7 @@
     delete_accounts_bulk: () => ({ deletedCount: 0, blocked: [] }),
     export_account_excel: () => 'accounts.xlsx',
     import_account_excel: () => ({ skippedCount: 0, createdCount: 0, errorCount: 0, errors: [] }),
+    analyze_bulk_voucher_excel: () => clone(seed.bulkImportPreview || null),
   };
 
   const invoke = async (command, args = {}) => {

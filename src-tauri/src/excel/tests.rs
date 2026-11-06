@@ -195,6 +195,87 @@ mod tests {
     }
 
     #[test]
+    fn bulk_import_scopes_a_detail_code_shared_by_several_subsidiary_accounts() {
+        let mut range = calamine::Range::new((0, 0), (2, 10));
+        for (column, value) in [
+            "شماره سند",
+            "تاریخ سند",
+            "کد کل",
+            "عنوان کل",
+            "کد معین",
+            "عنوان معین",
+            "کد تفصیلی ۱",
+            "عنوان تفصیلی ۱",
+            "شرح ردیف",
+            "بدهکار",
+            "بستانکار",
+        ]
+        .iter()
+        .enumerate()
+        {
+            range.set_value((0, column as u32), text(value));
+        }
+        let rows = [
+            [
+                text("1"),
+                text("1405/01/01"),
+                text("101"),
+                text("صندوق"),
+                text("101101"),
+                text("صندوق مشهد"),
+                text("91001"),
+                text("صندوق شماره ۱ مشهد"),
+                text("افتتاحیه"),
+                Data::Int(100),
+                Data::Empty,
+            ],
+            [
+                text("1"),
+                text("1405/01/01"),
+                text("201"),
+                text("بدهی‌ها"),
+                text("201101"),
+                text("حساب‌های پرداختنی"),
+                text("91001"),
+                text("صندوق شماره ۱ مشهد"),
+                text("افتتاحیه"),
+                Data::Empty,
+                Data::Int(100),
+            ],
+        ];
+        for (row_index, row) in rows.into_iter().enumerate() {
+            for (column, value) in row.into_iter().enumerate() {
+                range.set_value((row_index as u32 + 1, column as u32), value);
+            }
+        }
+
+        let import = parse_bulk_voucher_sheet(Path::new("floating-detail.xlsx"), "اسناد", &range)
+            .expect("a shared floating detail code should import");
+        let mut details: Vec<_> = import
+            .accounts
+            .iter()
+            .filter(|account| account.level == 3)
+            .collect();
+        details.sort_by(|left, right| left.parent_code.cmp(&right.parent_code));
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[0].parent_code, "101101");
+        assert_eq!(details[1].parent_code, "201101");
+        assert_ne!(details[0].code, details[1].code);
+        for detail in &details {
+            assert!(detail.code.starts_with(&detail.parent_code));
+            assert!(detail.code.ends_with("91001"));
+        }
+        let line_details: Vec<_> = import.vouchers[0]
+            .lines
+            .iter()
+            .filter_map(|line| line.detail1_code.as_deref())
+            .collect();
+        assert_eq!(line_details.len(), 2);
+        assert!(line_details.contains(&details[0].code.as_str()));
+        assert!(line_details.contains(&details[1].code.as_str()));
+    }
+
+    #[test]
     fn bulk_import_accepts_an_explicit_group_code_for_custom_account_codes() {
         let headers = [
             "شماره سند",
