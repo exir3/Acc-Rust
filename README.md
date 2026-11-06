@@ -148,4 +148,4 @@ workflow در `.github/workflows/ci.yml` سه مرحله دارد:
 
 ## مستندات بیشتر
 
-- [گزارش بررسی فنی و اولویت‌بندی اصلاحات](Docs/Review.md)
+- [گزارش بررسی فنی و اولویت‌بندی اصلاحات](Docs/Acc-Rust-Technical-Review-2026-11-06.md)

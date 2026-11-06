@@ -166,6 +166,7 @@ mod tests {
             1,
             "debtor".to_string(),
             false,
+            false,
         )
         .unwrap();
         add_imported_account(
@@ -177,6 +178,7 @@ mod tests {
             1,
             "debtor".to_string(),
             false,
+            false,
         )
         .unwrap();
         assert!(add_imported_account(
@@ -187,6 +189,7 @@ mod tests {
             "1",
             1,
             "debtor".to_string(),
+            false,
             false,
         )
         .is_err());

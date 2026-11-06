@@ -73,8 +73,33 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend tooling
+        run: npm ci --no-audit --no-fund
+
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit Rust dependencies
+        working-directory: src-tauri
+        run: cargo audit
+
   desktop-build:
-    needs: [verify, ui-e2e]
+    needs: [verify, ui-e2e, security-audit]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

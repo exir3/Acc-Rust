@@ -249,6 +249,7 @@ impl Database {
         let date = normalize_date(&input.date, "تاریخ سند")?;
         let voucher_type = validate_voucher_type(&input.voucher_type)?;
         let description = validate_description(&input.description, "شرح سند", MAX_DESCRIPTION)?;
+        let requested_fiscal_year = input.fiscal_year_id;
 
         if input.lines.len() > MAX_LINES {
             return Err(format!(
@@ -401,7 +402,14 @@ impl Database {
                     );
                 }
             }
-            let fiscal_year_id = db::ensure_open_period(&tx, &date)?;
+            // An explicitly selected fiscal year wins over the date-based
+            // lookup, but only after the same open-period guard accepts the
+            // date inside that year. A caller that sends no year keeps the
+            // legacy behavior used by bulk import and older clients.
+            let fiscal_year_id = match requested_fiscal_year {
+                Some(year_id) => db::ensure_year_accepts_date(&tx, year_id, &date)?,
+                None => db::ensure_open_period(&tx, &date)?,
+            };
             if existing
                 .as_ref()
                 .is_some_and(|(_, _, is_temporary, _)| !*is_temporary)

@@ -49,6 +49,14 @@ pub fn run() {
                             let _ = child.close();
                         }
                     }
+                    // Print preview windows are created with a dynamic
+                    // `print-preview-*` label for every report, so they cannot
+                    // be listed by name. Close all of them with the main window.
+                    for (label, child) in window.app_handle().webview_windows() {
+                        if label.starts_with("print-preview") {
+                            let _ = child.close();
+                        }
+                    }
                 }
             }
         })

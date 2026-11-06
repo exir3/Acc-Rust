@@ -64,6 +64,46 @@ function fillGrid(lines) {
   refreshFormState();
 }
 
+function defaultVoucherDate() {
+  const year = refreshActiveFiscalYear();
+  const today = normalizeYearDate(state.settings.today || '');
+  if (!year) return today;
+  // Inside the active year, today is the natural default. Outside it (for
+  // example when the year is closed or the system clock belongs to another
+  // period), the first day of the selected year keeps the voucher in the
+  // period the user actually chose.
+  if (dateInFiscalYear(today, year)) return today;
+  return normalizeYearDate(year.startDate) || today;
+}
+
+function handleFiscalYearChanged(year) {
+  state.activeFiscalYear = year || null;
+  if (state.voucher) {
+    // An existing voucher keeps its own period; only the banner/toolbar state
+    // needs refreshing, never the loaded document.
+    refreshFormState();
+    return;
+  }
+  if (state.dirty) {
+    refreshFormState();
+    setStatus('warn', 'سال مالی تغییر کرد؛ فرم ذخیره‌نشده است');
+    toast('سال مالی در پنجره اصلی تغییر کرد؛ تاریخ و امکان ذخیره سند جدید را بررسی کنید. تغییرات فرم حفظ شد.', 'warning');
+    return;
+  }
+  const dateInput = $('#vfDocDate');
+  if (dateInput && year?.status === 'open') dateInput.value = defaultVoucherDate();
+  state.dirty = false;
+  refreshFormState();
+  setStatus(
+    year?.status === 'open' ? 'ok' : 'warn',
+    year
+      ? (year.status === 'open'
+        ? `سال مالی «${year.title || ''}» انتخاب شد.`
+        : `سال مالی «${year.title || ''}» باز نیست؛ ثبت سند جدید مجاز نیست.`)
+      : 'سال مالی انتخاب نشده است.'
+  );
+}
+
 function startNew(number) {
   state.voucher = null;
   state.makePermanent = false;
@@ -72,7 +112,7 @@ function startNew(number) {
   state.dirty = false;
   state.activeRow = null;
   $('#vfDocNo').value = number > 0 ? String(number) : '';
-  $('#vfDocDate').value = state.settings.today || '';
+  $('#vfDocDate').value = defaultVoucherDate();
   setDocType(VOUCHER_TYPES[0]);
   $('#vfDocDesc').value = '';
   updateDescCounter();
@@ -83,6 +123,7 @@ function startNew(number) {
 
 function loadVoucher(voucher) {
   state.voucher = voucher;
+  refreshActiveFiscalYear();
   state.makePermanent = voucher.isTemporary === false;
   state.restoredConflict = false;
   state.dirty = false;
@@ -125,6 +166,10 @@ function collectDraft() {
     voucherType: $('#vfDocType')?.value || VOUCHER_TYPES[0],
     description: $('#vfDocDesc')?.value || '',
     isPermanent: Boolean(state.makePermanent),
+    // Only a new voucher carries the selected year. Editing an existing
+    // voucher keeps the legacy date-based lookup so historical corrections are
+    // not blocked by whichever year happens to be active in the main window.
+    fiscalYearId: state.voucher ? null : (state.activeFiscalYear?.id ?? null),
     lines,
   };
 }
@@ -148,6 +193,18 @@ function validateDraft(draft) {
   if (year < 1 || year > 3177 || month < 1 || month > 12 || day < 1
       || day > jalaliMonthLength(year, month)) {
     return 'سال، ماه یا روز تاریخ سند معتبر نیست.';
+  }
+  // A new voucher belongs to the year chosen at the startup gate. The backend
+  // validates this again; the check here keeps a closed year from looking
+  // saveable and catches a date outside the selected period before round-trip.
+  if (!state.voucher && state.activeFiscalYear) {
+    const selectedYear = state.activeFiscalYear;
+    if (selectedYear.status !== 'open') {
+      return `سال مالی «${selectedYear.title || ''}» ${selectedYear.status === 'final' ? 'نهایی شده' : 'بسته'} است؛ ثبت سند جدید در آن مجاز نیست.`;
+    }
+    if (!dateInFiscalYear(draft.date, selectedYear)) {
+      return `تاریخ سند باید داخل بازه سال مالی «${selectedYear.title || ''}» (${normalizeYearDate(selectedYear.startDate)} تا ${normalizeYearDate(selectedYear.endDate)}) باشد.`;
+    }
   }
   // The Rust/Jalali calendar remains authoritative and is still called before
   // saving; this check only avoids a round-trip for impossible dates.
@@ -548,8 +605,15 @@ async function copyVoucher() {
     return;
   }
 
+  const activeYear = refreshActiveFiscalYear();
+  let copyDate = draft.date || state.settings.today || '';
+  if (activeYear && activeYear.status === 'open' && !dateInFiscalYear(copyDate, activeYear)) {
+    // A copy is a new voucher; keep it inside the selected open year instead
+    // of inheriting a date the save guard would reject.
+    copyDate = defaultVoucherDate();
+  }
   const copy = {
-    date: draft.date || state.settings.today || '',
+    date: copyDate,
     voucherType: draft.voucherType,
     description: draft.description,
     lines: draft.lines.map(({ id, ...line }) => ({ ...line, id: null })),

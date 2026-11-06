@@ -1,7 +1,7 @@
 'use strict';
 
 /* ============================================================
-   انتخاب شرکت و سال مالی — دروازهٔ ورود برنامه
+   انتخاب سال مالی — دروازهٔ ورود برنامه
    ============================================================ */
 
 const CSF_STATUS_META = {
@@ -52,7 +52,7 @@ function csfDateInRange(date, start, end) {
 function csfApplyWallpaper() {
   const selector = csfEl('companySelector');
   if (!selector) return;
-  const wallpaper = localStorage.getItem('hesabdari-workspace-wallpaper');
+  const wallpaper = storageGet('hesabdari-workspace-wallpaper');
   if (wallpaper) {
     selector.style.backgroundImage = `linear-gradient(rgba(2, 6, 23, .42), rgba(2, 6, 23, .42)), url("${wallpaper}")`;
   } else {
@@ -83,7 +83,7 @@ function csfResolveSelection(preserve) {
     if (kept) return Number(kept.id);
   }
 
-  const stored = Number(localStorage.getItem(ACTIVE_FISCAL_YEAR_KEY) || 0);
+  const stored = Number(storageGet(ACTIVE_FISCAL_YEAR_KEY) || 0);
   if (stored && csfById(stored)) return stored;
 
   const active = csfById(state.activeFiscalYear?.id);
@@ -430,7 +430,7 @@ async function openCompanySelector({ startup = false } = {}) {
 
   const app = $('.accounting-app');
   if (app) app.inert = true;
-  document.title = 'انتخاب شرکت و سال مالی — نرم‌افزار حسابداری';
+  document.title = 'انتخاب سال مالی — نرم‌افزار حسابداری';
 
   bindCompanySelector();
   await refreshCompanySelector({ preserveSelection: false, focus: true });

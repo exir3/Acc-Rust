@@ -115,7 +115,7 @@ test('the settings menu reopens the selector on the current year', async ({ page
   await expect(page.locator('#companySelector')).toBeHidden();
 
   await page.getByRole('button', { name: 'تنظیمات', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'انتخاب شرکت و سال مالی' }).click();
+  await page.getByRole('menuitem', { name: 'انتخاب سال مالی' }).click();
 
   await expect(page.locator('#companySelector')).toBeVisible();
   await expect(page.locator('#csfYearList .csf-row.selected')).toContainText('سال مالی ۱۴۰۵');

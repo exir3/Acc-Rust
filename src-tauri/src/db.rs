@@ -35,7 +35,7 @@ pub use model::{
     Settings, ACCOUNT_GROUP_SECTIONS, ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES, MAX_ACCOUNT_LEVEL,
 };
 
-pub(crate) use fiscal_years::ensure_open_period;
+pub(crate) use fiscal_years::{ensure_open_period, ensure_year_accepts_date};
 pub(crate) use legacy::legacy_migration_backup_path;
 
 pub(crate) use common::{

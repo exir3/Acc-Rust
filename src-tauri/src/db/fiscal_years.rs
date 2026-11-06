@@ -256,6 +256,43 @@ fn ensure_standard_year(conn: &Connection, date: &str) -> Result<i64, String> {
     Ok(id)
 }
 
+/// Validates that `date` belongs to the explicitly selected fiscal year and
+/// that the year is still open. This is the authoritative check for the
+/// `fiscalYearId` the UI sends with a voucher: the selected year is never
+/// trusted blindly, and a date outside it is refused instead of silently
+/// moving the voucher to another period.
+pub(crate) fn ensure_year_accepts_date(
+    conn: &Connection,
+    year_id: i64,
+    date: &str,
+) -> Result<i64, String> {
+    if year_id <= 0 {
+        return Err("شناسه سال مالی انتخاب‌شده نامعتبر است.".to_string());
+    }
+    let year = fetch_year(conn, year_id)?;
+    if year.status != "open" {
+        return Err(format!(
+            "سال مالی «{}» {} است؛ ثبت یا تغییر سند در این دوره مجاز نیست.",
+            year.title,
+            if year.status == "final" {
+                "نهایی‌شده"
+            } else {
+                "بسته"
+            }
+        ));
+    }
+    if date < year.start_date.as_str() || date > year.end_date.as_str() {
+        return Err(format!(
+            "تاریخ سند ({}) خارج از بازه سال مالی «{}» ({} تا {}) است.",
+            to_fa_digits(date),
+            year.title,
+            to_fa_digits(&year.start_date),
+            to_fa_digits(&year.end_date)
+        ));
+    }
+    Ok(year.id)
+}
+
 /// Returns the open fiscal year for `date`, creating a standard one when
 /// necessary. Saving or editing a voucher in a closed/final year is refused.
 pub(crate) fn ensure_open_period(conn: &Connection, date: &str) -> Result<i64, String> {

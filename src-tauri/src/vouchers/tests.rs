@@ -23,6 +23,7 @@ fn voucher(date: &str, lines: Vec<VoucherLineInput>) -> VoucherInput {
         date: date.to_string(),
         voucher_type: String::new(),
         description: "سند آزمایشی".to_string(),
+        fiscal_year_id: None,
         lines,
     }
 }
@@ -482,6 +483,7 @@ fn bulk_import_is_atomic_and_supports_large_vouchers() {
                 level: 1,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
             crate::excel::ImportedAccount {
                 code: subsidiary_code.to_string(),
@@ -491,6 +493,7 @@ fn bulk_import_is_atomic_and_supports_large_vouchers() {
                 level: 2,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
         ]
     };
@@ -505,6 +508,7 @@ fn bulk_import_is_atomic_and_supports_large_vouchers() {
                 date: "1405/01/01".to_string(),
                 voucher_type: VOUCHER_TYPES[0].to_string(),
                 description: String::new(),
+                fiscal_year_id: None,
                 lines,
             }],
         }
@@ -547,6 +551,71 @@ fn bulk_import_is_atomic_and_supports_large_vouchers() {
 }
 
 #[test]
+fn bulk_import_preview_reports_inferred_groups_and_audits_them() {
+    let db = db::memory_database();
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "inferred.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        accounts: vec![
+            crate::excel::ImportedAccount {
+                code: "901".to_string(),
+                name: "حساب کل بدون گروه".to_string(),
+                parent_code: String::new(),
+                group_code: "1".to_string(),
+                level: 1,
+                nature: "debtor".to_string(),
+                nature_is_explicit: false,
+                group_is_inferred: true,
+            },
+            crate::excel::ImportedAccount {
+                code: "901101".to_string(),
+                name: "حساب معین بدون گروه".to_string(),
+                parent_code: "901".to_string(),
+                group_code: "1".to_string(),
+                level: 2,
+                nature: "debtor".to_string(),
+                nature_is_explicit: false,
+                group_is_inferred: true,
+            },
+        ],
+        vouchers: vec![VoucherInput {
+            id: None,
+            number: Some(1),
+            date: "1405/01/01".to_string(),
+            voucher_type: VOUCHER_TYPES[0].to_string(),
+            description: String::new(),
+            fiscal_year_id: None,
+            lines: vec![line("901101", 100, 0), line("110101", 0, 100)],
+        }],
+    };
+
+    let preview = db.preview_bulk_import(&import).unwrap();
+    assert_eq!(preview.inferred_group_count, 2);
+    assert_eq!(preview.inferred_group_mappings.len(), 2);
+    assert!(preview
+        .inferred_group_mappings
+        .iter()
+        .all(|mapping| mapping.group_code == "1"));
+    assert!(preview
+        .inferred_group_mappings
+        .iter()
+        .any(|mapping| mapping.account_code == "901101" && mapping.level == 2));
+
+    assert_eq!(db.import_vouchers(import, false).unwrap(), 1);
+    let logs = db.list_audit_logs(Some(100), None, None).unwrap();
+    let entry = logs
+        .entries
+        .iter()
+        .find(|entry| entry.action == "import")
+        .expect("bulk import audit entry");
+    let after: serde_json::Value =
+        serde_json::from_str(entry.after_value.as_deref().unwrap_or("{}")).unwrap();
+    assert_eq!(after["inferredGroupCount"].as_u64(), Some(2));
+    assert_eq!(after["inferredGroupMappings"].as_array().unwrap().len(), 2);
+    assert!(entry.details.contains("حدس زده شد"));
+}
+
+#[test]
 fn bulk_import_supports_level3_as_a_separate_detail1_reference() {
     let db = db::memory_database();
     let import = crate::excel::BulkVoucherImport {
@@ -561,6 +630,7 @@ fn bulk_import_supports_level3_as_a_separate_detail1_reference() {
                 level: 1,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
             crate::excel::ImportedAccount {
                 code: "99101".to_string(),
@@ -570,6 +640,7 @@ fn bulk_import_supports_level3_as_a_separate_detail1_reference() {
                 level: 2,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
             crate::excel::ImportedAccount {
                 code: "9910101".to_string(),
@@ -579,6 +650,7 @@ fn bulk_import_supports_level3_as_a_separate_detail1_reference() {
                 level: 3,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
         ],
         vouchers: vec![VoucherInput {
@@ -587,6 +659,7 @@ fn bulk_import_supports_level3_as_a_separate_detail1_reference() {
             date: "1405/01/01".to_string(),
             voucher_type: VOUCHER_TYPES[0].to_string(),
             description: String::new(),
+            fiscal_year_id: None,
             lines: vec![line("9910101", 250, 0), line("110101", 0, 250)],
         }],
     };
@@ -631,6 +704,7 @@ fn bulk_import_rejects_inactive_existing_parent_accounts() {
                 level: 1,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
             crate::excel::ImportedAccount {
                 code: "110199".to_string(),
@@ -640,6 +714,7 @@ fn bulk_import_rejects_inactive_existing_parent_accounts() {
                 level: 2,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
         ],
         vouchers: vec![VoucherInput {
@@ -648,6 +723,7 @@ fn bulk_import_rejects_inactive_existing_parent_accounts() {
             date: "1405/01/01".to_string(),
             voucher_type: VOUCHER_TYPES[0].to_string(),
             description: String::new(),
+            fiscal_year_id: None,
             lines: vec![line("110199", 100, 0), line("410101", 0, 100)],
         }],
     };
@@ -680,6 +756,7 @@ fn bulk_import_allows_a_posting_base_to_gain_an_imported_detail_child() {
                 level: 1,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
             crate::excel::ImportedAccount {
                 code: "99101".to_string(),
@@ -689,6 +766,7 @@ fn bulk_import_allows_a_posting_base_to_gain_an_imported_detail_child() {
                 level: 2,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
             crate::excel::ImportedAccount {
                 code: "9910101".to_string(),
@@ -698,6 +776,7 @@ fn bulk_import_allows_a_posting_base_to_gain_an_imported_detail_child() {
                 level: 3,
                 nature: "debtor".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
         ],
         vouchers: vec![VoucherInput {
@@ -707,6 +786,7 @@ fn bulk_import_allows_a_posting_base_to_gain_an_imported_detail_child() {
             voucher_type: VOUCHER_TYPES[0].to_string(),
             description: String::new(),
             // سازگاری با فایل‌های قدیمی: کد سطح ۳ به base + detail1 تبدیل می‌شود.
+            fiscal_year_id: None,
             lines: vec![line("9910101", 100, 0), line("410101", 0, 100)],
         }],
     };
@@ -749,6 +829,7 @@ fn bulk_import_preview_requires_nature_for_new_other_group_children() {
                 level: 1,
                 nature: "dual".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
             crate::excel::ImportedAccount {
                 code: "720101".to_string(),
@@ -758,6 +839,7 @@ fn bulk_import_preview_requires_nature_for_new_other_group_children() {
                 level: 2,
                 nature: "unknown".to_string(),
                 nature_is_explicit: false,
+                group_is_inferred: false,
             },
         ],
         vouchers: vec![VoucherInput {
@@ -766,6 +848,7 @@ fn bulk_import_preview_requires_nature_for_new_other_group_children() {
             date: "1405/01/01".to_string(),
             voucher_type: VOUCHER_TYPES[0].to_string(),
             description: String::new(),
+            fiscal_year_id: None,
             lines: vec![line("720101", 100, 0), line("410101", 0, 100)],
         }],
     };
@@ -787,6 +870,7 @@ fn bulk_import_accepts_direct_posting_to_a_level1_account_with_children() {
             date: "1405/01/01".to_string(),
             voucher_type: VOUCHER_TYPES[0].to_string(),
             description: String::new(),
+            fiscal_year_id: None,
             lines: vec![line("1102", 100, 0), line("410101", 0, 100)],
         }],
     };
@@ -928,6 +1012,26 @@ fn bulk_delete_previews_and_deletes_a_date_range() {
         })
         .unwrap();
     assert_eq!(remaining_lines, 4);
+
+    // The audit entry keeps a per-voucher manifest (amounts included) and the
+    // exact plan token, so a bulk deletion remains reconstructable.
+    let logs = db.list_audit_logs(Some(100), None, None).unwrap();
+    let entry = logs
+        .entries
+        .iter()
+        .find(|entry| entry.action == "delete" && entry.entity_type == "voucher")
+        .expect("bulk delete audit entry");
+    let after: serde_json::Value =
+        serde_json::from_str(entry.after_value.as_deref().unwrap_or("{}")).unwrap();
+    assert_eq!(after["planToken"], preview.plan_token);
+    assert_eq!(after["vouchers"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        after["vouchers"][0]["voucherType"].as_str(),
+        Some(VOUCHER_TYPES[0])
+    );
+    assert_eq!(after["vouchers"][0]["totalDebit"].as_i64(), Some(2_000));
+    assert_eq!(after["vouchers"][0]["totalCredit"].as_i64(), Some(2_000));
+    assert!(entry.details.contains("مانیفست"));
 }
 
 #[test]
@@ -1110,6 +1214,7 @@ fn updates_existing_voucher_without_duplicating_it() {
             date: "1405/01/11".to_string(),
             voucher_type: "سند حسابداری افتتاحیه".to_string(),
             description: "اصلاح سند".to_string(),
+            fiscal_year_id: None,
             lines: vec![line("110101", 800_000, 0), line("310101", 0, 800_000)],
         })
         .unwrap();
@@ -1135,6 +1240,7 @@ fn updates_existing_voucher_without_duplicating_it() {
             date: "1405/01/12".to_string(),
             voucher_type: String::new(),
             description: String::new(),
+            fiscal_year_id: None,
             lines: vec![line("110101", 200_000, 0), line("410101", 0, 200_000)],
         })
         .unwrap_err();
@@ -1147,6 +1253,7 @@ fn updates_existing_voucher_without_duplicating_it() {
             date: "1405/01/12".to_string(),
             voucher_type: String::new(),
             description: String::new(),
+            fiscal_year_id: None,
             lines: vec![line("110101", 200_000, 0), line("410101", 0, 200_000)],
         })
         .unwrap_err();
@@ -2031,6 +2138,54 @@ fn closed_fiscal_year_blocks_saving_editing_finalizing_and_deleting() {
         .delete_voucher(saved.id, Some(&saved.updated_at))
         .unwrap_err();
     assert!(delete_error.contains("بسته") || delete_error.contains("نهایی"));
+}
+
+#[test]
+fn selected_fiscal_year_must_be_open_and_contain_the_voucher_date() {
+    let db = db::memory_database();
+    let year = db
+        .create_fiscal_year("سال ۱۴۰۶", "1406/01/01", "1406/12/29", "open")
+        .unwrap();
+
+    let mut outside = cash_sale("1405/01/10", 1_000);
+    outside.fiscal_year_id = Some(year.id);
+    let error = db.save_voucher(outside).unwrap_err();
+    assert!(error.contains("خارج از بازه"));
+
+    let mut inside = cash_sale("1406/02/01", 1_000);
+    inside.fiscal_year_id = Some(year.id);
+    db.save_voucher(inside).unwrap();
+
+    let years = db.list_fiscal_years().unwrap().years;
+    let selected = years.iter().find(|item| item.id == year.id).unwrap();
+    assert_eq!(selected.voucher_count, 1);
+    assert!(years
+        .iter()
+        .filter(|item| item.id != year.id)
+        .all(|item| item.voucher_count == 0));
+}
+
+#[test]
+fn selected_closed_fiscal_year_rejects_a_date_that_other_years_would_accept() {
+    let db = db::memory_database();
+    db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+    let year = db
+        .list_fiscal_years()
+        .unwrap()
+        .years
+        .into_iter()
+        .find(|item| {
+            item.start_date.as_str() <= "1405/01/10" && item.end_date.as_str() >= "1405/01/10"
+        })
+        .expect("the saved voucher must have a fiscal year");
+    db.set_fiscal_year_status(year.id, "closed", None, false)
+        .unwrap();
+
+    let mut blocked = cash_sale("1405/01/11", 2_000);
+    blocked.fiscal_year_id = Some(year.id);
+    let error = db.save_voucher(blocked).unwrap_err();
+    assert!(error.contains("بسته") || error.contains("نهایی"));
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
 }
 
 #[test]

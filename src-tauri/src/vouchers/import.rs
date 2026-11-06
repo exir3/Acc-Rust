@@ -64,6 +64,7 @@ fn import_payload_hash(import: &crate::excel::BulkVoucherImport) -> String {
         hasher.number(account.level);
         hasher.text(&account.nature);
         hasher.flag(account.nature_is_explicit);
+        hasher.flag(account.group_is_inferred);
     }
     for voucher in &import.vouchers {
         hasher.number(voucher.id.unwrap_or(0));
@@ -122,6 +123,20 @@ impl Database {
             .map(|voucher| voucher.lines.len())
             .sum();
         let account_count = account_codes.len();
+        // Accounts whose group was guessed from the code prefix, not read from
+        // the workbook, are reported to the user before import and recorded in
+        // the audit entry afterwards.
+        let inferred_group_mappings: Vec<crate::excel::InferredGroupMapping> = account_rows
+            .iter()
+            .filter(|account| account.group_is_inferred)
+            .map(|account| crate::excel::InferredGroupMapping {
+                account_code: db::normalize_code(&account.code),
+                account_name: account.name.clone(),
+                level: account.level,
+                group_code: db::normalize_code(&account.group_code),
+            })
+            .collect();
+        let inferred_group_count = inferred_group_mappings.len();
 
         self.with_conn(move |conn| {
             // Validate all groups and existing account structures during preview,
@@ -297,6 +312,8 @@ impl Database {
                 new_account_count,
                 number_conflict_count: conflicting_voucher_numbers.len(),
                 conflicting_voucher_numbers,
+                inferred_group_count,
+                inferred_group_mappings,
             })
         })
     }
@@ -391,6 +408,17 @@ impl Database {
 
         let mut accounts = import.accounts;
         accounts.sort_by_key(|account| account.level);
+        let inferred_group_mappings: Vec<crate::excel::InferredGroupMapping> = accounts
+            .iter()
+            .filter(|account| account.group_is_inferred)
+            .map(|account| crate::excel::InferredGroupMapping {
+                account_code: db::normalize_code(&account.code),
+                account_name: account.name.clone(),
+                level: account.level,
+                group_code: db::normalize_code(&account.group_code),
+            })
+            .collect();
+        let inferred_group_count = inferred_group_mappings.len();
         let imported_count = prepared.len();
         self.with_conn(move |conn| {
             let tx = conn.transaction().map_err(db::db_error)?;
@@ -599,13 +627,21 @@ impl Database {
             let after = serde_json::json!({
                 "voucherCount": imported_count,
                 "numbers": imported_numbers,
+                "inferredGroupCount": inferred_group_count,
+                "inferredGroupMappings": inferred_group_mappings,
             });
-            let details = format!(
+            let mut details = format!(
                 "ورود گروهی {} سند از فایل «{}»، برگه «{}».",
                 db::to_fa_digits(imported_count),
                 file_name,
                 sheet_name
             );
+            if inferred_group_count > 0 {
+                details.push_str(&format!(
+                    " گروه {} حساب بدون کد گروه در فایل و بر اساس پیشوند کد حدس زده شد؛ جزئیات در فیلد پس از عملیات ثبت شده است.",
+                    db::to_fa_digits(inferred_group_count)
+                ));
+            }
             audit::log(
                 &tx,
                 "import",

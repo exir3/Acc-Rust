@@ -352,6 +352,7 @@ mod tests {
             date: "1405/01/02".to_string(),
             voucher_type: crate::vouchers::VOUCHER_TYPES[0].to_string(),
             description: "سند سالم".to_string(),
+            fiscal_year_id: None,
             lines: vec![
                 crate::vouchers::VoucherLineInput {
                     id: None,

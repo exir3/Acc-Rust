@@ -18,7 +18,7 @@ mod model;
 pub use accounts::{export_accounts, import_accounts, AccountExportResult, AccountImportResult};
 pub use export::export_voucher;
 pub use import::{import_voucher, import_vouchers};
-pub use model::{BulkVoucherImport, BulkVoucherPreview, ImportedAccount};
+pub use model::{BulkVoucherImport, BulkVoucherPreview, ImportedAccount, InferredGroupMapping};
 
 #[cfg(test)]
 mod tests;

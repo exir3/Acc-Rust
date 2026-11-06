@@ -8,7 +8,7 @@ let savedDescriptionEditIndex = -1;
 
 function readSavedDescriptions() {
   try {
-    const value = JSON.parse(localStorage.getItem(SAVED_DESCRIPTIONS_KEY) || '[]');
+    const value = JSON.parse(storageGet(SAVED_DESCRIPTIONS_KEY) || '[]');
     return Array.isArray(value)
       ? value.filter((item) => typeof item === 'string' && item.trim()).slice(0, 500)
       : [];
@@ -19,7 +19,9 @@ function readSavedDescriptions() {
 
 function writeSavedDescriptions(items) {
   try {
-    localStorage.setItem(SAVED_DESCRIPTIONS_KEY, JSON.stringify(items.slice(0, 500)));
+    if (!storageSet(SAVED_DESCRIPTIONS_KEY, JSON.stringify(items.slice(0, 500)))) {
+      throw new Error('storage unavailable');
+    }
     return true;
   } catch {
     toast('ذخیره شرح‌ها در حافظه محلی مرورگر ممکن نشد.', 'error');

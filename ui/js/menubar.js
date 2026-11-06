@@ -285,6 +285,15 @@ function openBulkVoucherImport() {
 
   function showReview(currentDialog, preview, message = '') {
     const conflicts = Number(preview.numberConflictCount) || 0;
+    const inferred = Number(preview.inferredGroupCount) || 0;
+    const inferredMappings = Array.isArray(preview.inferredGroupMappings) ? preview.inferredGroupMappings : [];
+    const inferredText = inferredMappings
+      .slice(0, 8)
+      .map((item) => `${toFa(item.accountCode)} (${esc(item.accountName)}) ← گروه ${toFa(item.groupCode)}`)
+      .join('، ');
+    const inferredMore = inferred > inferredMappings.slice(0, 8).length
+      ? ` و ${toFa(inferred - inferredMappings.slice(0, 8).length)} حساب دیگر`
+      : '';
     renderWizard(2, `${message ? `<div class="note" data-tone="danger" role="alert">${esc(message)}</div>` : ''}
       <div class="note">فایل «${esc(preview.fileName)}» از کاربرگ «${esc(preview.sheetName || '—')}» شناسایی شد. ستون‌ها، تاریخ‌ها، تراز اسناد و ساختار اولیه حساب‌ها بررسی شده‌اند. شرح و نوع سند در صورت وجود در فایل حفظ می‌شود.</div>
       <dl class="info-list">
@@ -294,8 +303,10 @@ function openBulkVoucherImport() {
         <div><dt>حساب‌های شناسایی‌شده</dt><dd>${toFa(preview.accountCount)}</dd></div>
         <div><dt>حساب‌های جدید</dt><dd>${toFa(preview.newAccountCount)}</dd></div>
         <div><dt>شماره‌های تکراری</dt><dd>${toFa(conflicts)}</dd></div>
+        <div><dt>گروه‌های حدس‌زده‌شده</dt><dd>${toFa(inferred)}</dd></div>
       </dl>
       ${conflicts ? `<div class="bulk-import-conflicts"><strong>شماره‌های موجود در برنامه</strong><span>${(preview.conflictingVoucherNumbers || []).map((number) => toFa(number)).join('، ') || 'جزئیات شماره‌ها در دسترس نیست'}</span></div>` : ''}
+      ${inferred ? `<div class="note" data-tone="warn" role="alert"><strong>گروه ${toFa(inferred)} حساب از روی پیشوند کد حدس زده شد.</strong><span>این حساب‌ها ستون «کد گروه» نداشتند و گروهشان بر اساس کدینگ پیش‌فرض برنامه تعیین شده است: ${inferredText}${inferredMore}. پیش از ثبت، صحت این تطبیق را بررسی کنید. این تصمیم در گزارش رویدادها (Audit) ثبت می‌شود.</span></div>` : ''}
       ${conflicts ? `<label class="bulk-import-renumber"><input id="bulkImportRenumber" type="checkbox"><span>برای ${toFa(conflicts)} سند دارای شماره‌ی تکراری، شماره‌ی آزاد جدید اختصاص بده</span></label>` : ''}`);
 
     currentDialog.setActions([

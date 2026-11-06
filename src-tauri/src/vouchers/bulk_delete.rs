@@ -38,6 +38,8 @@ struct BulkVoucherDeleteTarget {
     updated_at: String,
     is_temporary: bool,
     fiscal_year_status: String,
+    total_debit: i64,
+    total_credit: i64,
 }
 
 fn parse_bulk_delete_scope(
@@ -82,7 +84,9 @@ fn read_bulk_delete_targets(
 ) -> Result<Vec<BulkVoucherDeleteTarget>, String> {
     const COLUMNS: &str =
         "SELECT v.id, v.number, v.date, v.type, v.description, v.updated_at, v.is_temporary,
-                COALESCE(f.status, '')
+                COALESCE(f.status, ''),
+                COALESCE((SELECT SUM(l.debit) FROM voucher_lines l WHERE l.voucher_id = v.id), 0),
+                COALESCE((SELECT SUM(l.credit) FROM voucher_lines l WHERE l.voucher_id = v.id), 0)
            FROM vouchers v
            LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id";
     // Read one row beyond the cap so an oversized range is rejected without
@@ -98,6 +102,8 @@ fn read_bulk_delete_targets(
             updated_at: row.get(5)?,
             is_temporary: row.get::<_, i64>(6)? != 0,
             fiscal_year_status: row.get(7)?,
+            total_debit: row.get(8)?,
+            total_credit: row.get(9)?,
         })
     };
 
@@ -293,14 +299,27 @@ impl Database {
                 .map_err(|error| format!("ساخت پوشه پشتیبان ناموفق بود: {error}"))?;
             let stamp: String = self.with_conn(|conn| {
                 conn.query_row(
-                    "SELECT strftime('%Y%m%d_%H%M%S', 'now', 'localtime')",
+                    "SELECT strftime('%Y%m%d_%H%M%S_%f', 'now', 'localtime')",
                     [],
                     |row| row.get(0),
                 )
                 .map_err(db::db_error)
             })?;
-            let suffix = &token[..token.len().min(8)];
-            Some(directory.join(format!("pre_delete_{stamp}_{suffix}.sqlite3")))
+            // The plan token is already a fingerprint of the exact target set.
+            // Keep it in full and add a high-resolution timestamp, then never
+            // overwrite an existing backup if the same name somehow repeats.
+            let mut candidate = directory.join(format!("pre_delete_{stamp}_{token}.sqlite3"));
+            let mut attempt = 1;
+            while candidate.exists() {
+                if attempt > 100 {
+                    return Err(
+                        "نام یکتای فایل پشتیبان پیش از حذف پیدا نشد؛ حذف انجام نشد.".to_string()
+                    );
+                }
+                candidate = directory.join(format!("pre_delete_{stamp}_{token}_{attempt}.sqlite3"));
+                attempt += 1;
+            }
+            Some(candidate)
         } else {
             None
         };
@@ -338,18 +357,44 @@ impl Database {
             }
             let deleted_count = deletable.len();
             if deleted_count > 0 {
+                let manifest: Vec<serde_json::Value> = deletable
+                    .iter()
+                    .map(|target| {
+                        serde_json::json!({
+                            "id": target.id,
+                            "number": target.number,
+                            "date": target.date,
+                            "voucherType": target.voucher_type,
+                            "description": target.description,
+                            "isTemporary": target.is_temporary,
+                            "fiscalYearStatus": target.fiscal_year_status,
+                            "totalDebit": target.total_debit,
+                            "totalCredit": target.total_credit,
+                        })
+                    })
+                    .collect();
+                let after = serde_json::json!({
+                    "scope": scope.as_str(),
+                    "planToken": token.clone(),
+                    "withBackup": with_backup,
+                    "preDeleteBackupFile": backup_file.as_deref(),
+                    "vouchers": manifest,
+                });
+                let details = format!(
+                    "حذف گروهی {} سند در محدوده {}؛ شناسه طرح: {}؛ {} ردیف در مانیفست پس از عملیات ثبت شد.",
+                    db::to_fa_digits(deleted_count),
+                    scope.as_str(),
+                    &token[..token.len().min(16)],
+                    db::to_fa_digits(deleted_count)
+                );
                 audit::log(
                     &tx,
                     "delete",
                     "voucher",
                     None,
                     None,
-                    None,
-                    &format!(
-                        "حذف گروهی {} سند در محدوده {}.",
-                        db::to_fa_digits(deleted_count),
-                        scope.as_str()
-                    ),
+                    Some(&after.to_string()),
+                    &details,
                 )?;
             }
             let timestamp = local_timestamp(&tx)?;

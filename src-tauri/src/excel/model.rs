@@ -20,6 +20,19 @@ pub struct ImportedAccount {
     pub level: i64,
     pub nature: String,
     pub nature_is_explicit: bool,
+    /// True when the workbook had no group-code column/value and the group was
+    /// derived from the account-code prefix. The preview surfaces these rows
+    /// and the import audit records them, so a guessed mapping is never silent.
+    pub group_is_inferred: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InferredGroupMapping {
+    pub account_code: String,
+    pub account_name: String,
+    pub level: i64,
+    pub group_code: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,6 +46,8 @@ pub struct BulkVoucherPreview {
     pub new_account_count: usize,
     pub number_conflict_count: usize,
     pub conflicting_voucher_numbers: Vec<i64>,
+    pub inferred_group_count: usize,
+    pub inferred_group_mappings: Vec<InferredGroupMapping>,
 }
 
 #[derive(Default)]

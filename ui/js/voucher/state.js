@@ -6,6 +6,7 @@ const state = {
   accounts: [],
   accountByCode: new Map(),
   settings: { companyName: '', fiscalYear: '', today: '' },
+  activeFiscalYear: null,
   voucher: null,
   makePermanent: false,
   overflowVoucherLines: 0,

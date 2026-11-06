@@ -135,11 +135,32 @@ function bindChrome() {
     void eventApi.listen('accounts-changed', () => {
       window.dispatchEvent(new Event('accounts-changed'));
     }).catch(() => {});
+    // Keep the list and report windows on the same fiscal year as the window
+    // where the user changed it, instead of showing another period's filters.
+    void eventApi.listen('fiscal-year-changed', (event) => {
+      window.dispatchEvent(new CustomEvent('fiscal-year-changed', {
+        detail: event?.payload ?? null,
+      }));
+    }).catch(() => {});
   }
+
+  const voucherPages = new Set(['vouchers', 'journal', 'ledger', 'trial', 'income', 'balance']);
+  window.addEventListener('fiscal-year-changed', (event) => {
+    const year = event.detail ?? null;
+    const previousId = state.activeFiscalYear?.id ?? null;
+    state.activeFiscalYear = year;
+    if (state.settings) updateBranding(state.settings);
+    if ((year?.id ?? null) !== previousId) {
+      state.filters = defaultFilters();
+      state.listOffsets.vouchers = 0;
+      state.listOffsets.journal = 0;
+      state.listOffsets.ledger = 0;
+      if (voucherPages.has(state.page)) void navigate(state.page, { force: true });
+    }
+  });
 
   // The bulk-delete form runs in its own window; when it finishes, any open
   // voucher list or voucher-derived report should reload its data.
-  const voucherPages = new Set(['vouchers', 'journal', 'ledger', 'trial', 'income', 'balance']);
   window.addEventListener('vouchers-changed', () => {
     state.listOffsets.vouchers = 0;
     state.listOffsets.journal = 0;

@@ -257,6 +257,9 @@ pub(crate) fn imported_account_nature(
     }
 }
 
+// The import pipeline passes each parsed column explicitly; grouping them into
+// a struct would only move the same fields behind another name.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn add_imported_account(
     accounts: &mut BTreeMap<String, ImportedAccount>,
     code: String,
@@ -266,6 +269,7 @@ pub(crate) fn add_imported_account(
     level: i64,
     nature: String,
     nature_is_explicit: bool,
+    group_is_inferred: bool,
 ) -> Result<(), String> {
     if code.is_empty() {
         return Err("کد حساب در فایل اکسل خالی است.".to_string());
@@ -285,6 +289,7 @@ pub(crate) fn add_imported_account(
         level,
         nature,
         nature_is_explicit,
+        group_is_inferred,
     };
     if let Some(existing) = accounts.get_mut(&code) {
         if existing.parent_code != account.parent_code
@@ -295,6 +300,11 @@ pub(crate) fn add_imported_account(
                 "کد حساب {} در فایل با ساختار (حساب بالاتر، سطح یا گروه) متفاوت آمده است.",
                 db::to_fa_digits(code)
             ));
+        }
+        // A row that supplies an explicit group code proves the mapping; once
+        // any row is explicit the account is no longer reported as inferred.
+        if !account.group_is_inferred {
+            existing.group_is_inferred = false;
         }
         // Excel often merges repeated account-title cells vertically. A blank
         // repeated title inherits the first value; a different title is an error.
@@ -513,21 +523,21 @@ pub(crate) fn parse_bulk_voucher_sheet(
         }
 
         let raw_group_code = cell_text(&read(row, columns.group_code));
-        let group_code = if raw_group_code.trim().is_empty() {
+        let (group_code, group_is_inferred) = if raw_group_code.trim().is_empty() {
             // A vertically merged group-code cell is populated only on the
             // first row. Reuse the group already assigned to this general
             // account before falling back to the built-in prefix mapping.
             if let Some(existing) = accounts.get(&general_code) {
-                existing.group_code.clone()
+                (existing.group_code.clone(), existing.group_is_inferred)
             } else {
-                imported_group_code(&general_code)?.to_string()
+                (imported_group_code(&general_code)?.to_string(), true)
             }
         } else {
             let parsed = parse_code(&raw_group_code, "کد گروه")?;
             if parsed.len() > 50 {
                 return Err("کد گروه در فایل اکسل نمی‌تواند بیشتر از ۵۰ رقم باشد.".to_string());
             }
-            parsed
+            (parsed, false)
         };
         let (general_nature, general_nature_is_explicit) = imported_account_nature(
             &cell_text(&read(row, columns.general_nature)),
@@ -548,6 +558,7 @@ pub(crate) fn parse_bulk_voucher_sheet(
             1,
             general_nature,
             general_nature_is_explicit,
+            group_is_inferred,
         )?;
         add_imported_account(
             &mut accounts,
@@ -558,6 +569,7 @@ pub(crate) fn parse_bulk_voucher_sheet(
             2,
             subsidiary_nature,
             subsidiary_nature_is_explicit,
+            group_is_inferred,
         )?;
         if accounts.len() > MAX_ACCOUNT_IMPORT_ROWS {
             return Err(format!(
@@ -581,6 +593,7 @@ pub(crate) fn parse_bulk_voucher_sheet(
                 3,
                 detail1_nature,
                 detail1_nature_is_explicit,
+                group_is_inferred,
             )?;
             Some(detail1_code)
         } else {
@@ -662,6 +675,7 @@ pub(crate) fn parse_bulk_voucher_sheet(
             date: date.clone(),
             voucher_type: crate::vouchers::VOUCHER_TYPES[0].to_string(),
             description: String::new(),
+            fiscal_year_id: None,
             lines: Vec::new(),
         });
         if voucher.date != date {

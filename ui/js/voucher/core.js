@@ -44,6 +44,60 @@ function toAsciiDigits(value) {
 
 const digitsOnly = (value) => toAsciiDigits(value).replace(/[^\d]/g, '');
 
+/* The fiscal year chosen at the startup gate is shared through localStorage,
+   the same way the main window remembers it. The voucher form uses it to pick
+   a sensible default date and to refuse a new voucher in a closed year. */
+const ACTIVE_FISCAL_YEAR_KEY = 'hesabdari-active-fiscal-year';
+
+// localStorage may be disabled or full; these helpers keep the form working
+// without a remembered value instead of failing at startup.
+function storageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeYearDate(value) {
+  return toAsciiDigits(String(value || '')).replace(/-/g, '/');
+}
+
+function readActiveFiscalYear() {
+  try {
+    const raw = storageGet(`${ACTIVE_FISCAL_YEAR_KEY}-data`);
+    if (!raw) return null;
+    const year = JSON.parse(raw);
+    if (year && Number.isFinite(Number(year.id))) return year;
+  } catch {
+    // Ignore malformed persisted selection.
+  }
+  return null;
+}
+
+function refreshActiveFiscalYear() {
+  state.activeFiscalYear = readActiveFiscalYear();
+  return state.activeFiscalYear;
+}
+
+function dateInFiscalYear(date, year) {
+  if (!year) return true;
+  const value = normalizeYearDate(date);
+  const start = normalizeYearDate(year.startDate);
+  const end = normalizeYearDate(year.endDate);
+  if (!value || !start || !end) return true;
+  return value >= start && value <= end;
+}
+
 /* Search should not care about digit script, Arabic yeh/kaf or ZWNJ. */
 function normalizeSearch(value) {
   return toAsciiDigits(String(value || ''))

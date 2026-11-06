@@ -26,6 +26,35 @@ if (IS_VOUCHER_LIST_POPUP && document.body) document.body.classList.add('is-vouc
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+// localStorage can be unavailable (disabled storage, quota, private mode).
+// Reading and writing through these helpers degrades to "no persisted value"
+// instead of breaking the whole window at startup.
+function storageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const FA_DIGITS = '۰۱۲۳۴۵۶۷۸۹';
 const AR_DIGITS = '٠١٢٣٤٥٦٧٨٩';
 const APP_VERSION = '۵.۰';
@@ -40,7 +69,7 @@ const ACTIVE_FISCAL_YEAR_KEY = 'hesabdari-active-fiscal-year';
 
 function readActiveFiscalYear() {
   try {
-    const raw = localStorage.getItem(`${ACTIVE_FISCAL_YEAR_KEY}-data`);
+    const raw = storageGet(`${ACTIVE_FISCAL_YEAR_KEY}-data`);
     if (!raw) return null;
     const year = JSON.parse(raw);
     if (year && Number.isFinite(Number(year.id))) return year;
@@ -55,15 +84,23 @@ function readActiveFiscalYear() {
 function setActiveFiscalYear(year) {
   state.activeFiscalYear = year || null;
   if (year) {
-    localStorage.setItem(ACTIVE_FISCAL_YEAR_KEY, String(year.id));
-    localStorage.setItem(`${ACTIVE_FISCAL_YEAR_KEY}-title`, year.title || '');
-    localStorage.setItem(`${ACTIVE_FISCAL_YEAR_KEY}-data`, JSON.stringify(year));
+    storageSet(ACTIVE_FISCAL_YEAR_KEY, String(year.id));
+    storageSet(`${ACTIVE_FISCAL_YEAR_KEY}-title`, year.title || '');
+    storageSet(`${ACTIVE_FISCAL_YEAR_KEY}-data`, JSON.stringify(year));
   } else {
-    localStorage.removeItem(ACTIVE_FISCAL_YEAR_KEY);
-    localStorage.removeItem(`${ACTIVE_FISCAL_YEAR_KEY}-title`);
-    localStorage.removeItem(`${ACTIVE_FISCAL_YEAR_KEY}-data`);
+    storageRemove(ACTIVE_FISCAL_YEAR_KEY);
+    storageRemove(`${ACTIVE_FISCAL_YEAR_KEY}-title`);
+    storageRemove(`${ACTIVE_FISCAL_YEAR_KEY}-data`);
   }
   if (state.settings) updateBranding(state.settings);
+  // Other windows (voucher form, list, reports) keep their own in-memory
+  // selection. Tell them about the change instead of relying on them noticing
+  // a stale localStorage value when the user next saves.
+  try {
+    void window.__TAURI__?.event?.emit?.('fiscal-year-changed', year || null);
+  } catch {
+    // The event API is optional (tests and browser previews).
+  }
 }
 
 const state = {
@@ -162,7 +199,7 @@ const MENU_BAR = [
     label: 'تنظیمات',
     size: 'compact',
     items: [
-      { label: 'انتخاب شرکت و سال مالی', icon: '🏢', command: 'company-selector' },
+      { label: 'انتخاب سال مالی', icon: '🏢', command: 'company-selector' },
       { label: 'تنظیمات برنامه', icon: '⚙️', page: 'settings' },
       { label: 'تنظیمات گزارش‌ها', icon: '🖨️' },
       { label: 'تغییر تصویر پس‌زمینه', icon: '🖼️', command: 'choose-wallpaper' },

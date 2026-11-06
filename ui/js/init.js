@@ -19,7 +19,7 @@ async function init() {
     await loadSettings();
     state.filters = defaultFilters();
     state.ready = true;
-    applyWallpaper(localStorage.getItem('hesabdari-workspace-wallpaper'));
+    applyWallpaper(storageGet('hesabdari-workspace-wallpaper'));
 
     if (IS_TRIAL_POPUP || IS_VOUCHER_LIST_POPUP) {
       revealPopupsWithoutSelector();

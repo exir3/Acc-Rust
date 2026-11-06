@@ -137,6 +137,12 @@ pub struct VoucherInput {
     pub voucher_type: String,
     #[serde(default)]
     pub description: String,
+    /// Fiscal year selected in the UI when the voucher is created or moved.
+    /// `None` keeps the legacy date-based lookup used by bulk import and older
+    /// callers. When present, the backend still validates the date against the
+    /// year's range and rejects a closed or finalized year.
+    #[serde(default)]
+    pub fiscal_year_id: Option<i64>,
     #[serde(default)]
     pub lines: Vec<VoucherLineInput>,
 }

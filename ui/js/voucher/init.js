@@ -40,6 +40,9 @@ async function init() {
       await TAURI.event.listen('database-restored', () => {
         handleDatabaseRestored().catch((error) => toast(errorText(error), 'error'));
       });
+      await TAURI.event.listen('fiscal-year-changed', (event) => {
+        handleFiscalYearChanged(event?.payload ?? null);
+      });
     }
     await Promise.all([loadSettings(), loadAccounts(), refreshNextNumber()]);
     const requested = await invoke('take_voucher_request');

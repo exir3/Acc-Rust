@@ -230,6 +230,8 @@ function updateLedger(row) {
 function refreshFormState() {
   renumberRows();
   const locked = isLockedVoucher();
+  const activeYear = state.activeFiscalYear;
+  const yearBlocked = !locked && !state.voucher && !!activeYear && activeYear.status !== 'open';
   $('.voucher-form')?.classList.toggle('is-locked', locked);
   gridRows().forEach((row) => {
     row.querySelectorAll('.vf-code-input, .vf-detail1-input, .vf-desc-input, .vf-debit-input, .vf-credit-input').forEach((input) => {
@@ -264,9 +266,20 @@ function refreshFormState() {
   }
   const lockedBanner = $('#vfLockedBanner');
   if (lockedBanner) lockedBanner.hidden = !locked;
+  const yearBanner = $('#vfFiscalYearBanner');
+  if (yearBanner) {
+    yearBanner.hidden = !yearBlocked;
+    if (yearBlocked) {
+      const label = activeYear.status === 'final' ? 'نهایی شده' : 'بسته';
+      const message = yearBanner.querySelector('[data-fiscal-year-message]');
+      if (message) {
+        message.textContent = `سال مالی «${activeYear.title || ''}» ${label} است؛ سند جدید در این دوره قابل ثبت نیست. برای ثبت، از «انتخاب سال مالی» یک سال باز انتخاب کنید.`;
+      }
+    }
+  }
   const mutating = ['save', 'add-row', 'repeat-row', 'delete-row', 'transfer-document', 'transfer-move', 'excel-import', 'delete-voucher'];
   $$('[data-action]').forEach((button) => {
-    if (mutating.includes(button.dataset.action)) button.disabled = locked || state.busy;
+    if (mutating.includes(button.dataset.action)) button.disabled = locked || yearBlocked || state.busy;
   });
   updateTotals();
   updateLedger(state.activeRow && state.activeRow.isConnected ? state.activeRow : null);

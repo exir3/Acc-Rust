@@ -36,9 +36,15 @@ function chooseWallpaper(file) {
     canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     bitmap.close();
     const dataUrl = canvas.toDataURL('image/webp', 0.82);
-    localStorage.setItem('hesabdari-workspace-wallpaper', dataUrl);
+    const stored = storageSet('hesabdari-workspace-wallpaper', dataUrl);
     applyWallpaper(dataUrl);
-    setStatus('تصویر پس‌زمینه ذخیره شد.', 'ok');
+    if (stored) {
+      setStatus('تصویر پس‌زمینه ذخیره شد.', 'ok');
+    } else {
+      // The image still applies for this run; only persistence failed
+      // (usually because localStorage is unavailable or full).
+      toast('تصویر پس‌زمینه اعمال شد، اما ذخیره دائمی آن ممکن نشد؛ پس از بستن برنامه حفظ نمی‌شود.', 'warning');
+    }
   }).catch((error) => {
     toast(`بارگذاری تصویر ناموفق بود: ${errorText(error)}`, 'error');
   });
