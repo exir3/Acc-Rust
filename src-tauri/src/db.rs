@@ -21,6 +21,7 @@ mod connection;
 mod fiscal_years;
 mod legacy;
 mod model;
+mod portable;
 mod schema;
 mod settings;
 mod validation;
@@ -35,6 +36,7 @@ pub use model::{
     LegacyLevel4ResolutionPreview, Limits, NewAccount, Settings, ACCOUNT_GROUP_SECTIONS,
     ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES, MAX_ACCOUNT_LEVEL,
 };
+pub(crate) use portable::{is_encrypted_backup, validate_portable_password, PORTABLE_EXTENSION};
 
 pub(crate) use fiscal_years::{ensure_open_period, ensure_year_accepts_date};
 pub(crate) use legacy::legacy_migration_backup_path;

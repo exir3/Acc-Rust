@@ -125,10 +125,6 @@
     ]);
   }
 
-  function isDirty() {
-    return isEditing() && snapshot() !== state.initial;
-  }
-
   /* ── Normalisation ───────────────────────────────────────────── */
 
   function normalizeAccount(raw) {
@@ -351,6 +347,8 @@
       + '<span>بارگذاری مجدد</span></button>',
     );
 
+    // All fragments above escape their dynamic values.
+    // eslint-disable-next-line no-unsanitized/property -- static navigation fragments with escaped labels
     nav.innerHTML = parts.join('');
   }
 
@@ -388,6 +386,7 @@
       return;
     }
 
+    // eslint-disable-next-line no-unsanitized/property -- every account field below is escaped
     body.innerHTML = visible.map((account, index) => {
       const selected = account.id === state.selectedId;
       const classes = ['ad-row'];
@@ -446,6 +445,7 @@
   function fillGroupOptions() {
     const groupSelect = $('#adGroup');
     if (!groupSelect) return;
+    // eslint-disable-next-line no-unsanitized/property -- option values and labels are escaped
     groupSelect.innerHTML = state.groups.map((group) => (
       `<option value="${esc(group.code)}">${esc(toFaDigits(group.code))} - ${esc(group.name)}</option>`
     )).join('');
@@ -942,6 +942,7 @@
 
     const listEl = $('#adResultList');
     if (Array.isArray(list) && list.length) {
+      // eslint-disable-next-line no-unsanitized/property -- each list item is escaped
       listEl.innerHTML = list.map((item) => (
         `<div class="ad-msgbox-list-item">${esc(item)}</div>`
       )).join('');

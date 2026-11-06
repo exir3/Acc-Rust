@@ -75,16 +75,37 @@ impl Database {
     }
 }
 
+/// Test-only data directory override used by the real Tauri smoke test.
+///
+/// Only debug builds honor it, so a shipped release can never be redirected by
+/// an environment variable. The smoke test must never read or write the real
+/// user database.
+fn data_dir_override() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let value = std::env::var_os("HESABDARI_SMOKE_DATA_DIR")?;
+    if value.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    path.is_absolute().then_some(path)
+}
+
 pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
     let executable_dir = std::env::current_exe()
         .map_err(|e| format!("مسیر فایل اجرایی برنامه در دسترس نیست: {e}"))?
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "پوشه فایل اجرایی برنامه پیدا نشد.".to_string())?;
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("مسیر داده‌های برنامه در دسترس نیست: {error}"))?;
+    let override_dir = data_dir_override();
+    let data_dir = match &override_dir {
+        Some(dir) => dir.clone(),
+        None => app
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("مسیر داده‌های برنامه در دسترس نیست: {error}"))?,
+    };
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("ساخت پوشه پایگاه داده ناموفق بود: {e}"))?;
 
@@ -92,7 +113,11 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
 
     // Preserve databases created beside older executable builds while moving
     // the active database to the writable per-user application data directory.
-    migrate_legacy_database(&data_dir, &path, Some(&data_dir), Some(&executable_dir))?;
+    // The smoke-test override starts from an empty folder on purpose, so it
+    // must not import anything from the developer machine.
+    if override_dir.is_none() {
+        migrate_legacy_database(&data_dir, &path, Some(&data_dir), Some(&executable_dir))?;
+    }
 
     let mut connection =
         Connection::open(&path).map_err(|e| format!("باز کردن پایگاه داده ناموفق بود: {e}"))?;

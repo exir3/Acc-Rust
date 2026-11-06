@@ -71,13 +71,17 @@ test('backup action reports the saved backup path without leaving the selector',
   await expect(page.locator('#companySelector')).toBeVisible();
 });
 
-test('restore asks for confirmation and reports the safety copy', async ({ page }) => {
+test('restore asks for the backup password and reports the safety copy', async ({ page }) => {
   await openMainWindow(page);
 
   await page.locator('#csfRestore').click();
   await expect(page.locator('#modal')).toBeVisible();
   await expect(page.locator('#dialogTitle')).toHaveText('بازیابی پشتیبان');
   await page.locator('#dialogFoot').getByRole('button', { name: 'بازیابی' }).click();
+
+  await expect(page.locator('#dialogTitle')).toHaveText('رمز پشتیبان');
+  await page.locator('#backupPassword').fill('correct horse battery');
+  await page.locator('#dialogFoot').getByRole('button', { name: 'ادامه' }).click();
 
   await expect(page.locator('#csfNotice')).toContainText('/e2e/backups/hesabdari-safety.db');
   await expect(page.locator('#companySelector')).toBeVisible();

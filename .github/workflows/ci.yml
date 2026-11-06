@@ -37,6 +37,9 @@ jobs:
       - name: Check JavaScript syntax
         run: npm run check:js
 
+      - name: Lint JavaScript
+        run: npm run lint:js
+
       - name: Run frontend unit tests
         run: npm test
 
@@ -134,6 +137,12 @@ jobs:
 
       - name: Build Windows executable (no bundle)
         run: npx tauri build --no-bundle
+
+      - name: Build debug executable for smoke test
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      - name: Smoke test real Windows/Tauri/WebView2 app
+        run: node scripts/smoke-windows.mjs --exe src-tauri/target/debug/Hesabdari.exe
 
       - name: Sign application executable (optional)
         if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}

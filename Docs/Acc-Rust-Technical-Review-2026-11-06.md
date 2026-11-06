@@ -615,18 +615,18 @@ Acc-Rust از نظر تفکیک مسئولیت‌ها معماری قابل قب
 
 پیش از انتشار نسخه عملیاتی بعدی، پیشنهاد می‌شود این چک‌لیست تکمیل شود:
 
-- [ ] `cargo audit` بدون آسیب‌پذیری High/Critical موفق است.
-- [ ] `calamine` به نسخه اصلاح‌شده ارتقا یافته و فایل‌های خراب Excel با خطای کنترل‌شده رد می‌شوند.
-- [ ] `tokio` آسیب‌پذیر از dependency graph حذف شده است.
-- [ ] هر نوع snapshot ویژه با مدرک خارج از فایل احراز اصالت می‌شود؛ marker به‌تنهایی اعتماد ایجاد نمی‌کند.
-- [ ] import حساب فقط همان نسخه فایلی را commit می‌کند که کاربر preview و تأیید کرده است.
-- [ ] نگاشت حدسی گروه حساب قابل اصلاح و تأیید صریح است.
-- [ ] لغو import قبل از commit به‌صورت قطعی rollback می‌کند و UI نتیجه را درست اعلام می‌کند.
-- [ ] بستن dialog نمی‌تواند عملیات در حال اجرا را از دید کاربر پنهان کند.
-- [ ] dataset مرجع صورت‌های مالی و تراز آزمایشی در CI تست می‌شود.
-- [ ] Windows smoke test با Tauri و SQLite واقعی موفق است.
+- [x] `cargo audit` بدون آسیب‌پذیری High/Critical موفق است.
+- [x] `calamine` به نسخه اصلاح‌شده ارتقا یافته و فایل‌های خراب Excel با خطای کنترل‌شده رد می‌شوند.
+- [x] `tokio` آسیب‌پذیر از dependency graph حذف شده است.
+- [x] هر نوع snapshot ویژه با مدرک خارج از فایل احراز اصالت می‌شود؛ marker به‌تنهایی اعتماد ایجاد نمی‌کند.
+- [x] import حساب فقط همان نسخه فایلی را commit می‌کند که کاربر preview و تأیید کرده است.
+- [x] نگاشت حدسی گروه حساب قابل اصلاح و تأیید صریح است.
+- [x] لغو import قبل از commit به‌صورت قطعی rollback می‌کند و UI نتیجه را درست اعلام می‌کند.
+- [x] بستن dialog نمی‌تواند عملیات در حال اجرا را از دید کاربر پنهان کند.
+- [x] dataset مرجع صورت‌های مالی و تراز آزمایشی در CI تست می‌شود.
+- [x] Windows smoke test با Tauri و SQLite واقعی موفق است.
 - [ ] executable و installer رسمی هر دو امضای معتبر دارند و CI آن را verify می‌کند.
-- [ ] backup محرمانه بر اساس سیاست مشخص رمزنگاری یا در مسیر ACL-protected نگهداری می‌شود.
+- [x] backup محرمانه بر اساس سیاست مشخص رمزنگاری یا در مسیر ACL-protected نگهداری می‌شود.
 - [ ] README و گزارش فنی به آخرین کامیت و آخرین run موفق CI اشاره می‌کنند.
 
 ---
@@ -669,7 +669,7 @@ Acc-Rust پایه معماری مناسبی برای یک نرم‌افزار ح
 | Finding | وضعیت | اصلاح اعمال‌شده |
 |---|---|---|
 | P1-01 — `calamine 0.37.0` | Fixed | ارتقا به `calamine 0.38.0` در `src-tauri/Cargo.toml` و `Cargo.lock`. |
-| P1-02 — `tokio 1.54.0` | Fixed | ارتقا به `tokio 1.54.1`؛ `cargo tree -i tokio@1.54.0` تأیید کرد نسخهٔ قبلی در گراف باقی نمانده است. `cargo audit` در CI اجرا می‌شود. |
+| P1-02 — `tokio 1.54.0` | Fixed | ارتقا به `tokio 1.54.1`؛ `cargo tree -i tokio@1.54.0` تأیید کرد نسخهٔ قبلی در گراف باقی نمانده است. `cargo audit --file src-tauri/Cargo.lock` روی ۴۶۶ وابستگی هیچ آسیب‌پذیری فعالی گزارش نکرد؛ فقط دو هشدار `unmaintained`/`unsound` مربوط به زنجیرهٔ GTK/Linux (Tauri) باقی است که در build ویندوز استفاده نمی‌شود. |
 | P1-03 — نگاشت حدسی گروه حساب | Fixed | پیش‌نمایش جدول قابل ویرایش «گروه پیشنهادی/علت/گروه نهایی» دارد؛ تأیید صریح همهٔ نگاشت‌ها الزامی است؛ تغییر گروه یک حساب کل به فرزندان حدسی همان شاخه منتقل می‌شود؛ audit منبع `file`/`inferred`/`manual` را ثبت می‌کند. |
 | P2-01 — marker بدون احراز اصالت | Fixed | snapshotهای داخلی manifest بیرونی `*.manifest.json` با HMAC-SHA256 دارند؛ کلید در `snapshot-integrity.key` خارج از backup نگهداری می‌شود؛ marker تنها metadata است و restore فایل انتخاب‌شده همیشه سخت‌گیرانه است؛ hash فایل با manifest تطبیق داده می‌شود. |
 | P2-02 — preview حساب بدون اتصال به نسخه فایل | Fixed | preview توکن تصادفی ۱۵ دقیقه‌ای، مسیر canonical، SHA-256 و plan پارس‌شده را در `AppState` نگه می‌دارد؛ فرمان import فقط token و mode را می‌پذیرد و hash/مسیر/انقضا را دوباره بررسی می‌کند؛ mode نامعتبر رد می‌شود. |
@@ -677,15 +677,19 @@ Acc-Rust پایه معماری مناسبی برای یک نرم‌افزار ح
 | P2-04 — بستن dialog در حین پردازش | Fixed | `canClose: () => !busy` در wizard ورود اسناد؛ دکمهٔ بستن/Escape تا پایان parse/commit مسدود است؛ وضعیت «در حال لغو…» و پیام تکمیل‌شدن پیش از لغو نمایش داده می‌شود. |
 | P2-08 — ناسازگاری سیاست امضا با CI | Fixed | ساخت دو مرحله‌ای `build --no-bundle` → امضای exe → `bundle --no-binary-patching` → امضای نصاب؛ `signtool verify /pa /v` برای هر دو؛ artifact با برچسب signed/unsigned؛ `release-metadata.json` شامل hash و اطلاعات گواهی؛ نبود گواهی در release رسمی job را متوقف می‌کند. |
 | P3-01 — مستندات CI | Partially Fixed | README چهار job واقعی و وابستگی `desktop-build` به `security-audit` را شرح می‌دهد؛ این پیوست وضعیت findingها را ثبت می‌کند. |
-| P2-05 — Playwright mock | Open | نیازمند smoke test واقعی Windows/Tauri/SQLite است. |
-| P2-06 — داده مرجع گزارش‌ها | Open | نیازمند dataset تأییدشدهٔ حسابداری است. |
-| P2-07 — رمزنگاری backup | Open | سیاست ACL و مسیر محافظت‌شده مستند است؛ رمزنگاری فایل قابل انتقال هنوز پیاده‌سازی نشده است. |
-| P3-02 — lint/static analysis فرانت‌اند | Open | `check:js` همچنان بررسی نحوی است. |
+| P2-05 — Playwright mock | Partially Fixed | آزمون‌های mock حفظ شدند و یک smoke test واقعی Windows/Tauri/WebView2 با `scripts/smoke-windows.mjs` اضافه شد. این تست برنامهٔ واقعی را با build debug اجرا می‌کند، زیرفرایندهای `msedgewebview2.exe` را تأیید می‌کند و انتظار دارد SQLite واقعی با هدر معتبر در پوشهٔ موقت ساخته شود. داده‌ها با `HESABDARI_SMOKE_DATA_DIR` ایزوله می‌شوند و این override فقط در debug فعال است؛ بنابراین release هرگز دیتابیس کاربر را باز نمی‌کند. پوشهٔ موقت پاک می‌شود. تعامل کامل UI (ساخت سند، import، حذف گروهی، گزارش، backup/restore از طریق WebView2) هنوز به WebDriver نیاز دارد و پوشش داده نشده است. |
+| P2-06 — داده مرجع گزارش‌ها | Needs Validation | مجموعه دادهٔ مرجع درون‌کدی با ۱۴ بخش صورت‌های مالی، گروه‌های دوگانهٔ `10`/`11`، ماهیت بدهکار/بستانکار/دوگانه، اسناد افتتاحیه/موقت/اختتامیه، گزارش کاری و رسمی، تفصیلی `102001001`، گردش چنددوره‌ای، مرز سال مالی و سال کبیسه ساخته شد؛ خروجی‌ها در `src-tauri/src/vouchers/reports/fixtures/report_reference.json` ثابت شده و تست `financial_reports_match_the_reference_fixture` آن‌ها را دقیق مقایسه می‌کند. صحت فنی با محاسبهٔ دستی و CI تضمین می‌شود، اما تأیید رسمی حسابدار/حسابرس هنوز لازم است (در `fixtures/README.md` ثبت شده). |
+| P2-07 — رمزنگاری backup | Fixed | پشتیبان قابل انتقال `.hacc` با AES-256-GCM و کلید مشتق‌شده با Argon2id اضافه شد؛ هدر نسخه‌دار شامل الگوریتم، پارامترهای KDF، salt/nonce، نسخهٔ schema و SHA-256 متن ساده است و به‌عنوان AAD احراز می‌شود. رمز عبور حداقل ۸ نویسه است، کلید خام ذخیره نمی‌شود، متن ساده فقط در فایل موقت کوتاه‌عمر در پوشهٔ داده ساخته و در همهٔ مسیرها پاک می‌شود. بازیابی با توکن کوتاه‌عمر و hash فایل انتخاب‌شده به فایل مقید است و پیش از جایگزینی DB، رمز/ساختار/طول/tag/hash را بررسی می‌کند. پشتیبان‌های عادی `.sqlite3`/`.db` همچنان backward-compatible هستند. |
+| P3-02 — lint/static analysis فرانت‌اند | Fixed | `eslint.config.js` با flat config، `@eslint/js` recommended، `eslint-plugin-promise`، `eslint-plugin-no-unsanitized` و قواعد سخت‌گیرانهٔ core اضافه شد؛ `no-undef` با فهرست ثبت‌شدهٔ globals در `eslint.ui-globals.js` فعال است؛ ۵۸ فایل با ۰ مشکل lint می‌شوند و مرحلهٔ `Lint JavaScript` در CI پس از `check:js` اجرا می‌شود. موارد واقعی (متغیر بلااستفاده، promise رهاشده، assignment بی‌اثر) اصلاح و ۲۰ sink امن DOM با `eslint-disable-next-line` مستند شدند. |
 
-**آزمون‌های اعتبارسنجی:** روی همین تغییرات `cargo fmt --check`، `cargo clippy --all-targets --all-features` (بدون خطا؛ فقط هشدارهای از قبل موجود)، `cargo test` (۱۴۶ تست)، `npm run check:js` (۴۵ فایل)، `npm test` (۱۵ تست) و `npm run test:e2e` (۱۸ تست) با موفقیت اجرا شدند. CI همین مجموعه را روی کامیت نهایی تکرار می‌کند.
+**آزمون‌های اعتبارسنجی:** روی همین تغییرات `cargo fmt --check`، `cargo clippy --all-targets --all-features` (بدون خطا؛ فقط هشدارهای از قبل موجود)، `cargo test` (۱۴۸ تست موفق و ۱ تست کمکی ignored)، `npm run lint:js` (۵۸ فایل، ۰ مشکل)، `npm run check:js` (۴۵ فایل)، `npm test` (۱۵ تست)، `npm run test:e2e` (۱۸ تست) و `npm run test:smoke:windows` با موفقیت اجرا شدند. smoke test واقعی روی build debug محلی اجرا شد و برنامهٔ Tauri بالا آمد، ۶ زیرفرایند WebView2 ایجاد شد و SQLite با هدر معتبر در پوشهٔ موقت ساخته شد؛ دیتابیس واقعی کاربر دست‌نخورده ماند. `cargo audit --file src-tauri/Cargo.lock` هیچ آسیب‌پذیری فعالی پیدا نکرد. مسیر واقعی P2-08 نیز محلی اجرا شد: `npx tauri build --no-bundle` فایل `Hesabdari.exe` را ساخت و `npx tauri bundle --bundles nsis --no-binary-patching` نصاب NSIS را تولید کرد؛ هر دو artifact بدون گواهی `NotSigned` بودند و همین وضعیت در نام‌گذاری unsigned منتشر می‌شود. CI همین مجموعه را روی کامیت نهایی تکرار می‌کند.
 
 **تست‌های regression افزوده‌شده:**
 - P2-01: `bulk_delete_backup_preserves_and_restores_legacy_unbalanced_vouchers` اثبات می‌کند کپی snapshot بدون manifest امضاشده، با وجود marker داخلی، مسیر سخت‌گیرانه را طی می‌کند و restore شکست می‌خورد.
 - P2-02: `account_import_rejects_a_file_changed_after_preview` تغییر فایل پس از preview را رد می‌کند و هیچ حسابی ثبت نمی‌شود.
 - P2-03: `bulk_import_cancellation_at_the_final_check_rolls_back_the_whole_batch` لغو در آخرین بررسی پیش از commit را آزمون می‌کند و نبود سند، حساب و import batch را تأیید می‌کند.
 - P1-03: `bulk_import_applies_a_confirmed_override_to_the_whole_inferred_branch` و `bulk_import_rejects_an_override_for_a_group_read_from_the_file` انتقال گروه به کل شاخه، ثبت audit با منبع `manual` و رد بازنویسی گروه صریح فایل را پوشش می‌دهند.
+- P2-06: `financial_reports_match_the_reference_fixture` خروجی تراز آزمایشی (کاری/رسمی، کل دوره و ماه)، صورت سود و زیان و ترازنامه (پیش و پس از اختتامیه) و سناریوی سال کبیسه را دقیقاً با fixture ثابت مقایسه می‌کند؛ helper `print_reference_snapshot` برای بازتولید عمدی خروجی `#[ignore]` است.
+- P3-02: `npm run lint:js` در CI اجرا می‌شود و قواعد `no-undef`، `no-unused-vars`، `no-unsanitized`، promise و core rules را روی UI، scripts و tests اعمال می‌کند.
+- P2-07: `portable_backup_is_encrypted_and_rejects_wrong_password_and_tampering` اثبات می‌کند فایل `.hacc` هدر SQLite را در متن ساده ندارد، رمز نادرست و یک بایت دستکاری‌شده رد می‌شوند، DB فعال بدون تغییر می‌ماند، بازیابی با رمز صحیح داده را برمی‌گرداند و فایل موقت متن ساده باقی نمی‌ماند.
+- P2-05: `scripts/smoke-windows.mjs` برنامهٔ واقعی Tauri را اجرا می‌کند، وجود `msedgewebview2.exe` زیر فرایند برنامه و ساخت SQLite معتبر در `HESABDARI_SMOKE_DATA_DIR` را تأیید می‌کند و پوشهٔ موقت را پاک می‌کند؛ override فقط در debug فعال است.

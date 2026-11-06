@@ -71,7 +71,8 @@ function parseVoucherClipboardRows(raw) {
   const parsed = [];
   for (const line of lines.slice(start)) {
     const cells = line.split('\t').map((cell) => cell.trim());
-    let code = '', detail1 = '', description = '', debitText = '', creditText = '';
+    let code, description, debitText, creditText;
+    let detail1 = '';
     if (cells.length >= 6) {
       code = cells[1] || '';
       detail1 = cells[2] || '';

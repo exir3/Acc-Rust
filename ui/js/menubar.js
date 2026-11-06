@@ -9,6 +9,7 @@ function buildMenubar() {
   const nav = $('#menubarNav');
   if (!nav) return;
 
+  // eslint-disable-next-line no-unsanitized/property -- menu labels and icons are escaped/static
   nav.innerHTML = MENU_BAR.map((menu, menuIndex) => {
     const menuItems = menu.items.map((item, itemIndex) => {
       const pending = !item.page && !item.command;
@@ -143,6 +144,7 @@ function openReorganizeVouchers() {
         </tr>`).join('');
       const unbalancedRows = unbalancedGroups.slice(0, 10).map((group) => `
         <li>${esc(group.date)}: ${group.sourceVoucherNumbers.map(toFa).join('، ')} — ${esc(group.reason || 'گروه قابل ادغام نیست.')}</li>`).join('');
+      // eslint-disable-next-line no-unsanitized/property -- preview values are escaped or formatted numbers
       previewArea.innerHTML = `
         <div class="info-list">
           <div><dt>تعداد اسناد</dt><dd>${toFa(preview.totalVouchers)}</dd></div>
@@ -270,6 +272,7 @@ function openBulkVoucherImport() {
         <span>${done ? icon('i-check') : toFa(index + 1)}</span><b>${label}</b>
       </div>`;
     }).join('');
+    // eslint-disable-next-line no-unsanitized/property -- trusted fragments built above
     dialog.body.innerHTML = `
       <section class="bulk-import-wizard" aria-label="مراحل ورود اسناد">
         <header class="bulk-import-progress">
@@ -333,6 +336,7 @@ function openBulkVoucherImport() {
     })).then((unlisten) => {
       unlistenProgress = unlisten;
       if (dialog.modal.hidden) unlisten?.();
+      return undefined;
     }).catch(() => {});
   }
 

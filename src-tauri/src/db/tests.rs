@@ -1619,4 +1619,82 @@ mod tests {
         assert_eq!(saved.limits.max_voucher_lines, MAX_LINES);
         assert_eq!(saved.limits.max_amount, MAX_AMOUNT);
     }
+
+    #[test]
+    fn portable_backup_is_encrypted_and_rejects_wrong_password_and_tampering() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-portable-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let active_path = dir.join(DB_FILE_NAME);
+        let portable_path = dir.join("backup.hacc");
+        let db = file_database(&active_path);
+        let group = db
+            .create_account_group("91", "گروه پشتیبان رمزنگاری‌شده", "دارایی", "")
+            .unwrap();
+
+        db.backup_encrypted_to(&portable_path, "correct horse battery")
+            .unwrap();
+        assert!(is_encrypted_backup(&portable_path).unwrap());
+        let raw = std::fs::read(&portable_path).unwrap();
+        assert_eq!(&raw[..8], b"HESABDBK");
+        assert!(
+            !raw.windows(6).any(|window| window == b"SQLite"),
+            "the portable backup must not contain the SQLite header in clear text"
+        );
+
+        let error = db
+            .restore_encrypted_from(&portable_path, "wrong password")
+            .unwrap_err();
+        assert!(error.contains("رمز عبور"), "unexpected error: {error}");
+        assert!(db
+            .list_account_groups()
+            .unwrap()
+            .groups
+            .iter()
+            .any(|item| item.code == "91"));
+
+        let tampered_path = dir.join("tampered.hacc");
+        let mut tampered = raw.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        std::fs::write(&tampered_path, tampered).unwrap();
+        let error = db
+            .restore_encrypted_from(&tampered_path, "correct horse battery")
+            .unwrap_err();
+        assert!(
+            error.contains("دستکاری") || error.contains("صحت"),
+            "unexpected error: {error}"
+        );
+
+        db.delete_account_group(group.id).unwrap();
+        let safety_path = db
+            .restore_encrypted_from(&portable_path, "correct horse battery")
+            .unwrap();
+        assert!(safety_path.exists());
+        assert!(db
+            .list_account_groups()
+            .unwrap()
+            .groups
+            .iter()
+            .any(|item| item.code == "91"));
+
+        let leftover_plaintext: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| {
+                name.contains("portable-restore-tmp") || name.contains("portable-backup-tmp")
+            })
+            .collect();
+        assert!(
+            leftover_plaintext.is_empty(),
+            "temporary plaintext files were not cleaned up: {leftover_plaintext:?}"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

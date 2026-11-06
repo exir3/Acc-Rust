@@ -34,6 +34,7 @@ function fillGrid(lines) {
     // Build all rows in one HTML insertion. Calling appendGridRow per line made
     // every call rescan the existing rows, turning a 1000-line voucher into a
     // quadratic amount of DOM work.
+    // eslint-disable-next-line no-unsanitized/method -- static voucher row template
     tbody.insertAdjacentHTML('beforeend', rendered.map(() => voucherRowTemplate()).join(''));
     const rows = Array.from(tbody.children);
     rendered.forEach((line, index) => {

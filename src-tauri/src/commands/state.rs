@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::{db, excel, report};
@@ -24,6 +25,17 @@ pub(crate) fn notify_accounts_changed(app: &AppHandle) {
 /// another window refreshes instead of showing stale data.
 pub(crate) fn notify_vouchers_changed(app: &AppHandle) {
     let _ = app.emit("vouchers-changed", ());
+}
+
+/// A backup file the user picked for restore. The command layer accepts only
+/// the opaque token, never a path from the renderer, and re-checks the file
+/// hash so a file cannot change between selection and restore.
+pub(crate) struct RestoreSelection {
+    pub(crate) token: String,
+    pub(crate) path: PathBuf,
+    pub(crate) encrypted: bool,
+    pub(crate) file_sha256: String,
+    pub(crate) created_at: SystemTime,
 }
 
 #[derive(Default)]
@@ -51,6 +63,8 @@ pub struct AppState {
     /// Report files this session wrote, canonicalized. `open_path` may not
     /// open anything outside this allowlist.
     pub(crate) report_files: Mutex<HashSet<PathBuf>>,
+    /// Backup file chosen for restore, bound to its hash and a short token.
+    pub(crate) restore_selection: Mutex<Option<RestoreSelection>>,
 }
 
 pub(crate) fn report_meta(

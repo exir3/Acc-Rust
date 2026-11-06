@@ -1,12 +1,24 @@
 //! Database backup, restore and report-file commands.
 
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
+
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::commands::state::{
     lock, notify_accounts_changed, require_main_or_preview_window, require_window, AppState,
+    RestoreSelection,
 };
 use crate::commands::windows::open_external;
 use crate::db;
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RestoreBackupChoice {
+    token: String,
+    encrypted: bool,
+    file_name: String,
+}
 
 #[tauri::command(async)]
 pub(crate) fn backup_database(
@@ -34,25 +46,120 @@ pub(crate) fn backup_database(
 }
 
 #[tauri::command(async)]
-pub(crate) fn restore_database(
-    app: AppHandle,
+pub(crate) fn backup_database_encrypted(
     window: WebviewWindow,
     state: State<'_, AppState>,
+    password: String,
 ) -> Result<Option<String>, String> {
+    require_window(&window, &["main"])?;
+    db::validate_portable_password(&password)?;
+    let stamp = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("زمان سیستم معتبر نیست: {error}"))?
+        .as_nanos();
+    let suggested = format!("hesabdari-backup-{stamp}.{}", db::PORTABLE_EXTENSION);
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("ذخیرهٔ پشتیبان رمزنگاری‌شده")
+        .set_file_name(&suggested)
+        .add_filter("پشتیبان رمزنگاری‌شدهٔ هسابداری", &[db::PORTABLE_EXTENSION])
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    let path = if path.extension().is_none() {
+        path.with_extension(db::PORTABLE_EXTENSION)
+    } else {
+        path
+    };
+    state.database.backup_encrypted_to(&path, &password)?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+/// Opens the backup picker and binds the chosen file to an opaque token and a
+/// hash. The renderer never supplies a path for restore.
+#[tauri::command(async)]
+pub(crate) fn choose_restore_backup(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<Option<RestoreBackupChoice>, String> {
     require_window(&window, &["main"])?;
     let Some(path) = rfd::FileDialog::new()
         .set_title("انتخاب پشتیبان برای بازیابی")
-        .add_filter("SQLite backup", &["sqlite3", "db"])
+        .add_filter(
+            "پشتیبان هسابداری",
+            &[db::PORTABLE_EXTENSION, "sqlite3", "db"],
+        )
         .pick_file()
     else {
         return Ok(None);
     };
-    let database_path = std::path::PathBuf::from(state.database.path_string());
-    let safety_path = state.database.restore_from(&path)?;
+    let path = std::fs::canonicalize(&path)
+        .map_err(|error| format!("مسیر فایل پشتیبان معتبر نیست: {error}"))?;
+    let encrypted = db::is_encrypted_backup(&path)?;
+    let file_sha256 = db::sha256_file(&path)?;
+    let token = db::random_hex(16)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("backup")
+        .to_string();
+    *lock(&state.restore_selection) = Some(RestoreSelection {
+        token: token.clone(),
+        path,
+        encrypted,
+        file_sha256,
+        created_at: SystemTime::now(),
+    });
+    Ok(Some(RestoreBackupChoice {
+        token,
+        encrypted,
+        file_name,
+    }))
+}
+
+#[tauri::command(async)]
+pub(crate) fn restore_database_file(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    token: String,
+    password: Option<String>,
+) -> Result<String, String> {
+    require_window(&window, &["main"])?;
+    let selection = lock(&state.restore_selection)
+        .take()
+        .ok_or_else(|| "فایل پشتیبان انتخاب‌شده منقضی شده است؛ دوباره انتخاب کنید.".to_string())?;
+    if selection.token != token {
+        return Err("توکن بازیابی معتبر نیست؛ دوباره فایل را انتخاب کنید.".to_string());
+    }
+    if selection
+        .created_at
+        .elapsed()
+        .map(|elapsed| elapsed > Duration::from_secs(15 * 60))
+        .unwrap_or(true)
+    {
+        return Err("انتخاب فایل پشتیبان منقضی شده است؛ دوباره فایل را انتخاب کنید.".to_string());
+    }
+    let current_hash = db::sha256_file(&selection.path)?;
+    if current_hash != selection.file_sha256 {
+        return Err("فایل پشتیبان پس از انتخاب تغییر کرده است و بازیابی انجام نشد.".to_string());
+    }
+
+    let database_path = PathBuf::from(state.database.path_string());
+    let safety_path = if selection.encrypted {
+        let password = password
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "این پشتیبان رمزنگاری‌شده است؛ رمز عبور را وارد کنید.".to_string())?;
+        state
+            .database
+            .restore_encrypted_from(&selection.path, &password)?
+    } else {
+        state.database.restore_from(&selection.path)?
+    };
     let _ = db::prune_restore_safety_files(&database_path);
     notify_accounts_changed(&app);
     let _ = app.emit("database-restored", ());
-    Ok(Some(safety_path.to_string_lossy().to_string()))
+    Ok(safety_path.to_string_lossy().to_string())
 }
 
 /// Reopens the database after a failed restore left the application blocked.

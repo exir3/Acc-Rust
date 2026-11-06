@@ -157,6 +157,7 @@
       <span class="bvd2-step" data-state="${stepState}">
         <span class="bvd2-step-num">${number}</span>${title}
       </span>`;
+    // eslint-disable-next-line no-unsanitized/property -- step labels and states are static
     stepper.innerHTML = `
       ${item('۱', 'انتخاب محدوده', states[0])}
       <span class="bvd2-step-line" data-state="${states[1] === 'todo' ? 'todo' : 'done'}"></span>
@@ -357,6 +358,7 @@
     showError('');
     say(state.form.withBackup ? 'در حال تهیه پشتیبان و حذف اسناد…' : 'در حال حذف اسناد…');
     scroll.querySelector('[data-loading]')?.remove();
+    // eslint-disable-next-line no-unsanitized/method -- static loading note
     scroll.insertAdjacentHTML(
       'beforeend',
       `<div class="bvd2-note" data-loading>${state.form.withBackup
@@ -391,6 +393,7 @@
   const renderChoose = () => {
     state.step = 'choose';
     renderStepper();
+    // eslint-disable-next-line no-unsanitized/property -- template escapes user data with esc()
     scroll.innerHTML = `
       <div class="bvd2-intro">
         محدوده اسنادی که می‌خواهید حذف کنید را انتخاب کنید. ابتدا پیش‌نمایش تهیه می‌شود و
@@ -466,6 +469,7 @@
         ? `بازه انتخابی: سند ${toFa(state.preview.numberRange.from)} تا ${toFa(state.preview.numberRange.to)}`
         : 'تمام اسناد حسابداری';
 
+    // eslint-disable-next-line no-unsanitized/property -- template escapes user data with esc()
     scroll.innerHTML = `
       <div class="bvd2-intro">این فقط یک پیش‌نمایش است و هنوز هیچ سندی حذف نشده.</div>
       <dl class="bvd2-summary">
@@ -560,6 +564,7 @@
 
   const renderDone = (result) => {
     renderStepper();
+    // eslint-disable-next-line no-unsanitized/property -- template escapes user data with esc()
     scroll.innerHTML = `
       <div class="bvd2-done" role="status">
         <span class="bvd2-done-icon">✓</span>

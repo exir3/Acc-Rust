@@ -176,7 +176,22 @@
     },
 
     backup_database: () => '/e2e/backups/hesabdari-backup.db',
-    restore_database: () => '/e2e/backups/hesabdari-safety.db',
+    backup_database_encrypted: ({ password }) => {
+      if (!password || String(password).length < 8) {
+        throw new Error('رمز پشتیبان باید حداقل ۸ نویسه باشد.');
+      }
+      return '/e2e/backups/hesabdari-backup.hacc';
+    },
+    choose_restore_backup: () => ({
+      token: 'e2e-restore-token',
+      encrypted: true,
+      fileName: 'hesabdari-backup.hacc',
+    }),
+    restore_database_file: ({ token, password }) => {
+      if (token !== 'e2e-restore-token') throw new Error('توکن بازیابی معتبر نیست.');
+      if (!password) throw new Error('رمز عبور لازم است.');
+      return '/e2e/backups/hesabdari-safety.db';
+    },
 
     list_accounts: () => ({ accounts: clone(backend.accounts), databasePath: 'e2e.db' }),
     list_account_groups: () => ({ groups: clone(backend.groups), databasePath: 'e2e.db' }),

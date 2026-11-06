@@ -126,6 +126,7 @@ function renderDoc(doc) {
   } else {
     const fallback = document.createElement('div');
     fallback.className = 'report-doc';
+    // eslint-disable-next-line no-unsanitized/property -- report HTML comes from the Rust renderer
     fallback.innerHTML = doc.html;
     sheet.appendChild(fallback);
     setStatus('نمایش گزارش در حالت ساده انجام شد.', 'error');

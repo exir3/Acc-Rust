@@ -197,6 +197,7 @@ function renderGrid() {
     return;
   }
 
+  // eslint-disable-next-line no-unsanitized/property -- group fields are escaped in the row template
   body.innerHTML = state.groups.map((group, index) => {
     const selected = group.id === state.selectedId;
     const classes = ['ag-row'];

@@ -302,6 +302,49 @@ impl Database {
     }
 
     pub fn restore_from(&self, source_path: &Path) -> Result<PathBuf, String> {
+        self.restore_from_internal(source_path, source_path)
+    }
+
+    /// Creates a portable, password-encrypted backup. The plaintext SQLite copy
+    /// is written to a short-lived temporary file in the application data
+    /// folder and removed on every path, including failures.
+    pub fn backup_encrypted_to(&self, destination: &Path, password: &str) -> Result<(), String> {
+        super::portable::validate_portable_password(password)?;
+        let current_path = PathBuf::from(self.path_string());
+        let plaintext = unique_sibling_path(&current_path, "portable-backup-tmp");
+        let result = self.backup_to(&plaintext).and_then(|()| {
+            super::portable::encrypt_backup_file(
+                &plaintext,
+                destination,
+                password,
+                CURRENT_SCHEMA_VERSION,
+            )
+        });
+        let _ = std::fs::remove_file(&plaintext);
+        result
+    }
+
+    /// Decrypts a portable backup into a short-lived file and then runs the
+    /// normal restore path, which validates structure and keeps a safety copy
+    /// before replacing the active database.
+    pub fn restore_encrypted_from(
+        &self,
+        source_path: &Path,
+        password: &str,
+    ) -> Result<PathBuf, String> {
+        let current_path = PathBuf::from(self.path_string());
+        let plaintext = unique_sibling_path(&current_path, "portable-restore-tmp");
+        let result = super::portable::decrypt_backup_file(source_path, &plaintext, password)
+            .and_then(|()| self.restore_from_internal(&plaintext, source_path));
+        let _ = std::fs::remove_file(&plaintext);
+        result
+    }
+
+    fn restore_from_internal(
+        &self,
+        source_path: &Path,
+        audit_source: &Path,
+    ) -> Result<PathBuf, String> {
         let current_path = PathBuf::from(self.path_string());
         if same_path(&current_path, source_path) {
             return Err("فایل انتخاب‌شده پایگاه دادهٔ فعال است، نه یک پشتیبان.".to_string());
@@ -354,7 +397,7 @@ impl Database {
                     None,
                     None,
                     None,
-                    &format!("بازیابی پایگاه داده از «{}».", source_path.display()),
+                    &format!("بازیابی پایگاه داده از «{}».", audit_source.display()),
                 )?;
                 Ok(())
             });
@@ -850,7 +893,7 @@ fn backup_first_text(conn: &Connection, sql: &str) -> Result<Option<String>, Str
         .map(Option::flatten)
 }
 
-fn unique_sibling_path(path: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn unique_sibling_path(path: &Path, suffix: &str) -> PathBuf {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -872,7 +915,7 @@ fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) fn replace_file(temporary: &Path, destination: &Path) -> Result<(), String> {
     let previous = unique_sibling_path(destination, "previous");
     if destination.exists() {
         std::fs::rename(destination, &previous)

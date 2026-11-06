@@ -27,7 +27,9 @@ function csfEl(id) {
 }
 
 function csfDelay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function csfStatusMeta(status) {
@@ -191,6 +193,7 @@ function csfRenderRows() {
   if (!list) return;
   const today = toEn(state.settings?.today || '');
 
+  // eslint-disable-next-line no-unsanitized/property -- every year field is escaped in the row template
   list.innerHTML = csfState.years.map((year) => {
     const selected = Number(year.id) === Number(csfState.selectedId);
     const meta = csfStatusMeta(year.status);
@@ -506,9 +509,22 @@ function csfRestore() {
     );
     if (!confirmed) return;
 
+    const choice = await invoke('choose_restore_backup');
+    if (!choice) return;
+    let password = null;
+    if (choice.encrypted) {
+      password = await passwordDialog(
+        'رمز پشتیبان',
+        `فایل «${choice.fileName}» رمزنگاری‌شده است. رمز عبور آن را وارد کنید.`,
+      );
+      if (!password) return;
+    }
+
     await csfRunBusy(csfEl('csfRestore'), 'در حال بازیابی…', async () => {
-      const safetyPath = await invoke('restore_database');
-      if (!safetyPath) return;
+      const safetyPath = await invoke('restore_database_file', {
+        token: choice.token,
+        password,
+      });
       setActiveFiscalYear(null);
       state.accountsLoaded = false;
       state.groupsLoaded = false;

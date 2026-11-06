@@ -149,11 +149,13 @@ function renderSettings(data) {
       <p class="form-note">بازیابی، اطلاعات فعلی را جایگزین می‌کند و پیش از آن یک نسخهٔ ایمنی نگه می‌دارد.</p>
       <div class="form-actions">
         <button type="button" class="btn" data-backup-database>${icon('i-save')}<span>تهیه پشتیبان</span></button>
+        <button type="button" class="btn" data-backup-encrypted>${icon('i-lock')}<span>پشتیبان رمزنگاری‌شده</span></button>
         <button type="button" class="btn" data-restore-database>${icon('i-refresh')}<span>بازیابی پشتیبان</span></button>
       </div>
       <div class="form-note" style="margin-top:10px">
         برنامه ۳۰ نسخهٔ پشتیبان آخر و ۵ نسخهٔ ایمنی پیش از بازیابی را نگه می‌دارد.
-        پوشهٔ پشتیبان حاوی داده مالی است؛ دسترسی آن را به حساب کاربری ویندوز محدود و روی درایو رمزنگاری‌شده نگهداری کنید.
+        پشتیبان رمزنگاری‌شده با AES-256-GCM محافظت می‌شود و برای انتقال روی رسانهٔ قابل حمل مناسب است.
+        پوشهٔ پشتیبان عادی حاوی داده مالی است؛ دسترسی آن را به حساب کاربری ویندوز محدود و روی درایو رمزنگاری‌شده نگهداری کنید.
       </div>
     </div>
   </div>
@@ -420,7 +422,7 @@ function bindSettings(root, data) {
       const year = (state.fiscalYears || []).find((item) => item.id === id);
       if (!year) return;
       let reason = '';
-      let confirm = false;
+      let confirm;
       if (year.status === 'final') {
         const typed = await promptReopenYear(year);
         if (typed === null) return;
@@ -494,6 +496,23 @@ function bindSettings(root, data) {
       button.disabled = false;
     }
   });
+  root.querySelector('[data-backup-encrypted]')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const password = await newPasswordDialog(
+      'پشتیبان رمزنگاری‌شده',
+      'این فایل فقط با همین رمز عبور قابل بازیابی است. رمز را در جای امن نگهداری کنید؛ در صورت فراموشی، بازیابی پشتیبان ممکن نیست.'
+    );
+    if (!password) return;
+    button.disabled = true;
+    try {
+      const path = await invoke('backup_database_encrypted', { password });
+      if (path) toast(`پشتیبان رمزنگاری‌شده ذخیره شد: ${path}`, 'ok');
+    } catch (error) {
+      toast(errorText(error), 'error');
+    } finally {
+      button.disabled = false;
+    }
+  });
   root.querySelector('[data-restore-database]')?.addEventListener('click', async (event) => {
     // `currentTarget` is cleared once this handler awaits, so keep the
     // button reference before opening the confirmation dialog.
@@ -503,10 +522,22 @@ function bindSettings(root, data) {
       'اطلاعات فعلی با فایل پشتیبان جایگزین می‌شود. پیش از بازیابی یک نسخهٔ ایمنی خودکار ساخته خواهد شد. ادامه می‌دهید؟'
     );
     if (!confirmed) return;
-    button.disabled = true;
     try {
-      const safetyPath = await invoke('restore_database');
-      if (!safetyPath) return;
+      const choice = await invoke('choose_restore_backup');
+      if (!choice) return;
+      let password = null;
+      if (choice.encrypted) {
+        password = await passwordDialog(
+          'رمز پشتیبان',
+          `فایل «${choice.fileName}» رمزنگاری‌شده است. رمز عبور آن را وارد کنید.`
+        );
+        if (!password) return;
+      }
+      button.disabled = true;
+      const safetyPath = await invoke('restore_database_file', {
+        token: choice.token,
+        password,
+      });
       await Promise.all([ensureAccounts(true), ensureGroups(true)]);
       state.voucherCount = await invoke('get_voucher_count');
       await navigate('settings', { force: true });
@@ -908,6 +939,7 @@ async function openLegacyResolutionDialog(accountCode) {
             previewed = true;
             if (previewBox) {
               previewBox.hidden = false;
+              // eslint-disable-next-line no-unsanitized/property -- preview values are formatted numbers
               previewBox.innerHTML = `
                 <div class="kpi"><span>ردیف‌های متأثر</span><strong>${toFa(preview.lineCount)}</strong></div>
                 <div class="kpi"><span>اسناد</span><strong>${toFa(preview.voucherCount)}</strong></div>

@@ -1,0 +1,1558 @@
+{
+  "balanceSheetOfficialAfterOpening": {
+    "assets": [
+      {
+        "amount": 425000,
+        "code": "101001"
+      },
+      {
+        "amount": 180000,
+        "code": "102001"
+      },
+      {
+        "amount": 300000,
+        "code": "102001001"
+      },
+      {
+        "amount": 70000,
+        "code": "1030"
+      },
+      {
+        "amount": 400000,
+        "code": "1110"
+      }
+    ],
+    "equity": [
+      {
+        "amount": 900000,
+        "code": "3010"
+      },
+      {
+        "amount": 25000,
+        "code": "3020"
+      }
+    ],
+    "liabilities": [
+      {
+        "amount": 120000,
+        "code": "201001"
+      },
+      {
+        "amount": 80000,
+        "code": "2020"
+      },
+      {
+        "amount": 250000,
+        "code": "2110"
+      }
+    ],
+    "totals": {
+      "assets": 1375000,
+      "balanced": true,
+      "equity": 925000,
+      "liabilities": 450000,
+      "profit": 0,
+      "totalLiabilitiesEquity": 1375000
+    }
+  },
+  "balanceSheetOfficialAtYearEnd": {
+    "assets": [
+      {
+        "amount": 425000,
+        "code": "101001"
+      },
+      {
+        "amount": 180000,
+        "code": "102001"
+      },
+      {
+        "amount": 300000,
+        "code": "102001001"
+      },
+      {
+        "amount": 70000,
+        "code": "1030"
+      },
+      {
+        "amount": 400000,
+        "code": "1110"
+      }
+    ],
+    "equity": [
+      {
+        "amount": 900000,
+        "code": "3010"
+      },
+      {
+        "amount": 25000,
+        "code": "3020"
+      }
+    ],
+    "liabilities": [
+      {
+        "amount": 120000,
+        "code": "201001"
+      },
+      {
+        "amount": 80000,
+        "code": "2020"
+      },
+      {
+        "amount": 250000,
+        "code": "2110"
+      }
+    ],
+    "totals": {
+      "assets": 1375000,
+      "balanced": true,
+      "equity": 925000,
+      "liabilities": 450000,
+      "profit": 0,
+      "totalLiabilitiesEquity": 1375000
+    }
+  },
+  "balanceSheetOfficialBeforeClosing": {
+    "assets": [
+      {
+        "amount": 425000,
+        "code": "101001"
+      },
+      {
+        "amount": 180000,
+        "code": "102001"
+      },
+      {
+        "amount": 300000,
+        "code": "102001001"
+      },
+      {
+        "amount": 70000,
+        "code": "1030"
+      },
+      {
+        "amount": 400000,
+        "code": "1110"
+      }
+    ],
+    "equity": [
+      {
+        "amount": 900000,
+        "code": "3010"
+      }
+    ],
+    "liabilities": [
+      {
+        "amount": 120000,
+        "code": "201001"
+      },
+      {
+        "amount": 80000,
+        "code": "2020"
+      },
+      {
+        "amount": 250000,
+        "code": "2110"
+      }
+    ],
+    "totals": {
+      "assets": 1375000,
+      "balanced": true,
+      "equity": 900000,
+      "liabilities": 450000,
+      "profit": 25000,
+      "totalLiabilitiesEquity": 1375000
+    }
+  },
+  "balanceSheetWorkingAfterOpening": {
+    "assets": [
+      {
+        "amount": 425000,
+        "code": "101001"
+      },
+      {
+        "amount": 230000,
+        "code": "102001"
+      },
+      {
+        "amount": 300000,
+        "code": "102001001"
+      },
+      {
+        "amount": 70000,
+        "code": "1030"
+      },
+      {
+        "amount": 400000,
+        "code": "1110"
+      }
+    ],
+    "equity": [
+      {
+        "amount": 900000,
+        "code": "3010"
+      },
+      {
+        "amount": 25000,
+        "code": "3020"
+      }
+    ],
+    "liabilities": [
+      {
+        "amount": 120000,
+        "code": "201001"
+      },
+      {
+        "amount": 80000,
+        "code": "2020"
+      },
+      {
+        "amount": 250000,
+        "code": "2110"
+      }
+    ],
+    "totals": {
+      "assets": 1425000,
+      "balanced": true,
+      "equity": 925000,
+      "liabilities": 450000,
+      "profit": 50000,
+      "totalLiabilitiesEquity": 1425000
+    }
+  },
+  "balanceSheetWorkingAtYearEnd": {
+    "assets": [
+      {
+        "amount": 425000,
+        "code": "101001"
+      },
+      {
+        "amount": 230000,
+        "code": "102001"
+      },
+      {
+        "amount": 300000,
+        "code": "102001001"
+      },
+      {
+        "amount": 70000,
+        "code": "1030"
+      },
+      {
+        "amount": 400000,
+        "code": "1110"
+      }
+    ],
+    "equity": [
+      {
+        "amount": 900000,
+        "code": "3010"
+      },
+      {
+        "amount": 25000,
+        "code": "3020"
+      }
+    ],
+    "liabilities": [
+      {
+        "amount": 120000,
+        "code": "201001"
+      },
+      {
+        "amount": 80000,
+        "code": "2020"
+      },
+      {
+        "amount": 250000,
+        "code": "2110"
+      }
+    ],
+    "totals": {
+      "assets": 1425000,
+      "balanced": true,
+      "equity": 925000,
+      "liabilities": 450000,
+      "profit": 50000,
+      "totalLiabilitiesEquity": 1425000
+    }
+  },
+  "balanceSheetWorkingBeforeClosing": {
+    "assets": [
+      {
+        "amount": 425000,
+        "code": "101001"
+      },
+      {
+        "amount": 230000,
+        "code": "102001"
+      },
+      {
+        "amount": 300000,
+        "code": "102001001"
+      },
+      {
+        "amount": 70000,
+        "code": "1030"
+      },
+      {
+        "amount": 400000,
+        "code": "1110"
+      }
+    ],
+    "equity": [
+      {
+        "amount": 900000,
+        "code": "3010"
+      }
+    ],
+    "liabilities": [
+      {
+        "amount": 120000,
+        "code": "201001"
+      },
+      {
+        "amount": 80000,
+        "code": "2020"
+      },
+      {
+        "amount": 250000,
+        "code": "2110"
+      }
+    ],
+    "totals": {
+      "assets": 1425000,
+      "balanced": true,
+      "equity": 900000,
+      "liabilities": 450000,
+      "profit": 75000,
+      "totalLiabilitiesEquity": 1425000
+    }
+  },
+  "incomeStatementFebruary": {
+    "cogs": [],
+    "expenses": [],
+    "financeCosts": [
+      {
+        "amount": 6000,
+        "code": "9510"
+      }
+    ],
+    "incomeTaxes": [
+      {
+        "amount": 8000,
+        "code": "9610"
+      }
+    ],
+    "nonOperatingExpenses": [
+      {
+        "amount": 4000,
+        "code": "9020"
+      }
+    ],
+    "nonOperatingRevenues": [
+      {
+        "amount": 9000,
+        "code": "9010"
+      },
+      {
+        "amount": 2000,
+        "code": "9910"
+      }
+    ],
+    "otherOperatingExpenses": [
+      {
+        "amount": 7000,
+        "code": "8020"
+      },
+      {
+        "amount": 3000,
+        "code": "9810"
+      }
+    ],
+    "otherOperatingRevenues": [
+      {
+        "amount": 12000,
+        "code": "8010"
+      },
+      {
+        "amount": 5000,
+        "code": "9820"
+      }
+    ],
+    "revenues": [
+      {
+        "amount": 50000,
+        "code": "4010"
+      },
+      {
+        "amount": -20000,
+        "code": "4020"
+      }
+    ],
+    "totals": {
+      "cogs": 0,
+      "expenses": 0,
+      "financeCost": 6000,
+      "grossProfit": 30000,
+      "incomeTax": 8000,
+      "netProfit": 30000,
+      "nonOperatingExpense": 4000,
+      "nonOperatingRevenue": 11000,
+      "operatingProfit": 37000,
+      "otherOperatingExpense": 10000,
+      "otherOperatingRevenue": 17000,
+      "profitBeforeTax": 38000,
+      "revenue": 30000
+    }
+  },
+  "incomeStatementOfficial": {
+    "cogs": [
+      {
+        "amount": 180000,
+        "code": "5010"
+      }
+    ],
+    "expenses": [
+      {
+        "amount": 30000,
+        "code": "6010"
+      },
+      {
+        "amount": 45000,
+        "code": "7010"
+      }
+    ],
+    "financeCosts": [
+      {
+        "amount": 6000,
+        "code": "9510"
+      }
+    ],
+    "incomeTaxes": [
+      {
+        "amount": 8000,
+        "code": "9610"
+      }
+    ],
+    "nonOperatingExpenses": [
+      {
+        "amount": 4000,
+        "code": "9020"
+      }
+    ],
+    "nonOperatingRevenues": [
+      {
+        "amount": 9000,
+        "code": "9010"
+      },
+      {
+        "amount": 2000,
+        "code": "9910"
+      }
+    ],
+    "otherOperatingExpenses": [
+      {
+        "amount": 7000,
+        "code": "8020"
+      },
+      {
+        "amount": 3000,
+        "code": "9810"
+      }
+    ],
+    "otherOperatingRevenues": [
+      {
+        "amount": 12000,
+        "code": "8010"
+      },
+      {
+        "amount": 5000,
+        "code": "9820"
+      }
+    ],
+    "revenues": [
+      {
+        "amount": 300000,
+        "code": "4010"
+      },
+      {
+        "amount": -20000,
+        "code": "4020"
+      }
+    ],
+    "totals": {
+      "cogs": 180000,
+      "expenses": 75000,
+      "financeCost": 6000,
+      "grossProfit": 100000,
+      "incomeTax": 8000,
+      "netProfit": 25000,
+      "nonOperatingExpense": 4000,
+      "nonOperatingRevenue": 11000,
+      "operatingProfit": 32000,
+      "otherOperatingExpense": 10000,
+      "otherOperatingRevenue": 17000,
+      "profitBeforeTax": 33000,
+      "revenue": 280000
+    }
+  },
+  "incomeStatementWorking": {
+    "cogs": [
+      {
+        "amount": 180000,
+        "code": "5010"
+      }
+    ],
+    "expenses": [
+      {
+        "amount": 30000,
+        "code": "6010"
+      },
+      {
+        "amount": 45000,
+        "code": "7010"
+      }
+    ],
+    "financeCosts": [
+      {
+        "amount": 6000,
+        "code": "9510"
+      }
+    ],
+    "incomeTaxes": [
+      {
+        "amount": 8000,
+        "code": "9610"
+      }
+    ],
+    "nonOperatingExpenses": [
+      {
+        "amount": 4000,
+        "code": "9020"
+      }
+    ],
+    "nonOperatingRevenues": [
+      {
+        "amount": 9000,
+        "code": "9010"
+      },
+      {
+        "amount": 2000,
+        "code": "9910"
+      }
+    ],
+    "otherOperatingExpenses": [
+      {
+        "amount": 7000,
+        "code": "8020"
+      },
+      {
+        "amount": 3000,
+        "code": "9810"
+      }
+    ],
+    "otherOperatingRevenues": [
+      {
+        "amount": 12000,
+        "code": "8010"
+      },
+      {
+        "amount": 5000,
+        "code": "9820"
+      }
+    ],
+    "revenues": [
+      {
+        "amount": 350000,
+        "code": "4010"
+      },
+      {
+        "amount": -20000,
+        "code": "4020"
+      }
+    ],
+    "totals": {
+      "cogs": 180000,
+      "expenses": 75000,
+      "financeCost": 6000,
+      "grossProfit": 150000,
+      "incomeTax": 8000,
+      "netProfit": 75000,
+      "nonOperatingExpense": 4000,
+      "nonOperatingRevenue": 11000,
+      "operatingProfit": 82000,
+      "otherOperatingExpense": 10000,
+      "otherOperatingRevenue": 17000,
+      "profitBeforeTax": 83000,
+      "revenue": 330000
+    }
+  },
+  "leapYear": {
+    "balanceAssets": 1000,
+    "balanceBalanced": true,
+    "incomeNetProfit": 1000,
+    "trialClosingCredit": 1000,
+    "trialClosingDebit": 1000,
+    "trialPeriodCredit": 1000,
+    "trialPeriodDebit": 1000
+  },
+  "trialBalanceFebruary": {
+    "rows": [
+      {
+        "closingCredit": 0,
+        "closingDebit": 425000,
+        "code": "1010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 425000,
+        "parent": "",
+        "periodCredit": 28000,
+        "periodDebit": 28000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 425000,
+        "code": "101001",
+        "level": 2,
+        "openingCredit": 0,
+        "openingDebit": 425000,
+        "parent": "1010",
+        "periodCredit": 28000,
+        "periodDebit": 28000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 530000,
+        "code": "1020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 500000,
+        "parent": "",
+        "periodCredit": 20000,
+        "periodDebit": 50000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 530000,
+        "code": "102001",
+        "level": 2,
+        "openingCredit": 0,
+        "openingDebit": 500000,
+        "parent": "1020",
+        "periodCredit": 20000,
+        "periodDebit": 50000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 300000,
+        "code": "102001001",
+        "level": 3,
+        "openingCredit": 0,
+        "openingDebit": 300000,
+        "parent": "102001",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 70000,
+        "code": "1030",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 70000,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 400000,
+        "code": "1110",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 400000,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 120000,
+        "closingDebit": 0,
+        "code": "2010",
+        "level": 1,
+        "openingCredit": 120000,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 120000,
+        "closingDebit": 0,
+        "code": "201001",
+        "level": 2,
+        "openingCredit": 120000,
+        "openingDebit": 0,
+        "parent": "2010",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 80000,
+        "closingDebit": 0,
+        "code": "2020",
+        "level": 1,
+        "openingCredit": 80000,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 250000,
+        "closingDebit": 0,
+        "code": "2110",
+        "level": 1,
+        "openingCredit": 250000,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 900000,
+        "closingDebit": 0,
+        "code": "3010",
+        "level": 1,
+        "openingCredit": 900000,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 350000,
+        "closingDebit": 0,
+        "code": "4010",
+        "level": 1,
+        "openingCredit": 300000,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 50000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 20000,
+        "code": "4020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 20000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 180000,
+        "code": "5010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 180000,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 30000,
+        "code": "6010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 30000,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 45000,
+        "code": "7010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 45000,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 12000,
+        "closingDebit": 0,
+        "code": "8010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 12000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 7000,
+        "code": "8020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 7000
+      },
+      {
+        "closingCredit": 9000,
+        "closingDebit": 0,
+        "code": "9010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 9000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 4000,
+        "code": "9020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 4000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 6000,
+        "code": "9510",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 6000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 8000,
+        "code": "9610",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 8000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 25000,
+        "code": "9710",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 25000
+      },
+      {
+        "closingCredit": 25000,
+        "closingDebit": 0,
+        "code": "9720",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 25000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 3000,
+        "code": "9810",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 3000
+      },
+      {
+        "closingCredit": 5000,
+        "closingDebit": 0,
+        "code": "9820",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 5000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 2000,
+        "closingDebit": 0,
+        "code": "9910",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 2000,
+        "periodDebit": 0
+      }
+    ],
+    "totals": {
+      "closingCredit": 1753000,
+      "closingDebit": 1753000,
+      "openingCredit": 1650000,
+      "openingDebit": 1650000,
+      "periodCredit": 151000,
+      "periodDebit": 151000
+    }
+  },
+  "trialBalanceOfficial": {
+    "rows": [
+      {
+        "closingCredit": 0,
+        "closingDebit": 425000,
+        "code": "1010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 103000,
+        "periodDebit": 528000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 425000,
+        "code": "101001",
+        "level": 2,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "1010",
+        "periodCredit": 103000,
+        "periodDebit": 528000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 480000,
+        "code": "1020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 20000,
+        "periodDebit": 500000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 480000,
+        "code": "102001",
+        "level": 2,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "1020",
+        "periodCredit": 20000,
+        "periodDebit": 500000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 300000,
+        "code": "102001001",
+        "level": 3,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "102001",
+        "periodCredit": 0,
+        "periodDebit": 300000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 70000,
+        "code": "1030",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 180000,
+        "periodDebit": 250000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 400000,
+        "code": "1110",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 400000
+      },
+      {
+        "closingCredit": 120000,
+        "closingDebit": 0,
+        "code": "2010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 120000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 120000,
+        "closingDebit": 0,
+        "code": "201001",
+        "level": 2,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "2010",
+        "periodCredit": 120000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 80000,
+        "closingDebit": 0,
+        "code": "2020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 80000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 250000,
+        "closingDebit": 0,
+        "code": "2110",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 250000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 900000,
+        "closingDebit": 0,
+        "code": "3010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 900000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 300000,
+        "closingDebit": 0,
+        "code": "4010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 300000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 20000,
+        "code": "4020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 20000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 180000,
+        "code": "5010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 180000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 30000,
+        "code": "6010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 30000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 45000,
+        "code": "7010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 45000
+      },
+      {
+        "closingCredit": 12000,
+        "closingDebit": 0,
+        "code": "8010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 12000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 7000,
+        "code": "8020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 7000
+      },
+      {
+        "closingCredit": 9000,
+        "closingDebit": 0,
+        "code": "9010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 9000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 4000,
+        "code": "9020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 4000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 6000,
+        "code": "9510",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 6000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 8000,
+        "code": "9610",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 8000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 25000,
+        "code": "9710",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 25000
+      },
+      {
+        "closingCredit": 25000,
+        "closingDebit": 0,
+        "code": "9720",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 25000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 3000,
+        "code": "9810",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 3000
+      },
+      {
+        "closingCredit": 5000,
+        "closingDebit": 0,
+        "code": "9820",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 5000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 2000,
+        "closingDebit": 0,
+        "code": "9910",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 2000,
+        "periodDebit": 0
+      }
+    ],
+    "totals": {
+      "closingCredit": 1703000,
+      "closingDebit": 1703000,
+      "openingCredit": 0,
+      "openingDebit": 0,
+      "periodCredit": 2006000,
+      "periodDebit": 2006000
+    }
+  },
+  "trialBalanceWorking": {
+    "rows": [
+      {
+        "closingCredit": 0,
+        "closingDebit": 425000,
+        "code": "1010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 103000,
+        "periodDebit": 528000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 425000,
+        "code": "101001",
+        "level": 2,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "1010",
+        "periodCredit": 103000,
+        "periodDebit": 528000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 530000,
+        "code": "1020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 20000,
+        "periodDebit": 550000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 530000,
+        "code": "102001",
+        "level": 2,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "1020",
+        "periodCredit": 20000,
+        "periodDebit": 550000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 300000,
+        "code": "102001001",
+        "level": 3,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "102001",
+        "periodCredit": 0,
+        "periodDebit": 300000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 70000,
+        "code": "1030",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 180000,
+        "periodDebit": 250000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 400000,
+        "code": "1110",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 400000
+      },
+      {
+        "closingCredit": 120000,
+        "closingDebit": 0,
+        "code": "2010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 120000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 120000,
+        "closingDebit": 0,
+        "code": "201001",
+        "level": 2,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "2010",
+        "periodCredit": 120000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 80000,
+        "closingDebit": 0,
+        "code": "2020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 80000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 250000,
+        "closingDebit": 0,
+        "code": "2110",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 250000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 900000,
+        "closingDebit": 0,
+        "code": "3010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 900000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 350000,
+        "closingDebit": 0,
+        "code": "4010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 350000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 20000,
+        "code": "4020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 20000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 180000,
+        "code": "5010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 180000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 30000,
+        "code": "6010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 30000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 45000,
+        "code": "7010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 45000
+      },
+      {
+        "closingCredit": 12000,
+        "closingDebit": 0,
+        "code": "8010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 12000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 7000,
+        "code": "8020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 7000
+      },
+      {
+        "closingCredit": 9000,
+        "closingDebit": 0,
+        "code": "9010",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 9000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 4000,
+        "code": "9020",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 4000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 6000,
+        "code": "9510",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 6000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 8000,
+        "code": "9610",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 8000
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 25000,
+        "code": "9710",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 25000
+      },
+      {
+        "closingCredit": 25000,
+        "closingDebit": 0,
+        "code": "9720",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 25000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 0,
+        "closingDebit": 3000,
+        "code": "9810",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 0,
+        "periodDebit": 3000
+      },
+      {
+        "closingCredit": 5000,
+        "closingDebit": 0,
+        "code": "9820",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 5000,
+        "periodDebit": 0
+      },
+      {
+        "closingCredit": 2000,
+        "closingDebit": 0,
+        "code": "9910",
+        "level": 1,
+        "openingCredit": 0,
+        "openingDebit": 0,
+        "parent": "",
+        "periodCredit": 2000,
+        "periodDebit": 0
+      }
+    ],
+    "totals": {
+      "closingCredit": 1753000,
+      "closingDebit": 1753000,
+      "openingCredit": 0,
+      "openingDebit": 0,
+      "periodCredit": 2056000,
+      "periodDebit": 2056000
+    }
+  }
+}

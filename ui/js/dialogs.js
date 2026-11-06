@@ -66,6 +66,7 @@ function openDialog(options) {
   dialogReturnFocus = returnFocus;
   dialog.classList.toggle('dialog-wide', Boolean(options.wide));
   title.textContent = options.title || '';
+  // eslint-disable-next-line no-unsanitized/property -- dialog bodies are trusted internal templates
   body.innerHTML = options.body || '';
   foot.innerHTML = '';
 
@@ -140,7 +141,7 @@ function openDialog(options) {
 
 function confirmDialog(title, message, confirmLabel = 'حذف', danger = true) {
   return new Promise((resolve) => {
-    const dialog = openDialog({
+    openDialog({
       title,
       body: `<div class="note"${danger ? ' data-tone="danger"' : ''}>${esc(message)}</div>`,
       hideClose: true,
@@ -166,6 +167,134 @@ function confirmDialog(title, message, confirmLabel = 'حذف', danger = true) {
         },
       ],
     });
+  });
+}
+
+function passwordDialog(title, message, confirmLabel = 'ادامه') {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const dialog = openDialog({
+      title,
+      body: `
+        <div class="note">${esc(message)}</div>
+        <div class="field">
+          <label for="backupPassword">رمز عبور</label>
+          <input id="backupPassword" class="input" type="password" dir="ltr" autocomplete="current-password" />
+        </div>`,
+      hideClose: true,
+      onClose: () => finish(null),
+      actions: [
+        {
+          label: confirmLabel,
+          primary: true,
+          onClick: () => {
+            const input = dialog?.body.querySelector('#backupPassword');
+            const value = input?.value || '';
+            if (!value) {
+              input?.focus();
+              return;
+            }
+            dialogCloseHandler = null;
+            closeDialog();
+            finish(value);
+          },
+        },
+        {
+          label: 'انصراف',
+          onClick: () => {
+            dialogCloseHandler = null;
+            closeDialog();
+            finish(null);
+          },
+        },
+      ],
+    });
+    const input = dialog?.body.querySelector('#backupPassword');
+    input?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      dialog.foot.querySelector('.btn-primary')?.click();
+    });
+  });
+}
+
+function newPasswordDialog(title, message, confirmLabel = 'ذخیره') {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const dialog = openDialog({
+      title,
+      body: `
+        <div class="note">${esc(message)}</div>
+        <div class="field">
+          <label for="backupPassword">رمز عبور</label>
+          <input id="backupPassword" class="input" type="password" dir="ltr" autocomplete="new-password" />
+        </div>
+        <div class="field">
+          <label for="backupPasswordConfirm">تکرار رمز عبور</label>
+          <input id="backupPasswordConfirm" class="input" type="password" dir="ltr" autocomplete="new-password" />
+        </div>
+        <div class="form-error" id="backupPasswordError" hidden></div>`,
+      hideClose: true,
+      onClose: () => finish(null),
+      actions: [
+        {
+          label: confirmLabel,
+          primary: true,
+          onClick: () => {
+            const first = dialog?.body.querySelector('#backupPassword');
+            const second = dialog?.body.querySelector('#backupPasswordConfirm');
+            const errorBox = dialog?.body.querySelector('#backupPasswordError');
+            const value = first?.value || '';
+            const repeat = second?.value || '';
+            const showError = (text) => {
+              if (!errorBox) return;
+              errorBox.textContent = text;
+              errorBox.hidden = false;
+            };
+            if (value.length < 8) {
+              showError('رمز عبور باید حداقل ۸ نویسه باشد.');
+              first?.focus();
+              return;
+            }
+            if (value !== repeat) {
+              showError('تکرار رمز عبور مطابقت ندارد.');
+              second?.focus();
+              return;
+            }
+            dialogCloseHandler = null;
+            closeDialog();
+            finish(value);
+          },
+        },
+        {
+          label: 'انصراف',
+          onClick: () => {
+            dialogCloseHandler = null;
+            closeDialog();
+            finish(null);
+          },
+        },
+      ],
+    });
+    const submitOnEnter = (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      dialog?.foot.querySelector('.btn-primary')?.click();
+    };
+    dialog?.body.querySelector('#backupPassword')?.addEventListener('keydown', submitOnEnter);
+    dialog?.body
+      .querySelector('#backupPasswordConfirm')
+      ?.addEventListener('keydown', submitOnEnter);
   });
 }
 

@@ -133,6 +133,7 @@ function openAccountDialog(account) {
       const existing = state.accounts.find((a) => a.code === previous);
       if (existing && existing.groupCode === groupCode && Number(existing.level) === currentLevel - 1) candidates.unshift(existing);
     }
+    // eslint-disable-next-line no-unsanitized/property -- option values and labels are escaped
     parentSelect.innerHTML = candidates.length
       ? `<option value="">— انتخاب حساب بالاتر —</option>${candidates.map((a) => `<option value="${esc(a.code)}"${a.code === previous ? ' selected' : ''}>${toFa(a.code)} — ${esc(a.name)}</option>`).join('')}`
       : '<option value="">— حسابی در سطح بالاتر وجود ندارد —</option>';

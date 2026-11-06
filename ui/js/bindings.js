@@ -2,7 +2,7 @@
 
 /* ── Shared event binding ───────────────────────────────────── */
 
-function bindFilterOnly(root) {
+function bindFilterOnly() {
   // Filter forms and generic navigation are handled by bindPageCommon.
 }
 

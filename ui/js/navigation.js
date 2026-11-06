@@ -57,6 +57,7 @@ async function navigate(page, { force = false } = {}) {
   try {
     const data = await def.load(force);
     if (seq !== navSeq || state.page !== page) return;
+    // eslint-disable-next-line no-unsanitized/property -- page renderers escape their data
     root.innerHTML = def.render(data);
     bindPageCommon(root);
     def.bind?.(root, data);

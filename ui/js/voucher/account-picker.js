@@ -507,6 +507,7 @@ async function openQuickAccountCreate() {
   }
 
   const groupSelect = $('#vfQuickAccountGroup');
+  // eslint-disable-next-line no-unsanitized/property -- group fields are escaped in the option template
   groupSelect.innerHTML = groups.map((group) =>
     `<option value="${escapeVoucherPickerHtml(group.code)}">${escapeVoucherPickerHtml(group.code)} — ${escapeVoucherPickerHtml(group.name)}</option>`
   ).join('');

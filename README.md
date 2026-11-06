@@ -56,15 +56,20 @@ npm run build
 
 ```bat
 npm run check:js
+npm run lint:js
 npm test
 npx playwright install chromium
 npm run test:e2e
+cargo build --manifest-path src-tauri/Cargo.toml
+npm run test:smoke:windows
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-- `npm run check:js` فقط صحت نحوی فایل‌های JavaScript را بررسی می‌کند.
+- `npm run check:js` صحت نحوی فایل‌های JavaScript را بررسی می‌کند.
+- `npm run lint:js` تحلیل ایستای ESLint را روی UI، scripts و tests اجرا می‌کند؛
+  قواعد `no-undef`، `no-unused-vars`، `no-unsanitized`، promise و core rules فعال‌اند.
 - `npm test` آزمون‌های واحد فرانت‌اند را با test runner داخلی Node اجرا می‌کند.
 - `npm run test:e2e` آزمون‌های واقعی مرورگر را با Playwright و Chromium اجرا می‌کند.
   بار اول باید Chromium را با `npx playwright install chromium` نصب کرد. این آزمون‌ها
@@ -73,6 +78,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
   دائمی‌سازی و حذف) را در DOM واقعی بررسی می‌کنند. بک‌اند Tauri در این آزمون‌ها با
   یک mock درون‌صفحه‌ای (`tests/e2e/mock-tauri.js`) شبیه‌سازی می‌شود؛ منطق واقعی
   بک‌اند همچنان با آزمون‌های Rust پوشش داده می‌شود.
+- `npm run test:smoke:windows` روی build debug، برنامهٔ واقعی Tauri/WebView2 را اجرا
+  می‌کند و ساخت SQLite در پوشهٔ موقت ایزوله را بررسی می‌کند. ابتدا باید build debug
+  با `cargo build --manifest-path src-tauri/Cargo.toml` ساخته شود.
 - آزمون‌های Rust شامل قواعد سند، سال مالی، گزارش‌ها، Excel، پشتیبان‌گیری و مهاجرت پایگاه داده هستند.
 
 ## ساختار مخزن
@@ -135,12 +143,17 @@ SQLite (فایل پایگاه دادهٔ کاربر)
 می‌شود. در صورت شکست بازیابی، برنامه تلاش می‌کند نسخهٔ قبلی را بازگرداند.
 تعداد نسخه‌های پشتیبان نگهداری‌شده محدود است تا پوشهٔ پشتیبان بی‌رویه رشد نکند.
 
+برای انتقال ایمن، «پشتیبان رمزنگاری‌شده» یک فایل `.hacc` می‌سازد که با رمز عبور
+کاربر و الگوریتم AES-256-GCM محافظت می‌شود. کلید با Argon2id مشتق می‌شود و در فایل
+ذخیره نمی‌شود. هنگام بازیابی، رمز و یکپارچگی فایل پیش از جایگزینی پایگاه داده
+بررسی می‌شود. پشتیبان‌های عادی قدیمی `.sqlite3`/`.db` همچنان پشتیبانی می‌شوند.
+
 ## CI
 
 workflow در `.github/workflows/ci.yml` چهار job دارد:
 
-1. **verify**: نصب قطعی وابستگی‌ها با `npm ci`، بررسی نحوی JavaScript، آزمون‌های
-   واحد فرانت‌اند، بررسی قالب‌بندی Rust، Clippy و آزمون‌های Rust.
+1. **verify**: نصب قطعی وابستگی‌ها با `npm ci`، بررسی نحوی JavaScript، lint با
+   ESLint، آزمون‌های واحد فرانت‌اند، بررسی قالب‌بندی Rust، Clippy و آزمون‌های Rust.
 2. **ui-e2e**: نصب Chromium و اجرای آزمون‌های واقعی مرورگر با Playwright؛ در صورت
    شکست، گزارش و trace آزمون‌ها به‌عنوان Artifact آپلود می‌شود.
 3. **security-audit**: اجرای `npm audit --audit-level=high` و `cargo audit`.
@@ -153,6 +166,17 @@ workflow در `.github/workflows/ci.yml` چهار job دارد:
    `windows-installer-unsigned` منتشر می‌شود؛ برای انتشار رسمی، اجرای
    `workflow_dispatch` با `release: true` در نبود گواهی شکست می‌خورد. فایل
    `release-metadata.json` شامل hash و اطلاعات گواهی در کنار نصاب آپلود می‌شود.
+
+### Smoke test واقعی Windows/Tauri/WebView2
+
+`desktop-build` پس از ساخت release، یک build debug نیز می‌سازد و
+`node scripts/smoke-windows.mjs --exe src-tauri/target/debug/Hesabdari.exe` را
+اجرا می‌کند. این تست برنامهٔ واقعی Tauri را اجرا می‌کند، ایجاد `msedgewebview2.exe`
+را زیر فرایند برنامه بررسی می‌کند و انتظار دارد SQLite واقعی با هدر معتبر ساخته شود.
+داده‌ها با متغیر `HESABDARI_SMOKE_DATA_DIR` به یک پوشهٔ موقت هدایت می‌شوند؛ این
+override فقط در build debug فعال است، بنابراین release هرگز به دیتابیس کاربر متصل
+نمی‌شود. پوشهٔ موقت پس از تست پاک می‌شود. تعامل کامل UI همچنان با Playwright mock و
+آزمون‌های Rust پوشش داده می‌شود.
 
 ## مستندات بیشتر
 

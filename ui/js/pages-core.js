@@ -45,6 +45,7 @@ function chooseWallpaper(file) {
       // (usually because localStorage is unavailable or full).
       toast('تصویر پس‌زمینه اعمال شد، اما ذخیره دائمی آن ممکن نشد؛ پس از بستن برنامه حفظ نمی‌شود.', 'warning');
     }
+    return undefined;
   }).catch((error) => {
     toast(`بارگذاری تصویر ناموفق بود: ${errorText(error)}`, 'error');
   });
