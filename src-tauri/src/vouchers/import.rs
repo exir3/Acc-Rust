@@ -12,7 +12,8 @@ use crate::vouchers::validation::{
     validate_voucher_type,
 };
 use rusqlite::{params, OptionalExtension};
-use std::collections::HashSet;
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 
 /// Deterministic FNV-1a fingerprint of the parsed workbook. It identifies a
 /// retry of the same import without adding a hashing dependency.
@@ -84,6 +85,115 @@ fn import_payload_hash(import: &crate::excel::BulkVoucherImport) -> String {
     hasher.finish()
 }
 
+/// One audited group decision. `source` is `file`, `inferred` or `manual`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupMappingRecord {
+    account_code: String,
+    account_name: String,
+    level: i64,
+    group_code: String,
+    source: &'static str,
+    reason: String,
+}
+
+/// Applies the operator's editable mappings to the parsed accounts. A direct
+/// override is only accepted for an account whose group was inferred from the
+/// code prefix; an explicit value from the workbook is never silently
+/// rewritten. The chosen group then flows down the same branch to inferred
+/// children so the parent/child group invariant stays true.
+fn apply_group_overrides(
+    accounts: &mut [crate::excel::ImportedAccount],
+    overrides: &[crate::excel::GroupMappingOverride],
+) -> Result<Vec<GroupMappingRecord>, String> {
+    if overrides.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut direct: HashMap<String, String> = HashMap::new();
+    for mapping in overrides {
+        let code = db::normalize_code(&mapping.account_code);
+        if code.is_empty() {
+            return Err("کد حساب در نگاشت گروه خالی است.".to_string());
+        }
+        let group_code = crate::excel::parse_code(&mapping.group_code, "کد گروه")?;
+        if group_code.chars().count() > 50 {
+            return Err("کد گروه در نگاشت نمی‌تواند بیشتر از ۵۰ رقم باشد.".to_string());
+        }
+        if let Some(previous) = direct.insert(code.clone(), group_code.clone()) {
+            if previous != group_code {
+                return Err(format!(
+                    "برای حساب {} دو گروه متفاوت انتخاب شده است.",
+                    db::to_fa_digits(&code)
+                ));
+            }
+        }
+    }
+
+    for code in direct.keys() {
+        let Some(account) = accounts
+            .iter()
+            .find(|account| db::normalize_code(&account.code) == *code)
+        else {
+            return Err(format!(
+                "حساب {} در فایل اکسل پیدا نشد؛ نگاشت گروه قابل اعمال نیست.",
+                db::to_fa_digits(code)
+            ));
+        };
+        if !account.group_is_inferred {
+            return Err(format!(
+                "گروه حساب {} از فایل اکسل خوانده شده است و با نگاشت دستی قابل جایگزینی نیست.",
+                db::to_fa_digits(code)
+            ));
+        }
+    }
+
+    let mut order: Vec<usize> = (0..accounts.len()).collect();
+    order.sort_by_key(|&index| accounts[index].level);
+    let mut manual: HashMap<String, GroupMappingRecord> = HashMap::new();
+    for index in order {
+        let code = db::normalize_code(&accounts[index].code);
+        let parent_code = db::normalize_code(&accounts[index].parent_code);
+        let (group_code, reason) = if let Some(group_code) = direct.get(&code) {
+            (
+                group_code.clone(),
+                "گروه پیشنهادی توسط کاربر اصلاح یا تأیید شد.".to_string(),
+            )
+        } else if accounts[index].group_is_inferred {
+            match manual.get(&parent_code) {
+                Some(parent) => (
+                    parent.group_code.clone(),
+                    format!(
+                        "انتقال گروه از حساب بالاتر {}.",
+                        db::to_fa_digits(&parent_code)
+                    ),
+                ),
+                None => continue,
+            }
+        } else {
+            // A group read from the workbook stays untouched; a conflicting
+            // child is reported by the regular parent/group validation.
+            continue;
+        };
+        accounts[index].group_code = group_code.clone();
+        manual.insert(
+            code.clone(),
+            GroupMappingRecord {
+                account_code: code,
+                account_name: accounts[index].name.clone(),
+                level: accounts[index].level,
+                group_code,
+                source: "manual",
+                reason,
+            },
+        );
+    }
+
+    let mut records: Vec<GroupMappingRecord> = manual.into_values().collect();
+    records.sort_by(|left, right| left.account_code.cmp(&right.account_code));
+    Ok(records)
+}
+
 impl Database {
     pub fn preview_bulk_import(
         &self,
@@ -134,6 +244,7 @@ impl Database {
                 account_name: account.name.clone(),
                 level: account.level,
                 group_code: db::normalize_code(&account.group_code),
+                reason: "گروه از پیشوند کد حساب کل حدس زده شد.".to_string(),
             })
             .collect();
         let inferred_group_count = inferred_group_mappings.len();
@@ -323,17 +434,21 @@ impl Database {
         import: crate::excel::BulkVoucherImport,
         renumber_conflicts: bool,
     ) -> Result<usize, String> {
-        self.import_vouchers_with_progress(import, renumber_conflicts, &mut |_, _| {}, &|| false)
+        self.import_vouchers_with_progress(import, renumber_conflicts, &[], &mut |_, _| {}, &|| {
+            false
+        })
     }
 
     /// Imports a parsed workbook while reporting per-voucher progress and
     /// honouring an operator cancellation. Everything runs in one SQLite
     /// transaction, so a cancellation surfaces as an error and rolls the whole
     /// workbook back instead of leaving a partial import behind.
+    #[allow(clippy::too_many_arguments)]
     pub fn import_vouchers_with_progress(
         &self,
-        import: crate::excel::BulkVoucherImport,
+        mut import: crate::excel::BulkVoucherImport,
         renumber_conflicts: bool,
+        group_overrides: &[crate::excel::GroupMappingOverride],
         on_progress: &mut dyn FnMut(usize, usize),
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<usize, String> {
@@ -344,6 +459,10 @@ impl Database {
             return Err(crate::excel::BULK_IMPORT_CANCELLED.to_string());
         }
 
+        // Apply the operator's confirmed mappings before hashing or writing, so
+        // the transaction, the retry fingerprint and the audit all see the
+        // same final groups.
+        let manual_group_mappings = apply_group_overrides(&mut import.accounts, group_overrides)?;
         let payload_hash = import_payload_hash(&import);
         let file_name = import.file_name.clone();
         let sheet_name = import.sheet_name.clone();
@@ -432,17 +551,33 @@ impl Database {
 
         let mut accounts = import.accounts;
         accounts.sort_by_key(|account| account.level);
+        let manual_codes: HashSet<String> = manual_group_mappings
+            .iter()
+            .map(|mapping| mapping.account_code.clone())
+            .collect();
         let inferred_group_mappings: Vec<crate::excel::InferredGroupMapping> = accounts
             .iter()
-            .filter(|account| account.group_is_inferred)
+            .filter(|account| {
+                account.group_is_inferred
+                    && !manual_codes.contains(&db::normalize_code(&account.code))
+            })
             .map(|account| crate::excel::InferredGroupMapping {
                 account_code: db::normalize_code(&account.code),
                 account_name: account.name.clone(),
                 level: account.level,
                 group_code: db::normalize_code(&account.group_code),
+                reason: "گروه از پیشوند کد حساب کل حدس زده شد.".to_string(),
             })
             .collect();
         let inferred_group_count = inferred_group_mappings.len();
+        let manual_group_count = manual_group_mappings.len();
+        let file_group_count = accounts
+            .iter()
+            .filter(|account| {
+                !account.group_is_inferred
+                    && !manual_codes.contains(&db::normalize_code(&account.code))
+            })
+            .count();
         let imported_count = prepared.len();
         if is_cancelled() {
             return Err(crate::excel::BULK_IMPORT_CANCELLED.to_string());
@@ -668,8 +803,15 @@ impl Database {
             let after = serde_json::json!({
                 "voucherCount": imported_count,
                 "numbers": imported_numbers,
+                "groupMappingCounts": {
+                    "file": file_group_count,
+                    "inferred": inferred_group_count,
+                    "manual": manual_group_count,
+                },
                 "inferredGroupCount": inferred_group_count,
                 "inferredGroupMappings": inferred_group_mappings,
+                "manualGroupCount": manual_group_count,
+                "manualGroupMappings": manual_group_mappings,
             });
             let mut details = format!(
                 "ورود گروهی {} سند از فایل «{}»، برگه «{}».",
@@ -683,6 +825,12 @@ impl Database {
                     db::to_fa_digits(inferred_group_count)
                 ));
             }
+            if manual_group_count > 0 {
+                details.push_str(&format!(
+                    " {} نگاشت گروه به‌صورت دستی توسط کاربر تأیید یا اصلاح شد؛ منبع هر نگاشت در فیلد پس از عملیات ثبت شده است.",
+                    db::to_fa_digits(manual_group_count)
+                ));
+            }
             audit::log(
                 &tx,
                 "import",
@@ -692,6 +840,12 @@ impl Database {
                 Some(&after.to_string()),
                 &details,
             )?;
+            // A cancellation can arrive after the last per-voucher check and
+            // while the batch/audit rows are being written. Check once more at
+            // the last possible point so a requested cancel can never commit.
+            if is_cancelled() {
+                return Err(crate::excel::BULK_IMPORT_CANCELLED.to_string());
+            }
             tx.commit().map_err(db::db_error)?;
             Ok(imported_count)
         })

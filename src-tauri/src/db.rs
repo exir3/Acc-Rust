@@ -40,8 +40,8 @@ pub(crate) use fiscal_years::{ensure_open_period, ensure_year_accepts_date};
 pub(crate) use legacy::legacy_migration_backup_path;
 
 pub(crate) use common::{
-    db_error, normalize_code, to_fa_digits, OTHER_NON_OPERATING_GROUP_CODE,
-    OTHER_OPERATING_GROUP_CODE,
+    db_error, normalize_code, random_hex, sha256_file, to_fa_digits,
+    OTHER_NON_OPERATING_GROUP_CODE, OTHER_OPERATING_GROUP_CODE,
 };
 #[cfg(test)]
 pub(crate) use schema::{

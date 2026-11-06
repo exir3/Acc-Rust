@@ -1,7 +1,7 @@
 //! Public Excel import/export result types.
 
 use crate::vouchers::VoucherInput;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct BulkVoucherImport {
@@ -32,6 +32,19 @@ pub struct InferredGroupMapping {
     pub account_code: String,
     pub account_name: String,
     pub level: i64,
+    pub group_code: String,
+    /// Why the group was proposed, shown next to the editable mapping so the
+    /// operator can judge it instead of trusting an unexplained number.
+    pub reason: String,
+}
+
+/// A group the operator chose for an inferred mapping before committing the
+/// import. The account must exist in the parsed workbook and must have been
+/// inferred, so a stale or forged entry cannot rewrite an explicit file value.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMappingOverride {
+    pub account_code: String,
     pub group_code: String,
 }
 

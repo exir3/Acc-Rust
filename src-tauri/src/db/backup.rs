@@ -1,18 +1,23 @@
 //! Backup, restore and backup-file validation.
 
 use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 use crate::db::audit;
 use crate::db::common::{
-    db_error, to_fa_digits, BULK_DELETE_SNAPSHOT_KEY, BULK_DELETE_SNAPSHOT_VALUE,
-    CURRENT_SCHEMA_VERSION, LEGACY_LEVEL4_SNAPSHOT_VALUE,
+    db_error, from_hex, random_hex, sha256_file, to_fa_digits, to_hex, BULK_DELETE_SNAPSHOT_KEY,
+    BULK_DELETE_SNAPSHOT_VALUE, CURRENT_SCHEMA_VERSION, LEGACY_LEVEL4_SNAPSHOT_VALUE,
 };
 use crate::db::model::Database;
 use crate::db::schema::{
     apply_base_schema, apply_schema_migrations, ensure_permanent_voucher_guards,
-    ensure_voucher_account_pair_guards, table_exists,
+    ensure_voucher_account_pair_guards,
 };
 use crate::vouchers::MAX_VOUCHER_NUMBER;
 
@@ -35,11 +40,11 @@ impl SnapshotKind {
         }
     }
 
-    fn from_marker(value: Option<&str>) -> Self {
+    fn from_manifest_value(value: &str) -> Option<Self> {
         match value {
-            Some(BULK_DELETE_SNAPSHOT_VALUE) => Self::BulkDelete,
-            Some(LEGACY_LEVEL4_SNAPSHOT_VALUE) => Self::LegacyLevel4Migration,
-            _ => Self::Regular,
+            BULK_DELETE_SNAPSHOT_VALUE => Some(Self::BulkDelete),
+            LEGACY_LEVEL4_SNAPSHOT_VALUE => Some(Self::LegacyLevel4Migration),
+            _ => None,
         }
     }
 
@@ -54,6 +59,161 @@ impl SnapshotKind {
     fn allow_legacy_level4_hierarchy(self) -> bool {
         matches!(self, Self::LegacyLevel4Migration)
     }
+}
+
+const SNAPSHOT_MANIFEST_SUFFIX: &str = ".manifest.json";
+const SNAPSHOT_KEY_FILE: &str = "snapshot-integrity.key";
+const SNAPSHOT_MANIFEST_VERSION: u32 = 1;
+
+/// Sidecar proof for an internal snapshot. The marker inside SQLite is only
+/// metadata; a relaxed restore path requires this manifest, whose HMAC key is
+/// stored outside the backup in the user's application-data folder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SnapshotManifest {
+    version: u32,
+    kind: String,
+    file_sha256: String,
+    created_at_unix: i64,
+    operation_id: String,
+    mac: String,
+}
+
+impl SnapshotManifest {
+    fn new(kind: SnapshotKind, file_sha256: String) -> Result<Self, String> {
+        let kind = kind
+            .marker_value()
+            .ok_or_else(|| "نوع snapshot داخلی برای ساخت manifest معتبر نیست.".to_string())?;
+        let created_at_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or_default();
+        Ok(Self {
+            version: SNAPSHOT_MANIFEST_VERSION,
+            kind: kind.to_string(),
+            file_sha256,
+            created_at_unix,
+            operation_id: random_hex(16)?,
+            mac: String::new(),
+        })
+    }
+
+    fn mac_input(&self) -> String {
+        format!(
+            "hesabdari-snapshot-v1\n{}\n{}\n{}\n{}\n{}",
+            self.version, self.kind, self.file_sha256, self.created_at_unix, self.operation_id
+        )
+    }
+
+    fn sign(&mut self, key: &[u8]) -> Result<(), String> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key)
+            .map_err(|_| "کلید احراز اصالت snapshot معتبر نیست.".to_string())?;
+        mac.update(self.mac_input().as_bytes());
+        self.mac = to_hex(&mac.finalize().into_bytes());
+        Ok(())
+    }
+
+    fn verify(&self, key: &[u8]) -> Result<(), String> {
+        let expected = from_hex(&self.mac)?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(key)
+            .map_err(|_| "کلید احراز اصالت snapshot معتبر نیست.".to_string())?;
+        mac.update(self.mac_input().as_bytes());
+        mac.verify_slice(&expected)
+            .map_err(|_| "امضای manifest پشتیبان داخلی معتبر نیست.".to_string())
+    }
+
+    fn snapshot_kind(&self) -> Result<SnapshotKind, String> {
+        if self.version != SNAPSHOT_MANIFEST_VERSION {
+            return Err("نسخه manifest پشتیبان داخلی پشتیبانی نمی‌شود.".to_string());
+        }
+        SnapshotKind::from_manifest_value(&self.kind)
+            .ok_or_else(|| "نوع snapshot در manifest پشتیبان داخلی معتبر نیست.".to_string())
+    }
+}
+
+fn snapshot_manifest_path(backup_path: &Path) -> PathBuf {
+    let file_name = backup_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("backup.sqlite3");
+    backup_path.with_file_name(format!("{file_name}{SNAPSHOT_MANIFEST_SUFFIX}"))
+}
+
+fn snapshot_key_path(database_path: &Path) -> Result<PathBuf, String> {
+    let parent = database_path
+        .parent()
+        .ok_or_else(|| "مسیر پوشه داده برای کلید snapshot پیدا نشد.".to_string())?;
+    Ok(parent.join(SNAPSHOT_KEY_FILE))
+}
+
+fn load_snapshot_key(database_path: &Path) -> Result<Option<Vec<u8>>, String> {
+    let path = snapshot_key_path(database_path)?;
+    match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() == 32 => Ok(Some(bytes)),
+        Ok(_) => Err(format!(
+            "فایل کلید احراز اصالت snapshot در «{}» معتبر نیست.",
+            path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "خواندن کلید احراز اصالت snapshot ناموفق بود: {error}"
+        )),
+    }
+}
+
+fn load_or_create_snapshot_key(database_path: &Path) -> Result<Vec<u8>, String> {
+    if let Some(key) = load_snapshot_key(database_path)? {
+        return Ok(key);
+    }
+    let path = snapshot_key_path(database_path)?;
+    let key = from_hex(&random_hex(32)?)?;
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            file.write_all(&key)
+                .map_err(|error| format!("ذخیره کلید احراز اصالت snapshot ناموفق بود: {error}"))?;
+            Ok(key)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            load_snapshot_key(database_path)?.ok_or_else(|| {
+                "کلید احراز اصالت snapshot هم‌زمان ایجاد شد اما خوانده نشد.".to_string()
+            })
+        }
+        Err(error) => Err(format!(
+            "ساخت کلید احراز اصالت snapshot ناموفق بود: {error}"
+        )),
+    }
+}
+
+fn authenticated_snapshot_kind(
+    database_path: &Path,
+    source_path: &Path,
+) -> Result<SnapshotKind, String> {
+    let manifest_path = snapshot_manifest_path(source_path);
+    if !manifest_path.exists() {
+        // The marker inside the file is untrusted metadata. Without a signed
+        // sidecar manifest, a user-selected file always takes the strict path.
+        return Ok(SnapshotKind::Regular);
+    }
+    let key = load_snapshot_key(database_path)?.ok_or_else(|| {
+        "manifest پشتیبان داخلی یافت شد اما کلید احراز اصالت آن در این دستگاه موجود نیست؛ بازیابی امن ممکن نیست.".to_string()
+    })?;
+    let manifest_bytes = std::fs::read(&manifest_path)
+        .map_err(|error| format!("خواندن manifest پشتیبان داخلی ناموفق بود: {error}"))?;
+    let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|error| format!("manifest پشتیبان داخلی معتبر نیست: {error}"))?;
+    manifest.verify(&key)?;
+    let kind = manifest.snapshot_kind()?;
+    let actual_hash = sha256_file(source_path)?;
+    if actual_hash != manifest.file_sha256 {
+        return Err(
+            "فایل پشتیبان پس از ساخت manifest تغییر کرده است و قابل بازیابی نیست.".to_string(),
+        );
+    }
+    Ok(kind)
 }
 
 impl Database {
@@ -87,7 +247,7 @@ impl Database {
             let temporary = unique_sibling_path(destination, "backup-tmp");
             let _ = std::fs::remove_file(&temporary);
             let mut target = Connection::open(&temporary).map_err(db_error)?;
-            let validation = (|| {
+            let validation = (|| -> Result<Option<PathBuf>, String> {
                 {
                     let backup = Backup::new(source, &mut target).map_err(db_error)?;
                     backup
@@ -105,14 +265,39 @@ impl Database {
                         )
                         .map_err(db_error)?;
                 }
-                Ok(())
+                if kind == SnapshotKind::Regular {
+                    return Ok(None);
+                }
+                let key = load_or_create_snapshot_key(&current_path)?;
+                let mut manifest = SnapshotManifest::new(kind, sha256_file(&temporary)?)?;
+                manifest.sign(&key)?;
+                let manifest_temporary = unique_sibling_path(destination, "manifest-tmp");
+                let _ = std::fs::remove_file(&manifest_temporary);
+                std::fs::write(
+                    &manifest_temporary,
+                    serde_json::to_vec_pretty(&manifest)
+                        .map_err(|error| format!("ساخت manifest پشتیبان ناموفق بود: {error}"))?,
+                )
+                .map_err(|error| format!("نوشتن manifest پشتیبان ناموفق بود: {error}"))?;
+                Ok(Some(manifest_temporary))
             })();
             drop(target);
-            if let Err(error) = validation {
-                let _ = std::fs::remove_file(&temporary);
-                return Err(error);
+            let manifest_temporary = match validation {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&temporary);
+                    return Err(error);
+                }
+            };
+            replace_file(&temporary, destination)?;
+            if let Some(manifest_temporary) = manifest_temporary {
+                let manifest_destination = snapshot_manifest_path(destination);
+                if let Err(error) = replace_file(&manifest_temporary, &manifest_destination) {
+                    let _ = std::fs::remove_file(destination);
+                    return Err(error);
+                }
             }
-            replace_file(&temporary, destination)
+            Ok(())
         })
     }
 
@@ -124,7 +309,7 @@ impl Database {
 
         let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| format!("باز کردن فایل پشتیبان ناموفق بود: {error}"))?;
-        let snapshot_kind = snapshot_kind(&source)?;
+        let snapshot_kind = authenticated_snapshot_kind(&current_path, source_path)?;
         validate_backup_connection_with_options(&source, snapshot_kind)?;
         let safety_path = unique_sibling_path(&current_path, "before-restore");
 
@@ -153,14 +338,15 @@ impl Database {
             })
             .and_then(|()| reset_schema_triggers(target))
             .and_then(|()| {
-                if snapshot_kind.marker_value().is_some() {
-                    target
-                        .execute(
-                            "DELETE FROM app_meta WHERE key = ?1",
-                            params![BULK_DELETE_SNAPSHOT_KEY],
-                        )
-                        .map_err(db_error)?;
-                }
+                // The marker is internal metadata only. Always remove it from
+                // the restored live database so a copied file cannot carry a
+                // privileged marker forward.
+                target
+                    .execute(
+                        "DELETE FROM app_meta WHERE key = ?1",
+                        params![BULK_DELETE_SNAPSHOT_KEY],
+                    )
+                    .map_err(db_error)?;
                 audit::log(
                     target,
                     "restore",
@@ -233,21 +419,6 @@ fn reset_schema_triggers(conn: &Connection) -> Result<(), String> {
 #[cfg(test)]
 pub(crate) fn validate_backup_connection(conn: &Connection) -> Result<(), String> {
     validate_backup_connection_with_options(conn, SnapshotKind::Regular)
-}
-
-fn snapshot_kind(conn: &Connection) -> Result<SnapshotKind, String> {
-    if !table_exists(conn, "app_meta")? {
-        return Ok(SnapshotKind::Regular);
-    }
-    let value = conn
-        .query_row(
-            "SELECT value FROM app_meta WHERE key = ?1",
-            params![BULK_DELETE_SNAPSHOT_KEY],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(db_error)?;
-    Ok(SnapshotKind::from_marker(value.as_deref()))
 }
 
 fn validate_backup_connection_with_options(

@@ -1,11 +1,13 @@
 //! Chart-of-accounts import and export in the WebApp-compatible layout.
 
-use crate::db;
+use crate::db::{self, random_hex, sha256_file};
 use crate::excel::common::*;
 use calamine::{open_workbook_auto, Data, Reader};
 use rust_xlsxwriter::Workbook;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /* ── Chart of accounts import/export (WebApp-compatible layout) ── */
 
@@ -26,6 +28,8 @@ pub struct AccountImportResult {
 #[serde(rename_all = "camelCase")]
 pub struct AccountImportPreview {
     pub file_path: String,
+    /// Short-lived token that binds confirmation to this exact preview.
+    pub preview_token: String,
     pub created_count: usize,
     pub skipped_count: usize,
     pub created_codes: Vec<String>,
@@ -36,13 +40,25 @@ pub struct AccountImportPreview {
     pub atomic_ready: bool,
 }
 
+/// The parsed plan kept between preview and confirmation. The import command
+/// receives only its token, so a different path or file cannot be substituted.
+pub struct AccountImportSession {
+    pub(crate) token: String,
+    pub(crate) plan: AccountWorkbookPlan,
+    pub(crate) file_hash: String,
+    pub(crate) canonical_path: PathBuf,
+    pub(crate) expires_at: Instant,
+}
+
+const ACCOUNT_IMPORT_PREVIEW_TTL: Duration = Duration::from_secs(15 * 60);
+
 struct PlannedAccountRow {
     excel_row: usize,
     new_accounts: Vec<db::NewAccount>,
     error: Option<String>,
 }
 
-struct AccountWorkbookPlan {
+pub(crate) struct AccountWorkbookPlan {
     rows: Vec<PlannedAccountRow>,
     created_codes: Vec<String>,
     skipped_codes: Vec<String>,
@@ -502,43 +518,101 @@ fn plan_account_workbook(
 }
 
 /// Read the workbook and report what would happen, without writing to the
-/// database. The returned path is used by the confirmed import call.
-pub fn preview_accounts(database: &db::Database) -> Result<Option<AccountImportPreview>, String> {
+/// database. The returned session keeps the parsed plan and file hash; the
+/// confirmed import call must present the same token.
+pub fn preview_accounts(
+    database: &db::Database,
+) -> Result<Option<(AccountImportPreview, AccountImportSession)>, String> {
     let Some(path) = account_import_path() else {
         return Ok(None);
     };
-    let plan = plan_account_workbook(database, &path)?;
-    Ok(Some(AccountImportPreview {
-        file_path: path.to_string_lossy().to_string(),
-        created_count: plan.created_codes.len(),
-        skipped_count: plan.skipped_codes.len(),
-        created_codes: plan.created_codes,
-        skipped_codes: plan.skipped_codes,
-        errors: plan.errors,
-        error_count: plan.error_count,
-        atomic_ready: plan.error_count == 0,
-    }))
+    preview_accounts_at(database, &path).map(Some)
 }
 
-/// Import a previously previewed file. `mode` is `"atomic"` (the whole file is
-/// written in one transaction and any error changes nothing) or `"partial"`
-/// (valid rows are written and invalid rows are reported).
+pub(crate) fn preview_accounts_at(
+    database: &db::Database,
+    path: &Path,
+) -> Result<(AccountImportPreview, AccountImportSession), String> {
+    ensure_excel_file_size(path)?;
+    let canonical_path = std::fs::canonicalize(path)
+        .map_err(|error| format!("مسیر فایل اکسل معتبر نیست: {error}"))?;
+    // Hash before and after parsing. If the file changed while it was being
+    // read, the preview is rejected instead of binding a plan to other bytes.
+    let hash_before = sha256_file(&canonical_path)?;
+    let plan = plan_account_workbook(database, &canonical_path)?;
+    let file_hash = sha256_file(&canonical_path)?;
+    if hash_before != file_hash {
+        return Err("فایل اکسل در حین پیش‌نمایش تغییر کرد؛ دوباره پیش‌نمایش بگیرید.".to_string());
+    }
+    let token = random_hex(16)?;
+    let preview = AccountImportPreview {
+        file_path: canonical_path.to_string_lossy().to_string(),
+        preview_token: token.clone(),
+        created_count: plan.created_codes.len(),
+        skipped_count: plan.skipped_codes.len(),
+        created_codes: plan.created_codes.clone(),
+        skipped_codes: plan.skipped_codes.clone(),
+        errors: plan.errors.clone(),
+        error_count: plan.error_count,
+        atomic_ready: plan.error_count == 0,
+    };
+    let session = AccountImportSession {
+        token,
+        plan,
+        file_hash,
+        canonical_path,
+        expires_at: Instant::now() + ACCOUNT_IMPORT_PREVIEW_TTL,
+    };
+    Ok((preview, session))
+}
+
+/// Import a previously previewed plan. `mode` must be `"atomic"` (the whole
+/// file is written in one transaction and any error changes nothing) or
+/// `"partial"` (valid rows are written and invalid rows are reported). Any
+/// other value is rejected rather than silently treated as atomic.
 pub fn import_accounts(
     database: &db::Database,
-    file_path: &str,
+    session: AccountImportSession,
     mode: &str,
 ) -> Result<AccountImportResult, String> {
-    let path = std::path::PathBuf::from(file_path);
-    let plan = plan_account_workbook(database, &path)?;
-    apply_account_plan(database, plan, mode)
+    let partial = match mode {
+        "atomic" => false,
+        "partial" => true,
+        _ => {
+            return Err("حالت ورود اکسل باید «atomic» یا «partial» باشد.".to_string());
+        }
+    };
+    if Instant::now() > session.expires_at {
+        return Err("پیش‌نمایش ورود حساب منقضی شده است؛ دوباره پیش‌نمایش بگیرید.".to_string());
+    }
+    let current_path = std::fs::canonicalize(&session.canonical_path)
+        .map_err(|error| format!("فایل پیش‌نمایش‌شده دیگر قابل دسترسی نیست: {error}"))?;
+    if current_path != session.canonical_path {
+        return Err(
+            "مسیر فایل از زمان پیش‌نمایش تغییر کرده است؛ دوباره پیش‌نمایش بگیرید.".to_string(),
+        );
+    }
+    if sha256_file(&current_path)? != session.file_hash {
+        return Err("فایل از زمان پیش‌نمایش تغییر کرده است؛ دوباره پیش‌نمایش بگیرید.".to_string());
+    }
+    apply_account_plan(database, session.plan, partial)
+}
+
+#[cfg(test)]
+pub(crate) fn import_accounts_from_path(
+    database: &db::Database,
+    path: &Path,
+    mode: &str,
+) -> Result<AccountImportResult, String> {
+    let (_, session) = preview_accounts_at(database, path)?;
+    import_accounts(database, session, mode)
 }
 
 fn apply_account_plan(
     database: &db::Database,
     plan: AccountWorkbookPlan,
-    mode: &str,
+    partial: bool,
 ) -> Result<AccountImportResult, String> {
-    let partial = mode.eq_ignore_ascii_case("partial");
     if !partial && plan.error_count > 0 {
         return Ok(AccountImportResult {
             created_count: 0,

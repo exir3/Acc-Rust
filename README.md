@@ -137,14 +137,22 @@ SQLite (فایل پایگاه دادهٔ کاربر)
 
 ## CI
 
-workflow در `.github/workflows/ci.yml` سه مرحله دارد:
+workflow در `.github/workflows/ci.yml` چهار job دارد:
 
 1. **verify**: نصب قطعی وابستگی‌ها با `npm ci`، بررسی نحوی JavaScript، آزمون‌های
    واحد فرانت‌اند، بررسی قالب‌بندی Rust، Clippy و آزمون‌های Rust.
 2. **ui-e2e**: نصب Chromium و اجرای آزمون‌های واقعی مرورگر با Playwright؛ در صورت
    شکست، گزارش و trace آزمون‌ها به‌عنوان Artifact آپلود می‌شود.
-3. **desktop-build**: پس از موفقیت دو مرحلهٔ قبل، ساخت واقعی برنامهٔ Windows با
-   Tauri، بررسی وجود نصاب NSIS و انتشار آن به‌عنوان Artifact.
+3. **security-audit**: اجرای `npm audit --audit-level=high` و `cargo audit`.
+4. **desktop-build**: فقط پس از موفقیت `verify`، `ui-e2e` و `security-audit` اجرا
+   می‌شود. ساخت دو مرحله‌ای است: ابتدا `tauri build --no-bundle` فایل اجرایی را
+   می‌سازد، در صورت وجود گواهی همان فایل اجرایی امضا می‌شود، سپس
+   `tauri bundle --no-binary-patching` نصاب NSIS را از فایل امضاشده می‌سازد و در
+   صورت وجود گواهی نصاب را نیز امضا می‌کند. در پایان `signtool verify /pa /v`
+   اعتبار هر دو امضا را بررسی می‌کند. بدون گواهی، Artifact با نام
+   `windows-installer-unsigned` منتشر می‌شود؛ برای انتشار رسمی، اجرای
+   `workflow_dispatch` با `release: true` در نبود گواهی شکست می‌خورد. فایل
+   `release-metadata.json` شامل hash و اطلاعات گواهی در کنار نصاب آپلود می‌شود.
 
 ## مستندات بیشتر
 

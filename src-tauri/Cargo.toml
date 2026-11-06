@@ -21,8 +21,11 @@ serde_json = "1"
 rfd = "0.17"
 jalali-calendar = "0.1.2"
 rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
-calamine = "0.37"
+calamine = "0.38"
 rust_xlsxwriter = "0.102"
+sha2 = "0.10"
+hmac = "0.12"
+getrandom = "0.3"
 zip = { version = "9.2", default-features = false }
 
 [profile.release]

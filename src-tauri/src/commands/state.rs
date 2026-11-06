@@ -37,6 +37,10 @@ pub struct AppState {
     pub(crate) database: db::Database,
     /// Parsed workbook awaiting the user's bulk-import confirmation.
     pub(crate) bulk_voucher_import: Mutex<Option<excel::BulkVoucherImport>>,
+    /// Parsed chart-of-accounts workbook awaiting the user's confirmation.
+    /// The import command accepts only the token, so it cannot substitute a
+    /// different path or file after the preview was shown.
+    pub(crate) account_import_preview: Mutex<Option<excel::AccountImportSession>>,
     /// Set by the cancel command; the running parse or commit checks it and
     /// aborts, rolling back the import transaction.
     pub(crate) bulk_import_cancel: Arc<AtomicBool>,

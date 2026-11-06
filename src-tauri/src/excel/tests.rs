@@ -841,13 +841,34 @@ mod tests {
     }
 
     #[test]
+    fn account_import_rejects_a_file_changed_after_preview() {
+        let database = crate::db::memory_database();
+        let path = account_import_test_path("changed.xlsx");
+        write_account_import_workbook(&path);
+
+        let (_, session) = preview_accounts_at(&database, &path).expect("account preview");
+        std::fs::write(&path, b"changed after preview").expect("rewrite workbook");
+
+        let error = import_accounts(&database, session, "partial").unwrap_err();
+        assert!(error.contains("تغییر کرده"));
+        assert!(database
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .iter()
+            .all(|account| !account.code.starts_with("9800")));
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn account_import_atomic_writes_nothing_when_any_row_is_invalid() {
         let database = crate::db::memory_database();
         let path = account_import_test_path("atomic.xlsx");
         write_account_import_workbook(&path);
 
-        let result = import_accounts(&database, path.to_str().unwrap(), "atomic")
-            .expect("atomic import result");
+        let result =
+            import_accounts_from_path(&database, &path, "atomic").expect("atomic import result");
         assert!(result.aborted);
         assert_eq!(result.created_count, 0);
         assert_eq!(result.skipped_count, 0);
@@ -868,8 +889,8 @@ mod tests {
         let path = account_import_test_path("partial.xlsx");
         write_account_import_workbook(&path);
 
-        let result = import_accounts(&database, path.to_str().unwrap(), "partial")
-            .expect("partial import result");
+        let result =
+            import_accounts_from_path(&database, &path, "partial").expect("partial import result");
         assert!(!result.aborted);
         assert_eq!(result.created_count, 3);
         assert_eq!(result.created_codes.len(), 3);

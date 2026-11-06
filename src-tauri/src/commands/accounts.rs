@@ -2,7 +2,7 @@
 
 use tauri::{AppHandle, State, WebviewWindow};
 
-use crate::commands::state::{notify_accounts_changed, require_window, AppState};
+use crate::commands::state::{lock, notify_accounts_changed, require_window, AppState};
 use crate::{db, excel};
 
 /* ── Account groups ─────────────────────────────────────────── */
@@ -228,19 +228,37 @@ pub(crate) fn preview_account_excel_import(
     state: State<'_, AppState>,
 ) -> Result<Option<excel::AccountImportPreview>, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    excel::preview_accounts(&state.database)
+    let Some((preview, session)) = excel::preview_accounts(&state.database)? else {
+        return Ok(None);
+    };
+    *lock(&state.account_import_preview) = Some(session);
+    Ok(Some(preview))
 }
 
 #[tauri::command(async)]
 pub(crate) fn import_account_excel(
-    file_path: String,
+    preview_token: String,
     mode: String,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<excel::AccountImportResult, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    let result = excel::import_accounts(&state.database, &file_path, &mode)?;
+    // Consume the session only when the token matches. A stale or forged token
+    // cannot apply a plan that was never previewed in this process.
+    let session = {
+        let mut guard = lock(&state.account_import_preview);
+        match guard.as_ref() {
+            Some(session) if session.token == preview_token => guard.take(),
+            _ => None,
+        }
+    };
+    let Some(session) = session else {
+        return Err(
+            "پیش‌نمایش ورود اکسل معتبر نیست یا منقضی شده است؛ دوباره پیش‌نمایش بگیرید.".to_string(),
+        );
+    };
+    let result = excel::import_accounts(&state.database, session, &mode)?;
     if result.created_count > 0 {
         notify_accounts_changed(&app);
     }

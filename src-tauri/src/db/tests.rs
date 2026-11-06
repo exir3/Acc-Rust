@@ -406,6 +406,18 @@ mod tests {
             .unwrap();
         assert_eq!(marker_count, 0);
 
+        // A copied snapshot without its signed sidecar manifest is not trusted:
+        // the marker inside SQLite is metadata only and must not unlock the
+        // relaxed restore path.
+        let marker_only_copy = dir.join("marker-only.sqlite3");
+        std::fs::copy(&backup_path, &marker_only_copy).unwrap();
+        let error = db.restore_from(&marker_only_copy).unwrap_err();
+        assert!(
+            error.contains("تراز") || error.contains("ساختار ردیف‌ها"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 2);
+
         // Ordinary user-selected backups remain strict and still report the
         // pre-existing voucher defect rather than silently accepting it.
         let regular_backup = dir.join("regular-backup.sqlite3");

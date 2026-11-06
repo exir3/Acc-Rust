@@ -1,5 +1,9 @@
 //! Small database-wide constants and error/format helpers.
 
+use sha2::{Digest, Sha256};
+use std::io::Read;
+use std::path::Path;
+
 pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
 /// Version physically described by the base `SCHEMA` string. Additive
 /// migrations then bring a fresh or restored database up to
@@ -62,4 +66,55 @@ pub(crate) fn to_fa_digits(value: impl ToString) -> String {
             _ => ch,
         })
         .collect()
+}
+
+/// Cryptographically random bytes encoded as lowercase hexadecimal. Used for
+/// preview tokens and snapshot manifest operation ids; these values are never
+/// persisted as secret material themselves.
+pub(crate) fn random_hex(byte_count: usize) -> Result<String, String> {
+    let mut bytes = vec![0u8; byte_count];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("تولید مقدار تصادفی امن ناموفق بود: {error}"))?;
+    Ok(to_hex(&bytes))
+}
+
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        value.push_str(&format!("{byte:02x}"));
+    }
+    value
+}
+
+pub(crate) fn from_hex(value: &str) -> Result<Vec<u8>, String> {
+    if !value.len().is_multiple_of(2) {
+        return Err("مقدار هگزادسیمال نامعتبر است.".to_string());
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for index in (0..value.len()).step_by(2) {
+        let pair = &value[index..index + 2];
+        let byte = u8::from_str_radix(pair, 16)
+            .map_err(|_| "مقدار هگزادسیمال نامعتبر است.".to_string())?;
+        bytes.push(byte);
+    }
+    Ok(bytes)
+}
+
+/// SHA-256 of a file's bytes, encoded as lowercase hexadecimal. Used to bind a
+/// preview or snapshot manifest to the exact file the user confirmed.
+pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("باز کردن فایل برای محاسبه hash ناموفق بود: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("خواندن فایل برای محاسبه hash ناموفق بود: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(to_hex(&hasher.finalize()))
 }

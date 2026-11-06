@@ -596,7 +596,7 @@ fn bulk_import_cancellation_rolls_back_every_voucher_and_account() {
     // cancel before the second so the rollback is observable.
     let checks = std::cell::Cell::new(0);
     let error = db
-        .import_vouchers_with_progress(import, false, &mut |_, _| {}, &|| {
+        .import_vouchers_with_progress(import, false, &[], &mut |_, _| {}, &|| {
             let next = checks.get() + 1;
             checks.set(next);
             next >= 5
@@ -611,6 +611,209 @@ fn bulk_import_cancellation_rolls_back_every_voucher_and_account() {
         .accounts
         .iter()
         .any(|account| account.code == "903101"));
+}
+
+#[test]
+fn bulk_import_cancellation_at_the_final_check_rolls_back_the_whole_batch() {
+    let db = db::memory_database();
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "final-cancel.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        accounts: vec![
+            crate::excel::ImportedAccount {
+                code: "904".to_string(),
+                name: "حساب کل لغو نهایی".to_string(),
+                parent_code: String::new(),
+                group_code: "1".to_string(),
+                level: 1,
+                nature: "debtor".to_string(),
+                nature_is_explicit: false,
+                group_is_inferred: false,
+            },
+            crate::excel::ImportedAccount {
+                code: "904101".to_string(),
+                name: "حساب معین لغو نهایی".to_string(),
+                parent_code: "904".to_string(),
+                group_code: "1".to_string(),
+                level: 2,
+                nature: "debtor".to_string(),
+                nature_is_explicit: false,
+                group_is_inferred: false,
+            },
+        ],
+        vouchers: vec![VoucherInput {
+            id: None,
+            number: Some(1),
+            date: "1405/01/01".to_string(),
+            voucher_type: VOUCHER_TYPES[0].to_string(),
+            description: String::new(),
+            fiscal_year_id: None,
+            lines: vec![line("904101", 100, 0), line("110101", 0, 100)],
+        }],
+    };
+
+    // Only ask to cancel once the transaction has written every account,
+    // voucher and audit row and reported completion for the second time. The
+    // final check immediately before commit must still roll all of it back.
+    let completed_reports = std::cell::Cell::new(0);
+    let cancel = std::cell::Cell::new(false);
+    let error = db
+        .import_vouchers_with_progress(
+            import,
+            false,
+            &[],
+            &mut |done, total| {
+                if done == total {
+                    let next = completed_reports.get() + 1;
+                    completed_reports.set(next);
+                    if next >= 2 {
+                        cancel.set(true);
+                    }
+                }
+            },
+            &|| cancel.get(),
+        )
+        .unwrap_err();
+
+    assert_eq!(error, crate::excel::BULK_IMPORT_CANCELLED);
+    assert_eq!(completed_reports.get(), 2);
+    assert!(db.get_voucher(1).unwrap().is_none());
+    assert!(!db
+        .list_accounts()
+        .unwrap()
+        .accounts
+        .iter()
+        .any(|account| account.code == "904101"));
+    let batches: i64 = db
+        .with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM import_batches", [], |row| row.get(0))
+                .map_err(db::db_error)
+        })
+        .unwrap();
+    assert_eq!(batches, 0);
+}
+
+#[test]
+fn bulk_import_applies_a_confirmed_override_to_the_whole_inferred_branch() {
+    let db = db::memory_database();
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "override.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        accounts: vec![
+            crate::excel::ImportedAccount {
+                code: "905".to_string(),
+                name: "حساب کل نگاشت دستی".to_string(),
+                parent_code: String::new(),
+                group_code: "1".to_string(),
+                level: 1,
+                nature: "debtor".to_string(),
+                nature_is_explicit: false,
+                group_is_inferred: true,
+            },
+            crate::excel::ImportedAccount {
+                code: "905101".to_string(),
+                name: "حساب معین نگاشت دستی".to_string(),
+                parent_code: "905".to_string(),
+                group_code: "1".to_string(),
+                level: 2,
+                nature: "debtor".to_string(),
+                nature_is_explicit: false,
+                group_is_inferred: true,
+            },
+        ],
+        vouchers: vec![VoucherInput {
+            id: None,
+            number: Some(1),
+            date: "1405/01/01".to_string(),
+            voucher_type: VOUCHER_TYPES[0].to_string(),
+            description: String::new(),
+            fiscal_year_id: None,
+            lines: vec![line("905101", 100, 0), line("110101", 0, 100)],
+        }],
+    };
+
+    let overrides = vec![crate::excel::GroupMappingOverride {
+        account_code: "905".to_string(),
+        group_code: "2".to_string(),
+    }];
+    assert_eq!(
+        db.import_vouchers_with_progress(import, false, &overrides, &mut |_, _| {}, &|| false)
+            .unwrap(),
+        1
+    );
+
+    let accounts = db.list_accounts().unwrap().accounts;
+    assert!(accounts
+        .iter()
+        .any(|account| account.code == "905" && account.group_code == "2"));
+    assert!(accounts
+        .iter()
+        .any(|account| account.code == "905101" && account.group_code == "2"));
+
+    let logs = db.list_audit_logs(Some(100), None, None).unwrap();
+    let entry = logs
+        .entries
+        .iter()
+        .find(|entry| entry.action == "import")
+        .expect("bulk import audit entry");
+    let after: serde_json::Value =
+        serde_json::from_str(entry.after_value.as_deref().unwrap_or("{}")).unwrap();
+    assert_eq!(after["manualGroupCount"].as_u64(), Some(2));
+    assert_eq!(after["inferredGroupCount"].as_u64(), Some(0));
+    let mappings = after["manualGroupMappings"].as_array().unwrap();
+    assert_eq!(mappings.len(), 2);
+    assert!(mappings.iter().all(|mapping| mapping["source"] == "manual"));
+    assert!(mappings.iter().any(|mapping| {
+        mapping["accountCode"] == "905101"
+            && mapping["groupCode"] == "2"
+            && mapping["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("حساب بالاتر")
+    }));
+}
+
+#[test]
+fn bulk_import_rejects_an_override_for_a_group_read_from_the_file() {
+    let db = db::memory_database();
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "explicit-group.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        accounts: vec![crate::excel::ImportedAccount {
+            code: "906".to_string(),
+            name: "حساب کل با گروه صریح".to_string(),
+            parent_code: String::new(),
+            group_code: "1".to_string(),
+            level: 1,
+            nature: "debtor".to_string(),
+            nature_is_explicit: false,
+            group_is_inferred: false,
+        }],
+        vouchers: vec![VoucherInput {
+            id: None,
+            number: Some(1),
+            date: "1405/01/01".to_string(),
+            voucher_type: VOUCHER_TYPES[0].to_string(),
+            description: String::new(),
+            fiscal_year_id: None,
+            lines: vec![line("906", 100, 0), line("110101", 0, 100)],
+        }],
+    };
+
+    let overrides = vec![crate::excel::GroupMappingOverride {
+        account_code: "906".to_string(),
+        group_code: "2".to_string(),
+    }];
+    let error = db
+        .import_vouchers_with_progress(import, false, &overrides, &mut |_, _| {}, &|| false)
+        .unwrap_err();
+    assert!(error.contains("از فایل اکسل خوانده شده"));
+    assert!(db
+        .list_accounts()
+        .unwrap()
+        .accounts
+        .iter()
+        .all(|account| account.code != "906"));
 }
 
 #[test]

@@ -1124,7 +1124,7 @@
               message: `${summary}. ورود یکپارچه ممکن نیست؛ فقط ردیف‌های معتبر وارد شوند؟`,
               confirmLabel: 'ورود ردیف‌های معتبر',
               tone: 'warn',
-              onConfirm: () => applyAccountImport(preview.filePath, 'partial'),
+              onConfirm: () => applyAccountImport(preview.previewToken, 'partial'),
             });
             return;
           }
@@ -1141,7 +1141,7 @@
             message: `${summary}. همه حساب‌ها در یک تراکنش وارد شوند؟`,
             confirmLabel: 'ورود یکپارچه',
             tone: 'info',
-            onConfirm: () => applyAccountImport(preview.filePath, 'atomic'),
+            onConfirm: () => applyAccountImport(preview.previewToken, 'atomic'),
           });
         } catch (error) {
           showError(errorText(error));
@@ -1150,11 +1150,11 @@
     });
   }
 
-  async function applyAccountImport(filePath, mode) {
+  async function applyAccountImport(previewToken, mode) {
     state.importing = true;
     renderAll();
     try {
-      const result = await invoke('import_account_excel', { filePath, mode });
+      const result = await invoke('import_account_excel', { previewToken, mode });
       if (!result) return;
 
       const created = Number(result.createdCount) || 0;

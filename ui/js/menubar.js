@@ -244,11 +244,14 @@ function openBulkVoucherImport() {
 
   const steps = ['انتخاب فایل اکسل', 'اعتبارسنجی ساختار', 'تطبیق کدینگ حساب', 'صدور نهایی سند'];
   let unlistenProgress = null;
+  let busy = false;
+  let cancelRequested = false;
   const dialog = openDialog({
     title: 'ورود دسته‌جمعی اسناد از اکسل',
     wide: true,
     body: '',
     actions: [],
+    canClose: () => !busy,
     onClose: () => {
       unlistenProgress?.();
       unlistenProgress = null;
@@ -292,6 +295,7 @@ function openBulkVoucherImport() {
   };
 
   const showBusy = (step, title, detail) => {
+    busy = true;
     renderWizard(step, `<div class="bulk-import-loading">
       <span class="bulk-import-wave"><i></i><i></i><i></i><i></i><i></i></span>
       <strong>${title}</strong>
@@ -304,6 +308,7 @@ function openBulkVoucherImport() {
     const cancelButton = dialog.body.querySelector('#bulkImportCancel');
     cancelButton?.addEventListener('click', async () => {
       cancelButton.disabled = true;
+      cancelRequested = true;
       const label = cancelButton.querySelector('span');
       if (label) label.textContent = 'در حال لغو…';
       try {
@@ -339,16 +344,20 @@ function openBulkVoucherImport() {
     </section>`;
 
   function showReview(currentDialog, preview, message = '') {
+    busy = false;
+    cancelRequested = false;
     const conflicts = Number(preview.numberConflictCount) || 0;
     const inferred = Number(preview.inferredGroupCount) || 0;
     const inferredMappings = Array.isArray(preview.inferredGroupMappings) ? preview.inferredGroupMappings : [];
-    const inferredText = inferredMappings
-      .slice(0, 8)
-      .map((item) => `${toFa(item.accountCode)} (${esc(item.accountName)}) ← گروه ${toFa(item.groupCode)}`)
-      .join('، ');
-    const inferredMore = inferred > inferredMappings.slice(0, 8).length
-      ? ` و ${toFa(inferred - inferredMappings.slice(0, 8).length)} حساب دیگر`
-      : '';
+    const mappingRows = inferredMappings.map((item) => `
+      <tr>
+        <td>${toFa(item.accountCode)}</td>
+        <td>${esc(item.accountName)}</td>
+        <td>${toFa(item.level)}</td>
+        <td>${toFa(item.groupCode)}</td>
+        <td>${esc(item.reason || 'گروه از پیشوند کد حساب کل حدس زده شد.')}</td>
+        <td><input class="bulk-import-group-input" data-account-code="${esc(item.accountCode)}" value="${esc(item.groupCode)}" inputmode="numeric" aria-label="گروه نهایی حساب ${esc(item.accountCode)}"></td>
+      </tr>`).join('');
     renderWizard(2, `${message ? `<div class="note" data-tone="danger" role="alert">${esc(message)}</div>` : ''}
       <div class="note">فایل «${esc(preview.fileName)}» از کاربرگ «${esc(preview.sheetName || '—')}» شناسایی شد. ستون‌ها، تاریخ‌ها، تراز اسناد و ساختار اولیه حساب‌ها بررسی شده‌اند. شرح و نوع سند در صورت وجود در فایل حفظ می‌شود.</div>
       <dl class="info-list">
@@ -361,7 +370,14 @@ function openBulkVoucherImport() {
         <div><dt>گروه‌های حدس‌زده‌شده</dt><dd>${toFa(inferred)}</dd></div>
       </dl>
       ${conflicts ? `<div class="bulk-import-conflicts"><strong>شماره‌های موجود در برنامه</strong><span>${(preview.conflictingVoucherNumbers || []).map((number) => toFa(number)).join('، ') || 'جزئیات شماره‌ها در دسترس نیست'}</span></div>` : ''}
-      ${inferred ? `<div class="note" data-tone="warn" role="alert"><strong>گروه ${toFa(inferred)} حساب از روی پیشوند کد حدس زده شد.</strong><span>این حساب‌ها ستون «کد گروه» نداشتند و گروهشان بر اساس کدینگ پیش‌فرض برنامه تعیین شده است: ${inferredText}${inferredMore}. پیش از ثبت، صحت این تطبیق را بررسی کنید. این تصمیم در گزارش رویدادها (Audit) ثبت می‌شود.</span></div>` : ''}
+      ${inferred ? `<div class="note" data-tone="warn" role="alert"><strong>گروه ${toFa(inferred)} حساب از روی پیشوند کد حدس زده شد.</strong><span>این حساب‌ها ستون «کد گروه» نداشتند. گروه پیشنهادی را در ستون «گروه نهایی» بررسی و در صورت نیاز اصلاح کنید؛ تغییر گروه یک حساب کل به همه حساب‌های حدسی همان شاخه اعمال می‌شود. تا زمانی که همه نگاشت‌ها تأیید نشوند، ثبت اسناد ممکن نیست. تصمیم نهایی در گزارش رویدادها (Audit) با منبع فایل، حدس یا اصلاح دستی ثبت می‌شود.</span></div>
+      <div class="bulk-import-mappings-wrap">
+        <table class="bulk-import-mappings">
+          <thead><tr><th>کد حساب</th><th>عنوان</th><th>سطح</th><th>گروه پیشنهادی</th><th>علت پیشنهاد</th><th>گروه نهایی</th></tr></thead>
+          <tbody>${mappingRows}</tbody>
+        </table>
+      </div>
+      <label class="bulk-import-renumber"><input id="bulkImportConfirmInferred" type="checkbox"><span>همه نگاشت‌های گروه بالا را بررسی کردم و تأیید می‌کنم</span></label>` : ''}
       ${conflicts ? `<label class="bulk-import-renumber"><input id="bulkImportRenumber" type="checkbox"><span>برای ${toFa(conflicts)} سند دارای شماره‌ی تکراری، شماره‌ی آزاد جدید اختصاص بده</span></label>` : ''}`);
 
     currentDialog.setActions([
@@ -372,17 +388,45 @@ function openBulkVoucherImport() {
         icon: 'i-check',
         onClick: async (activeDialog, button) => {
           const renumberConflicts = Boolean(activeDialog.body.querySelector('#bulkImportRenumber')?.checked);
+          const confirmInferred = activeDialog.body.querySelector('#bulkImportConfirmInferred');
+          const groupInputs = Array.from(activeDialog.body.querySelectorAll('.bulk-import-group-input'));
+          if (inferred > 0 && !confirmInferred?.checked) {
+            toast('ابتدا نگاشت گروه حساب‌های حدس‌زده‌شده را تأیید کنید.', 'error');
+            return;
+          }
+          const groupOverrides = groupInputs.map((input) => ({
+            accountCode: input.dataset.accountCode || '',
+            groupCode: input.value.trim(),
+          }));
+          if (groupOverrides.some((mapping) => !mapping.accountCode || !mapping.groupCode)) {
+            toast('گروه نهایی همه نگاشت‌ها را وارد کنید.', 'error');
+            return;
+          }
           button.disabled = true;
           activeDialog.body.querySelectorAll('button').forEach((item) => { item.disabled = true; });
+          cancelRequested = false;
           showBusy(3, 'در حال ثبت اسناد و حساب‌های جدید…', 'ثبت در پایگاه داده به‌صورت تراکنشی انجام می‌شود؛ در صورت لغو، هیچ سندی ثبت نمی‌شود.');
           try {
-            const count = await invoke('commit_bulk_voucher_excel', { renumberConflicts });
-            renderWizard(4, `<section class="bulk-import-result" role="status"><span class="bulk-import-result-icon">${icon('i-check')}</span><h2>ورود اسناد با موفقیت تکمیل شد</h2><p><strong>${toFa(count)}</strong> سند حسابداری ثبت شد.</p><div class="note">فایل «${esc(preview.fileName)}» پردازش شد و اطلاعات ثبت‌شده در فهرست اسناد قابل مشاهده است.</div></section>`);
+            const count = await invoke('commit_bulk_voucher_excel', {
+              renumberConflicts,
+              groupOverrides,
+              confirmInferredGroups: inferred === 0 ? true : Boolean(confirmInferred?.checked),
+            });
+            busy = false;
+            const cancelNote = cancelRequested
+              ? '<div class="note" data-tone="warn">درخواست لغو پس از تکمیل عملیات رسید؛ اسناد قبلاً ثبت شده‌اند و لغو دیگر ممکن نیست.</div>'
+              : `<div class="note">فایل «${esc(preview.fileName)}» پردازش شد و اطلاعات ثبت‌شده در فهرست اسناد قابل مشاهده است.</div>`;
+            renderWizard(4, `<section class="bulk-import-result" role="status"><span class="bulk-import-result-icon">${icon('i-check')}</span><h2>ورود اسناد با موفقیت تکمیل شد</h2><p><strong>${toFa(count)}</strong> سند حسابداری ثبت شد.</p>${cancelNote}</section>`);
             activeDialog.setActions([
               { label: 'مشاهده اسناد', primary: true, icon: 'i-journal', onClick: async (doneDialog) => { doneDialog.close(); await navigate('vouchers', { force: true }); } },
               { label: 'بستن', onClick: (doneDialog) => doneDialog.close() },
             ]);
-            toast(`${toFa(count)} سند با موفقیت وارد شد.`, 'ok');
+            toast(
+              cancelRequested
+                ? `${toFa(count)} سند پیش از رسیدن درخواست لغو ثبت شده بود.`
+                : `${toFa(count)} سند با موفقیت وارد شد.`,
+              cancelRequested ? 'warn' : 'ok',
+            );
           } catch (error) {
             showReview(activeDialog, preview, error instanceof Error ? error.message : String(error));
           }
@@ -393,25 +437,36 @@ function openBulkVoucherImport() {
 
     const commitButton = currentDialog.foot.querySelector('#bulkImportCommit');
     const renumberCheckbox = currentDialog.body.querySelector('#bulkImportRenumber');
-    if (commitButton && conflicts > 0) commitButton.disabled = true;
-    renumberCheckbox?.addEventListener('change', () => {
-      if (commitButton) commitButton.disabled = conflicts > 0 && !renumberCheckbox.checked;
-    });
+    const confirmInferred = currentDialog.body.querySelector('#bulkImportConfirmInferred');
+    const groupInputs = Array.from(currentDialog.body.querySelectorAll('.bulk-import-group-input'));
+    const updateCommitState = () => {
+      if (!commitButton) return;
+      const conflictsBlocked = conflicts > 0 && !renumberCheckbox?.checked;
+      const inferredBlocked = inferred > 0 && !confirmInferred?.checked;
+      commitButton.disabled = conflictsBlocked || inferredBlocked;
+    };
+    updateCommitState();
+    renumberCheckbox?.addEventListener('change', updateCommitState);
+    confirmInferred?.addEventListener('change', updateCommitState);
+    groupInputs.forEach((input) => input.addEventListener('input', updateCommitState));
   }
 
   const selectFile = async () => {
     if (selecting) return;
     selecting = true;
+    cancelRequested = false;
     showBusy(1, 'فایل در حال بررسی و اسناد در حال اعتبارسنجی هستند…', 'ساختار ستون‌ها، تاریخ‌ها، تراز اسناد و کدینگ حساب کنترل می‌شود.');
     try {
       const preview = await invoke('analyze_bulk_voucher_excel');
       if (!preview) {
+        busy = false;
         renderWizard(0, selectContent('انتخاب فایل لغو شد.'));
         dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, icon: 'i-doc', onClick: selectFile }]);
         return;
       }
       showReview(dialog, preview);
     } catch (error) {
+      busy = false;
       const message = error instanceof Error ? error.message : String(error);
       renderWizard(0, selectContent(message));
       dialog.setActions([{ label: 'انتخاب فایل اکسل', primary: true, icon: 'i-doc', onClick: selectFile }]);

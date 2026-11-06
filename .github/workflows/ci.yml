@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Fail when signing secrets are missing (official release)
+        type: boolean
+        default: false
 
 jobs:
   verify:
@@ -121,8 +127,35 @@ jobs:
       - name: Install frontend tooling
         run: npm ci --no-audit --no-fund
 
-      - name: Build Windows desktop app
-        run: npm run build
+      - name: Require signing for release builds
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release && env.WINDOWS_CERTIFICATE_BASE64 == '' }}
+        shell: pwsh
+        run: throw "Release builds require WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD."
+
+      - name: Build Windows executable (no bundle)
+        run: npx tauri build --no-bundle
+
+      - name: Sign application executable (optional)
+        if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'x64' } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe was not found." }
+          $exe = "src-tauri/target/release/Hesabdari.exe"
+          if (-not (Test-Path $exe)) { throw "The application executable was not produced." }
+          $pfx = Join-Path $env:RUNNER_TEMP "acc-rust-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+          try {
+            & $signtool sign /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD /tr "http://timestamp.digicert.com" /td sha256 /fd sha256 $exe
+            if ($LASTEXITCODE -ne 0) { throw "Signing failed for the application executable." }
+          } finally {
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Bundle Windows installer (without binary patching)
+        run: npx tauri bundle --bundles nsis --no-binary-patching
 
       - name: Sign Windows installer (optional)
         if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}
@@ -145,6 +178,24 @@ jobs:
             Remove-Item $pfx -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Verify Windows signatures
+        if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'x64' } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { throw "signtool.exe was not found." }
+          $exe = "src-tauri/target/release/Hesabdari.exe"
+          $installers = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
+          if (-not (Test-Path $exe)) { throw "The application executable was not produced." }
+          if (-not $installers) { throw "NSIS installer was not produced." }
+          $targets = @($exe) + @($installers | ForEach-Object { $_.FullName })
+          foreach ($target in $targets) {
+            & $signtool verify /pa /v $target
+            if ($LASTEXITCODE -ne 0) { throw "Signature verification failed for $target." }
+          }
+
       - name: Verify installer exists
         shell: pwsh
         run: |
@@ -152,9 +203,48 @@ jobs:
           if (-not $installer) { throw "NSIS installer was not produced." }
           $installer | ForEach-Object { Write-Host $_.FullName }
 
+      - name: Record artifact hashes and signature metadata
+        shell: pwsh
+        run: |
+          $exe = "src-tauri/target/release/Hesabdari.exe"
+          $installers = Get-ChildItem "src-tauri/target/release/bundle/nsis/*.exe" -ErrorAction SilentlyContinue
+          if (-not (Test-Path $exe)) { throw "The application executable was not produced." }
+          if (-not $installers) { throw "NSIS installer was not produced." }
+          $signed = $env:WINDOWS_CERTIFICATE_BASE64 -ne ''
+          $exeSignature = Get-AuthenticodeSignature $exe
+          $certificate = if ($exeSignature.SignerCertificate) {
+            [ordered]@{
+              subject = $exeSignature.SignerCertificate.Subject
+              thumbprint = $exeSignature.SignerCertificate.Thumbprint
+              notAfter = $exeSignature.SignerCertificate.NotAfter.ToUniversalTime().ToString("o")
+            }
+          } else { $null }
+          $artifacts = @()
+          foreach ($file in (@($exe) + @($installers | ForEach-Object { $_.FullName }))) {
+            $signature = Get-AuthenticodeSignature $file
+            $artifacts += [ordered]@{
+              name = (Split-Path $file -Leaf)
+              path = $file
+              sha256 = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+              signatureStatus = $signature.Status.ToString()
+            }
+          }
+          $metadata = [ordered]@{
+            builtAt = (Get-Date).ToUniversalTime().ToString("o")
+            commit = $env:GITHUB_SHA
+            ref = $env:GITHUB_REF
+            signed = $signed
+            certificate = $certificate
+            artifacts = $artifacts
+          }
+          $metadata | ConvertTo-Json -Depth 6 | Set-Content -Path "release-metadata.json" -Encoding utf8
+          Get-Content "release-metadata.json"
+
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          name: windows-installer-${{ env.WINDOWS_CERTIFICATE_BASE64 != '' && 'signed' || 'unsigned' }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            release-metadata.json
           if-no-files-found: error

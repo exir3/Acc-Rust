@@ -218,6 +218,8 @@ pub(crate) fn cancel_bulk_voucher_import(
 #[tauri::command(async)]
 pub(crate) fn commit_bulk_voucher_excel(
     renumber_conflicts: bool,
+    group_overrides: Option<Vec<excel::GroupMappingOverride>>,
+    confirm_inferred_groups: Option<bool>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -226,11 +228,37 @@ pub(crate) fn commit_bulk_voucher_excel(
     let import = lock(&state.bulk_voucher_import)
         .clone()
         .ok_or_else(|| "ابتدا فایل اکسل را انتخاب و تحلیل کنید.".to_string())?;
+    let group_overrides = group_overrides.unwrap_or_default();
+    // A guessed group must be explicitly confirmed by the operator. Every
+    // inferred account needs a final mapping, even when the value is unchanged,
+    // so no mapping can be left unconfirmed by a partial form submission.
+    let inferred_codes: std::collections::HashSet<String> = import
+        .accounts
+        .iter()
+        .filter(|account| account.group_is_inferred)
+        .map(|account| crate::db::normalize_code(&account.code))
+        .collect();
+    if !inferred_codes.is_empty() {
+        if !confirm_inferred_groups.unwrap_or(false) {
+            return Err("گروه حساب‌های حدس‌زده‌شده باید پیش از ثبت بررسی و تأیید شود.".to_string());
+        }
+        let provided: std::collections::HashSet<String> = group_overrides
+            .iter()
+            .map(|mapping| crate::db::normalize_code(&mapping.account_code))
+            .collect();
+        if let Some(missing) = inferred_codes.iter().find(|code| !provided.contains(*code)) {
+            return Err(format!(
+                "نگاشت گروه حساب {} تأیید نشده است؛ همه نگاشت‌های حدسی را بررسی کنید.",
+                crate::db::to_fa_digits(missing)
+            ));
+        }
+    }
     state.bulk_import_cancel.store(false, Ordering::Relaxed);
     let cancel = state.bulk_import_cancel.clone();
     let imported_count = state.database.import_vouchers_with_progress(
         import,
         renumber_conflicts,
+        &group_overrides,
         &mut |processed: usize, total: usize| {
             let _ = app.emit(
                 "bulk-import-progress",

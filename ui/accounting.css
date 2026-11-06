@@ -740,6 +740,53 @@ body.is-voucher-list-popup .page-scroll {
 .bulk-import-format { padding: 3px 7px; border: 1px solid var(--line-2); background: #f6f8fb; color: #52657e; font-size: 9px; font-weight: 700; }
 .bulk-import-conflicts { display: flex; flex-direction: column; gap: 4px; padding: 9px 10px; border-inline-start: 3px solid var(--amber); background: var(--warn-soft); color: #6b4600; font-size: 11px; }
 .bulk-import-conflicts span { direction: rtl; overflow-wrap: anywhere; }
+.bulk-import-mappings-wrap {
+  max-height: min(42vh, 320px);
+  overflow: auto;
+  border: 1px solid var(--line-2);
+  background: #fff;
+}
+.bulk-import-mappings {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.bulk-import-mappings th,
+.bulk-import-mappings td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-2);
+  text-align: right;
+  white-space: nowrap;
+}
+.bulk-import-mappings th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f5f8fc;
+  color: #33475f;
+  font-weight: 700;
+}
+.bulk-import-mappings td:nth-child(2) {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bulk-import-mappings tr:last-child td { border-bottom: 0; }
+.bulk-import-group-input {
+  width: 74px;
+  padding: 4px 6px;
+  border: 1px solid #c8d6e6;
+  background: #fff;
+  color: #1d3552;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  direction: ltr;
+}
+.bulk-import-group-input:focus {
+  outline: 2px solid var(--teal-soft);
+  border-color: var(--teal);
+}
 .bulk-import-loading { display: flex; min-height: 160px; flex-direction: column; align-items: center; justify-content: center; gap: 9px; text-align: center; color: #33475f; }
 .bulk-import-loading small { color: var(--text-3); font-size: 10.5px; }
 .bulk-import-wave { display: flex; align-items: center; gap: 4px; height: 34px; color: var(--teal); }
