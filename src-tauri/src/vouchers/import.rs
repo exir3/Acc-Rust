@@ -783,6 +783,39 @@ impl Database {
                 .map_err(db::db_error)?;
             }
 
+            // Read account ids once and reuse the two insert statements for
+            // every voucher/line instead of preparing the same SQL again for
+            // each row. Both are important for a 300k-row workbook.
+            let account_ids: HashMap<String, i64> = {
+                let mut statement = tx
+                    .prepare("SELECT code, id FROM accounts")
+                    .map_err(db::db_error)?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })
+                    .map_err(db::db_error)?;
+                rows.collect::<rusqlite::Result<HashMap<_, _>>>()
+                    .map_err(db::db_error)?
+            };
+            // Most imports contain thousands of vouchers but only one or two
+            // fiscal years. Remember the resolved year for each date instead of
+            // running the period lookup for every voucher.
+            let mut fiscal_year_by_date: HashMap<String, i64> = HashMap::new();
+            let mut insert_voucher = tx
+                .prepare_cached(
+                    "INSERT INTO vouchers (number, date, type, description, fiscal_year_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(db::db_error)?;
+            let mut insert_line = tx
+                .prepare_cached(
+                    "INSERT INTO voucher_lines
+                        (voucher_id, row_no, account_id, account_code, detail1_code, description, debit, credit)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                )
+                .map_err(db::db_error)?;
+
             for (index, (number, date, voucher_type, description, mut lines)) in
                 prepared.into_iter().enumerate()
             {
@@ -816,21 +849,46 @@ impl Database {
                     }
                 }
                 used_numbers.insert(stored_number);
-                let fiscal_year_id = db::ensure_open_period(&tx, &date)?;
-                tx.execute(
-                    "INSERT INTO vouchers (number, date, type, description, fiscal_year_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![stored_number, date, voucher_type, description, fiscal_year_id],
-                )
-                .map_err(db::db_error)?;
+                let fiscal_year_id = match fiscal_year_by_date.get(&date) {
+                    Some(id) => *id,
+                    None => {
+                        let id = db::ensure_open_period(&tx, &date)?;
+                        fiscal_year_by_date.insert(date.clone(), id);
+                        id
+                    }
+                };
+                insert_voucher
+                    .execute(params![
+                        stored_number,
+                        date,
+                        voucher_type,
+                        description,
+                        fiscal_year_id
+                    ])
+                    .map_err(db::db_error)?;
                 let voucher_id = tx.last_insert_rowid();
                 for (index, line) in lines.iter().enumerate() {
-                    tx.execute(
-                        "INSERT INTO voucher_lines (voucher_id, row_no, account_id, account_code, detail1_code, description, debit, credit)
-                         SELECT ?1, ?2, a.id, ?3, ?4, ?5, ?6, ?7 FROM accounts a WHERE a.code = ?3",
-                        params![voucher_id, index as i64 + 1, line.account_code, line.detail1_code, line.description, line.debit, line.credit],
-                    )
-                    .map_err(db::db_error)?;
+                    let account_id = account_ids
+                        .get(&line.account_code)
+                        .copied()
+                        .ok_or_else(|| {
+                            format!(
+                                "حساب {} هنگام ثبت ردیف سند یافت نشد.",
+                                db::to_fa_digits(&line.account_code)
+                            )
+                        })?;
+                    insert_line
+                        .execute(params![
+                            voucher_id,
+                            index as i64 + 1,
+                            account_id,
+                            line.account_code,
+                            line.detail1_code,
+                            line.description,
+                            line.debit,
+                            line.credit
+                        ])
+                        .map_err(db::db_error)?;
                 }
                 imported_numbers.push(stored_number);
                 let snapshot = voucher_snapshot(&tx, voucher_id)?;
@@ -909,6 +967,8 @@ impl Database {
             if is_cancelled() {
                 return Err(crate::excel::BULK_IMPORT_CANCELLED.to_string());
             }
+            drop(insert_line);
+            drop(insert_voucher);
             tx.commit().map_err(db::db_error)?;
             Ok(imported_count)
         })

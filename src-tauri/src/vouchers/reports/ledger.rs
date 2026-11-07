@@ -91,29 +91,23 @@ impl Database {
                 )
                 .map_err(db::db_error)?;
 
-            let mut opening_stmt = conn
-                .prepare(&format!(
-                    "{TREE}
-                     SELECT l.debit, l.credit
-                       FROM voucher_lines l
-                       JOIN vouchers v ON v.id = l.voucher_id
-                      WHERE COALESCE(NULLIF(l.detail1_code, ''), l.account_code) IN (SELECT code FROM tree)
-                        AND {scope_sql}
-                        AND (?2 <> '' AND v.date < ?2)"
-                ))
+            // Opening amounts are aggregated by SQLite; only two numbers cross
+            // into Rust instead of every line before the start date.
+            let (opening_debit, opening_credit) = conn
+                .query_row(
+                    &format!(
+                        "{TREE}
+                         SELECT COALESCE(SUM(l.debit), 0), COALESCE(SUM(l.credit), 0)
+                           FROM voucher_lines l
+                           JOIN vouchers v ON v.id = l.voucher_id
+                          WHERE COALESCE(NULLIF(l.detail1_code, ''), l.account_code) IN (SELECT code FROM tree)
+                            AND {scope_sql}
+                            AND (?2 <> '' AND v.date < ?2)"
+                    ),
+                    params![code, from],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
                 .map_err(db::db_error)?;
-            let opening_rows = opening_stmt
-                .query_map(params![code, from], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-                })
-                .map_err(db::db_error)?;
-            let mut opening_debit = 0i64;
-            let mut opening_credit = 0i64;
-            for row in opening_rows {
-                let (debit, credit) = row.map_err(db::db_error)?;
-                opening_debit = checked_add(opening_debit, debit, "بدهکار افتتاحیه دفتر کل")?;
-                opening_credit = checked_add(opening_credit, credit, "بستانکار افتتاحیه دفتر کل")?;
-            }
             let opening_net = checked_sub(opening_debit, opening_credit, "مانده افتتاحیه دفتر کل")?;
 
             let (row_count, total_debit, total_credit) = conn
@@ -140,40 +134,32 @@ impl Database {
                 .map_err(db::db_error)?;
 
             // Rows before this page define the running balance it starts from.
+            // The partial window is summed by SQLite, so a deep page does not
+            // transfer every earlier line into Rust just to add it up.
             let mut running = opening_net;
             if let Some((_, offset)) = page {
                 if offset > 0 {
-                    let mut prior_stmt = conn
-                        .prepare(&format!(
-                            "{TREE}
-                             SELECT l.debit, l.credit
-                               FROM voucher_lines l
-                               JOIN vouchers v ON v.id = l.voucher_id
-                              WHERE COALESCE(NULLIF(l.detail1_code, ''), l.account_code) IN (SELECT code FROM tree)
-                                AND {scope_sql}
-                                AND (?2 = '' OR v.date >= ?2)
-                                AND (?3 = '' OR v.date <= ?3)
-                              ORDER BY v.date, v.number, l.row_no
-                              LIMIT ?4"
-                        ))
+                    let (prior_debit, prior_credit) = conn
+                        .query_row(
+                            &format!(
+                                "{TREE}
+                                 SELECT COALESCE(SUM(debit), 0), COALESCE(SUM(credit), 0)
+                                   FROM (
+                                        SELECT l.debit AS debit, l.credit AS credit
+                                          FROM voucher_lines l
+                                          JOIN vouchers v ON v.id = l.voucher_id
+                                         WHERE COALESCE(NULLIF(l.detail1_code, ''), l.account_code) IN (SELECT code FROM tree)
+                                           AND {scope_sql}
+                                           AND (?2 = '' OR v.date >= ?2)
+                                           AND (?3 = '' OR v.date <= ?3)
+                                         ORDER BY v.date, v.number, l.row_no
+                                         LIMIT ?4
+                                   )"
+                            ),
+                            params![code, from, to, offset],
+                            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                        )
                         .map_err(db::db_error)?;
-                    let mut prior_rows = prior_stmt
-                        .query_map(params![code, from, to, offset], |row| {
-                            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-                        })
-                        .map_err(db::db_error)?;
-                    let (prior_debit, prior_credit) =
-                        prior_rows.try_fold((0i64, 0i64), |(debit_total, credit_total), row| {
-                            let (debit, credit) = row.map_err(db::db_error)?;
-                            Ok::<_, String>((
-                                checked_add(debit_total, debit, "بدهکار پیش از صفحه دفتر کل")?,
-                                checked_add(
-                                    credit_total,
-                                    credit,
-                                    "بستانکار پیش از صفحه دفتر کل",
-                                )?,
-                            ))
-                        })?;
                     running = checked_sub(
                         checked_add(running, prior_debit, "مانده پیش از صفحه دفتر کل")?,
                         prior_credit,

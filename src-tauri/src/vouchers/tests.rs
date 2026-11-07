@@ -1790,6 +1790,69 @@ fn trial_balance_splits_opening_and_period_activity() {
 }
 
 #[test]
+fn trial_balance_scope_without_dates_excludes_other_scopes() {
+    let db = db::memory_database();
+    let draft = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
+    let permanent = db.save_voucher(cash_sale("1405/01/11", 2_000)).unwrap();
+    db.set_voucher_permanent(permanent.id, Some(&permanent.updated_at))
+        .unwrap();
+
+    let trial = |scope| {
+        db.get_trial_balance_filtered_scoped("", "", "", "", false, true, scope)
+            .unwrap()
+    };
+    let cash = |report: crate::vouchers::TrialBalanceReport| {
+        report
+            .rows
+            .iter()
+            .find(|row| row.account_code == "110101")
+            .map(|row| (row.period_debit, row.closing_debit))
+            .unwrap()
+    };
+
+    // With no date filters every line belongs to the period. A temporary draft
+    // must still be excluded from the official scope instead of slipping in
+    // through the unfiltered vouchers join.
+    assert_eq!(cash(trial(ReportScope::Official)), (2_000, 2_000));
+    assert_eq!(cash(trial(ReportScope::Working)), (3_000, 3_000));
+    assert_eq!(cash(trial(ReportScope::Temporary)), (1_000, 1_000));
+    assert!(draft.number < permanent.number);
+}
+
+#[test]
+fn trial_balance_open_ended_ranges_split_opening_and_period() {
+    let db = db::memory_database();
+    db.save_voucher(cash_sale("1405/01/05", 500_000)).unwrap();
+    db.save_voucher(cash_sale("1405/02/05", 300_000)).unwrap();
+
+    let cash = |report: crate::vouchers::TrialBalanceReport| {
+        report
+            .rows
+            .iter()
+            .find(|row| row.account_code == "110101")
+            .map(|row| {
+                (
+                    row.opening_debit,
+                    row.period_debit,
+                    row.closing_debit,
+                )
+            })
+            .unwrap()
+    };
+
+    // A missing start date means the whole book up to the end date is period
+    // activity; a missing end date still carries the earlier balance forward.
+    assert_eq!(
+        cash(db.get_trial_balance("", "1405/01/31").unwrap()),
+        (0, 500_000, 500_000)
+    );
+    assert_eq!(
+        cash(db.get_trial_balance("1405/02/01", "").unwrap()),
+        (500_000, 300_000, 800_000)
+    );
+}
+
+#[test]
 fn trial_balance_rolls_up_level_one_and_filters_code_range() {
     let db = db::memory_database();
     db.save_voucher(cash_sale("1405/01/05", 500_000)).unwrap();

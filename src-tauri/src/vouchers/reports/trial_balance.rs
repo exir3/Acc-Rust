@@ -177,25 +177,45 @@ impl Database {
 
         self.with_conn(|conn| {
             // Aggregate in SQLite so only one row per account crosses into Rust.
+            //
+            // Only lines that belong to the opening balance or to the requested
+            // period are read at all; the date range therefore narrows the scan
+            // before aggregation instead of inside every SUM. The report scope
+            // is applied in the WHERE clause: keeping it in the vouchers join
+            // would leave lines of excluded drafts attached to a NULL voucher,
+            // and with empty dates they were still counted as period activity.
+            //
             // Parent accounts are rolled up from these raw amounts below.
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT a.code, a.name, g.name, a.level, COALESCE(a.parent_code, ''),
-                            COALESCE(SUM(CASE WHEN ?1 <> '' AND v.date < ?1
-                                              THEN l.debit END), 0) AS opening_debit,
-                            COALESCE(SUM(CASE WHEN ?1 <> '' AND v.date < ?1
-                                              THEN l.credit END), 0) AS opening_credit,
-                            COALESCE(SUM(CASE WHEN (?1 = '' OR v.date >= ?1)
-                                               AND (?2 = '' OR v.date <= ?2)
-                                              THEN l.debit END), 0) AS period_debit,
-                            COALESCE(SUM(CASE WHEN (?1 = '' OR v.date >= ?1)
-                                               AND (?2 = '' OR v.date <= ?2)
-                                              THEN l.credit END), 0) AS period_credit
+                    "WITH line_amounts AS (
+                         SELECT COALESCE(NULLIF(l.detail1_code, ''), l.account_code) AS account_code,
+                                COALESCE(SUM(CASE WHEN ?1 <> '' AND v.date < ?1
+                                                  THEN l.debit END), 0) AS opening_debit,
+                                COALESCE(SUM(CASE WHEN ?1 <> '' AND v.date < ?1
+                                                  THEN l.credit END), 0) AS opening_credit,
+                                COALESCE(SUM(CASE WHEN (?1 = '' OR v.date >= ?1)
+                                                   AND (?2 = '' OR v.date <= ?2)
+                                                  THEN l.debit END), 0) AS period_debit,
+                                COALESCE(SUM(CASE WHEN (?1 = '' OR v.date >= ?1)
+                                                   AND (?2 = '' OR v.date <= ?2)
+                                                  THEN l.credit END), 0) AS period_credit
+                           FROM voucher_lines l
+                           JOIN vouchers v ON v.id = l.voucher_id
+                          WHERE {scope_sql}
+                            AND ((?1 <> '' AND v.date < ?1)
+                                 OR ((?1 = '' OR v.date >= ?1)
+                                     AND (?2 = '' OR v.date <= ?2)))
+                          GROUP BY COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
+                     )
+                     SELECT a.code, a.name, g.name, a.level, COALESCE(a.parent_code, ''),
+                            COALESCE(x.opening_debit, 0),
+                            COALESCE(x.opening_credit, 0),
+                            COALESCE(x.period_debit, 0),
+                            COALESCE(x.period_credit, 0)
                        FROM accounts a
                        JOIN account_groups g ON g.code = a.group_code
-                       LEFT JOIN voucher_lines l ON COALESCE(NULLIF(l.detail1_code, ''), l.account_code) = a.code
-                       LEFT JOIN vouchers v ON v.id = l.voucher_id AND {scope_sql}
-                      GROUP BY a.code
+                       LEFT JOIN line_amounts x ON x.account_code = a.code
                       ORDER BY a.code"
                 ))
                 .map_err(db::db_error)?;
