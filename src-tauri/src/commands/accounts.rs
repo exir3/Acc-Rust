@@ -110,6 +110,15 @@ pub(crate) fn list_accounts(
 }
 
 #[tauri::command(async)]
+pub(crate) fn list_fs_lines(window: WebviewWindow) -> Result<db::FsCatalog, String> {
+    require_window(
+        &window,
+        &["main", "voucher", "account-groups", "account-definition"],
+    )?;
+    Ok(db::fs_catalog::fs_catalog())
+}
+
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_account(
     code: String,
@@ -120,6 +129,12 @@ pub(crate) fn create_account(
     parent_code: String,
     is_postable: bool,
     is_active: Option<bool>,
+    fs_line: Option<String>,
+    contra_of: Option<String>,
+    contra_kind: Option<String>,
+    opposite_fs_line: Option<String>,
+    split_by_sign: Option<bool>,
+    system_role: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -128,7 +143,7 @@ pub(crate) fn create_account(
         &window,
         &["main", "voucher", "account-groups", "account-definition"],
     )?;
-    let account = state.database.create_account_active(
+    let account = db::NewAccount::new(
         &code,
         &name,
         level,
@@ -136,8 +151,21 @@ pub(crate) fn create_account(
         &nature,
         &parent_code,
         is_postable,
-        is_active.unwrap_or(true),
-    )?;
+    )
+    .with_active(is_active.unwrap_or(true))
+    .with_fs_line(fs_line.as_deref().unwrap_or(""))
+    .with_classification(
+        contra_of.as_deref().unwrap_or(""),
+        contra_kind.as_deref().unwrap_or(""),
+        opposite_fs_line.as_deref().unwrap_or(""),
+        split_by_sign.unwrap_or(false),
+        system_role.as_deref().unwrap_or(""),
+    );
+    let account = state
+        .database
+        .create_accounts_atomic(vec![account])?
+        .pop()
+        .ok_or_else(|| "ساخت حساب انجام نشد.".to_string())?;
     notify_accounts_changed(&app);
     Ok(account)
 }
@@ -151,12 +179,41 @@ pub(crate) fn update_account(
     nature: String,
     parent_code: String,
     is_active: Option<bool>,
+    fs_line: Option<String>,
+    contra_of: Option<String>,
+    contra_kind: Option<String>,
+    opposite_fs_line: Option<String>,
+    split_by_sign: Option<bool>,
+    system_role: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::Account, String> {
     require_window(&window, &["main", "account-groups", "account-definition"])?;
-    let account = if let Some(is_active) = is_active {
+    let has_classification = fs_line.is_some()
+        || contra_of.is_some()
+        || contra_kind.is_some()
+        || opposite_fs_line.is_some()
+        || split_by_sign.is_some()
+        || system_role.is_some();
+    let account = if has_classification {
+        state.database.update_account_with_classification(
+            id,
+            &name,
+            &group_code,
+            &nature,
+            &parent_code,
+            is_active,
+            db::ClassificationUpdate {
+                fs_line: fs_line.unwrap_or_default(),
+                contra_of: contra_of.unwrap_or_default(),
+                contra_kind: contra_kind.unwrap_or_default(),
+                opposite_fs_line: opposite_fs_line.unwrap_or_default(),
+                split_by_sign: split_by_sign.unwrap_or(false),
+                system_role: system_role.unwrap_or_default(),
+            },
+        )?
+    } else if let Some(is_active) = is_active {
         state.database.update_account_with_active(
             id,
             &name,

@@ -154,8 +154,18 @@ mod tests {
         assert_eq!(list.groups[0].code, "1");
 
         let accounts = db.list_accounts().unwrap();
-        assert_eq!(accounts.accounts.len(), 34);
+        // 34 starter accounts plus the three closing roles provisioned with
+        // the chart.
+        assert_eq!(accounts.accounts.len(), 37);
         assert_eq!(accounts.accounts[0].code, "1101");
+        assert_eq!(
+            accounts
+                .accounts
+                .iter()
+                .filter(|account| !account.system_role.is_empty())
+                .count(),
+            3
+        );
         assert!(accounts.accounts[0].is_postable);
         assert!(accounts
             .accounts
@@ -169,6 +179,169 @@ mod tests {
             .accounts
             .iter()
             .any(|account| account.code == "810102" && account.is_postable));
+    }
+
+    #[test]
+    fn starter_chart_exposes_effective_classification() {
+        let db = test_database();
+        let accounts = db.list_accounts().unwrap().accounts;
+        let find = |code: &str| {
+            accounts
+                .iter()
+                .find(|account| account.code == code)
+                .unwrap_or_else(|| panic!("account {code} is missing"))
+        };
+
+        // An explicit starter line is stored and used as-is.
+        let cash = find("1101");
+        assert_eq!(cash.fs_line, "BS.CA.CASH");
+        assert_eq!(cash.classification_source, "seed");
+        assert_eq!(cash.effective_fs_line, "BS.CA.CASH");
+        assert_eq!(cash.effective_statement, "balance_sheet");
+
+        // A child without a stored line follows its nearest ancestor.
+        let cash_child = find("110101");
+        assert_eq!(cash_child.fs_line, "");
+        assert_eq!(cash_child.effective_fs_line, "BS.CA.CASH");
+        assert_eq!(cash_child.effective_section, "current_asset");
+        assert_eq!(cash_child.classification_source, "inherit");
+
+        // An account under a sectioned group with no explicit line anywhere in
+        // its branch falls back to the group's default section.
+        let non_operating = find("810102");
+        assert_eq!(non_operating.fs_line, "");
+        assert_eq!(non_operating.effective_fs_line, "IS.NOI");
+        assert_eq!(non_operating.effective_statement, "income_statement");
+        assert_eq!(non_operating.classification_source, "auto");
+
+        // Group 10 is dual-nature; its expense child carries the explicit
+        // expense line rather than inheriting the income line.
+        assert_eq!(find("710102").fs_line, "IS.OOE");
+
+        // The closing workflow's role accounts are provisioned once.
+        assert_eq!(find("9801").system_role, "income_summary");
+        assert_eq!(find("9802").system_role, "retained_earnings");
+        assert_eq!(find("9803").system_role, "closing_balance");
+    }
+
+    #[test]
+    fn system_role_is_unique_across_accounts() {
+        let db = test_database();
+        let duplicate = NewAccount::new("9901", "خلاصه دوم", 1, "6", "dual", "", true)
+            .with_fs_line("BS.EQ.RE")
+            .with_classification("", "", "", false, "income_summary");
+        let error = db.create_accounts_atomic(vec![duplicate]).unwrap_err();
+        assert!(
+            error.contains("نقش سیستمی"),
+            "unexpected role error: {error}"
+        );
+
+        // A second, unclaimed role is accepted and provisioned without
+        // touching the existing three.
+        let ok = db
+            .create_accounts_atomic(vec![NewAccount::new(
+                "9902",
+                "ذخیره قانونی",
+                1,
+                "6",
+                "creditor",
+                "",
+                true,
+            )
+            .with_fs_line("BS.EQ.RES")
+            .with_classification("", "", "", false, "legal_reserve")])
+            .unwrap();
+        assert_eq!(ok[0].system_role, "legal_reserve");
+        assert_eq!(
+            db.list_accounts()
+                .unwrap()
+                .accounts
+                .iter()
+                .filter(|account| account.system_role == "income_summary")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn migration_backfills_classification_for_an_existing_chart() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        apply_base_schema(&conn).unwrap();
+        seed_default_groups(&mut conn).unwrap();
+        seed_default_accounts(&mut conn).unwrap();
+        // Simulate a v10 book whose groups already carry a default section.
+        conn.execute(
+            "UPDATE account_groups SET default_section = 'current_asset' WHERE code = '1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE account_groups SET default_section = 'cogs' WHERE code = '9'",
+            [],
+        )
+        .unwrap();
+
+        apply_schema_migrations(&mut conn).unwrap();
+
+        let stored: String = conn
+            .query_row(
+                "SELECT COALESCE(fs_line, '') FROM accounts WHERE code = '110201'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "BS.CA.REC");
+        let source: String = conn
+            .query_row(
+                "SELECT COALESCE(classification_source, '') FROM accounts WHERE code = '110201'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "auto");
+
+        // A group with no default section is left without a stored line so the
+        // runtime resolver can keep following the legacy group/code rule.
+        let other_operating: String = conn
+            .query_row(
+                "SELECT COALESCE(fs_line, '') FROM accounts WHERE code = '710101'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(other_operating, "");
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM app_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION.to_string());
+    }
+
+    #[test]
+    fn fs_catalog_exposes_every_statement_line_and_role() {
+        let catalog = crate::db::fs_catalog::fs_catalog();
+        assert!(catalog.lines.len() >= 30);
+        assert!(catalog
+            .lines
+            .iter()
+            .any(|line| line.code == "BS.CA.CASH" && line.statement == "balance_sheet"));
+        assert!(catalog
+            .lines
+            .iter()
+            .any(|line| line.code == "IS.REV" && line.statement == "income_statement"));
+        assert!(catalog.lines.iter().any(|line| line.code == "MEMO"));
+        assert!(catalog
+            .system_roles
+            .iter()
+            .any(|role| role.value == "income_summary"));
+        assert!(catalog
+            .contra_kinds
+            .iter()
+            .any(|kind| kind.value == "accumulated_depreciation"));
     }
 
     #[test]
@@ -768,7 +941,7 @@ mod tests {
             .find(|account| account.code == "110101")
             .unwrap();
         assert!(restored_parent.is_postable);
-        assert_eq!(db.list_accounts().unwrap().accounts.len(), 34);
+        assert_eq!(db.list_accounts().unwrap().accounts.len(), 37);
     }
 
     #[test]
@@ -1754,5 +1927,205 @@ mod tests {
 
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod closing_workflow_tests {
+    use super::*;
+    use crate::vouchers::{VoucherInput, VoucherLineInput, VOUCHER_TYPES};
+
+    fn line(account_code: &str, debit: i64, credit: i64) -> VoucherLineInput {
+        VoucherLineInput {
+            id: None,
+            account_code: account_code.to_string(),
+            detail1_code: None,
+            description: String::new(),
+            debit,
+            credit,
+        }
+    }
+
+    fn save_cash_sale(db: &Database, year_id: i64, date: &str, amount: i64) {
+        let saved = db
+            .save_voucher(VoucherInput {
+                id: None,
+                number: None,
+                date: date.to_string(),
+                voucher_type: String::new(),
+                description: "فروش نقدی آزمایشی".to_string(),
+                fiscal_year_id: Some(year_id),
+                lines: vec![line("110101", amount, 0), line("410101", 0, amount)],
+            })
+            .unwrap();
+        db.set_voucher_permanent(saved.id, Some(&saved.updated_at))
+            .unwrap();
+    }
+
+    fn year_status(db: &Database, year_id: i64) -> String {
+        db.list_fiscal_years()
+            .unwrap()
+            .years
+            .into_iter()
+            .find(|year| year.id == year_id)
+            .unwrap()
+            .status
+    }
+
+    fn voucher_count(db: &Database, year_id: i64, voucher_type: &str) -> i64 {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM vouchers WHERE fiscal_year_id = ?1 AND type = ?2",
+                params![year_id, voucher_type],
+                |row| row.get(0),
+            )
+            .map_err(db_error)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn closing_preview_executes_and_reverses_atomically() {
+        let db = memory_database();
+        let year = db
+            .create_fiscal_year("سال ۱۴۰۵", "1405/01/01", "1405/12/29", "open")
+            .unwrap();
+        save_cash_sale(&db, year.id, "1405/01/10", 1_000_000);
+
+        let preview = db.get_closing_preview(year.id, None).unwrap();
+        assert!(
+            preview.can_execute,
+            "unexpected blockers: {:?}",
+            preview
+                .blockers
+                .iter()
+                .map(|blocker| &blocker.message)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(preview.net_income, 1_000_000);
+        assert!(preview.roles.income_summary.is_some());
+        assert!(preview.roles.retained_earnings.is_some());
+        assert!(preview.roles.closing_balance.is_some());
+        assert_eq!(preview.temp_lines.len(), 4);
+        assert_eq!(preview.closing_lines.len(), 4);
+
+        let result = db
+            .execute_closing(year.id, None, None, None, None, Some("بستن آزمایشی"))
+            .unwrap();
+        assert_eq!(result.net_income, 1_000_000);
+        assert!(result.temp_voucher.is_some());
+        assert!(result.closing_voucher.is_some());
+        assert_eq!(year_status(&db, year.id), "closed");
+        assert_eq!(voucher_count(&db, year.id, VOUCHER_TYPES[3]), 1);
+        assert_eq!(voucher_count(&db, year.id, VOUCHER_TYPES[2]), 1);
+
+        let after = db.get_closing_preview(year.id, None).unwrap();
+        assert!(!after.can_execute);
+        assert!(after
+            .blockers
+            .iter()
+            .any(|blocker| blocker.code == "already_closed"));
+        assert!(after.run.is_some());
+
+        let reversed = db.reverse_closing(year.id, Some("برگشت آزمایشی")).unwrap();
+        assert_eq!(reversed.deleted_vouchers, 2);
+        assert_eq!(year_status(&db, year.id), "open");
+        assert_eq!(voucher_count(&db, year.id, VOUCHER_TYPES[3]), 0);
+        assert_eq!(voucher_count(&db, year.id, VOUCHER_TYPES[2]), 0);
+
+        let reopened = db.get_closing_preview(year.id, None).unwrap();
+        assert!(reopened.can_execute, "{:?}", reopened.blockers);
+        assert!(reopened.run.is_none());
+        assert!(reopened.latest_run.is_some());
+    }
+
+    #[test]
+    fn carry_forward_needs_an_executed_close_and_replaces_opening_only_with_force() {
+        let db = memory_database();
+        let source = db
+            .create_fiscal_year("سال ۱۴۰۵", "1405/01/01", "1405/12/29", "open")
+            .unwrap();
+        let target = db
+            .create_fiscal_year("سال ۱۴۰۶", "1406/01/01", "1406/12/29", "open")
+            .unwrap();
+        save_cash_sale(&db, source.id, "1405/01/10", 1_000_000);
+
+        let early = db.get_carry_forward_preview(source.id, target.id).unwrap();
+        assert!(!early.errors.is_empty());
+
+        db.execute_closing(source.id, None, None, None, None, None)
+            .unwrap();
+
+        let plan = db.get_carry_forward_preview(source.id, target.id).unwrap();
+        assert!(plan.errors.is_empty(), "{:?}", plan.errors);
+        assert_eq!(plan.source, "closing");
+        assert!(plan.has_closing_voucher);
+        assert_eq!(plan.totals.debit, 1_000_000);
+        assert_eq!(plan.totals.credit, 1_000_000);
+        assert!(plan
+            .lines
+            .iter()
+            .any(|line| line.account_code == "110101" && line.debit == 1_000_000));
+        assert!(plan
+            .lines
+            .iter()
+            .any(|line| line.account_code == "9802" && line.credit == 1_000_000));
+
+        let result = db
+            .execute_carry_forward(source.id, target.id, false)
+            .unwrap();
+        assert_eq!(result.line_count, 2);
+        assert_eq!(voucher_count(&db, target.id, VOUCHER_TYPES[1]), 1);
+
+        let second = db
+            .execute_carry_forward(source.id, target.id, false)
+            .unwrap_err();
+        assert!(second.contains("تأیید صریح"), "{second}");
+
+        let again = db.get_carry_forward_preview(source.id, target.id).unwrap();
+        assert!(again.requires_overwrite);
+        assert!(again.existing_opening_voucher.is_some());
+
+        db.execute_carry_forward(source.id, target.id, true)
+            .unwrap();
+        assert_eq!(voucher_count(&db, target.id, VOUCHER_TYPES[1]), 1);
+    }
+
+    #[test]
+    fn finalization_requires_the_close_and_reopening_requires_its_reversal() {
+        let db = memory_database();
+        let year = db
+            .create_fiscal_year("سال ۱۴۰۵", "1405/01/01", "1405/12/29", "open")
+            .unwrap();
+
+        let not_closed = db
+            .set_fiscal_year_status(year.id, "final", None, false)
+            .unwrap_err();
+        assert!(not_closed.contains("بستن سال مالی"), "{not_closed}");
+
+        save_cash_sale(&db, year.id, "1405/01/10", 1_000_000);
+        db.execute_closing(year.id, None, None, None, None, None)
+            .unwrap();
+        db.set_fiscal_year_status(year.id, "final", None, false)
+            .unwrap();
+        assert_eq!(year_status(&db, year.id), "final");
+
+        let reopen = db
+            .set_fiscal_year_status(year.id, "open", Some("تلاش"), true)
+            .unwrap_err();
+        assert!(reopen.contains("برگشت بستن"), "{reopen}");
+
+        let reverse_final = db.reverse_closing(year.id, Some("تلاش")).unwrap_err();
+        assert!(reverse_final.contains("بازگشایی"), "{reverse_final}");
+
+        db.set_fiscal_year_status(year.id, "closed", Some("اصلاح وضعیت"), true)
+            .unwrap();
+        db.reverse_closing(year.id, Some("برگشت آزمایشی")).unwrap();
+        assert_eq!(year_status(&db, year.id), "open");
+
+        let final_again = db
+            .set_fiscal_year_status(year.id, "final", None, false)
+            .unwrap_err();
+        assert!(final_again.contains("بستن سال مالی"), "{final_again}");
     }
 }

@@ -302,6 +302,25 @@ body.ad-page [hidden] {
 .ad-field-nature { flex: 0 0 120px; min-width: 120px; }
 .ad-field-active { flex: 0 0 auto; min-width: 120px; }
 
+.ad-form-row-classification {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--ad-line, #d7dee8);
+}
+
+.ad-field-fs-line { flex: 1 1 240px; }
+.ad-field-role,
+.ad-field-contra,
+.ad-field-contra-kind,
+.ad-field-opposite { flex: 1 1 170px; }
+.ad-field-split { flex: 0 0 auto; min-width: 150px; }
+
+.ad-effective {
+  flex: 1 1 100%;
+  font-size: 11.5px;
+  color: #4b5563;
+}
+
 .ad-label {
   color: #374151;
   font-size: 12px;
@@ -653,7 +672,12 @@ body.ad-page [hidden] {
   }
 
   .ad-field-name,
-  .ad-field-group {
+  .ad-field-group,
+  .ad-field-fs-line,
+  .ad-field-role,
+  .ad-field-contra,
+  .ad-field-contra-kind,
+  .ad-field-opposite {
     flex: 1 1 160px;
   }
 

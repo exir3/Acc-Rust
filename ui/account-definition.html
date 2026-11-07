@@ -105,6 +105,40 @@
               </label>
             </div>
           </div>
+          <div class="ad-form-row ad-form-row-classification">
+            <div class="ad-field ad-field-fs-line">
+              <label class="ad-label" for="adFsLine">سرفصل صورت‌های مالی:</label>
+              <select id="adFsLine" class="ad-input ad-select" aria-label="سرفصل صورت‌های مالی">
+                <option value="">خودکار — از حساب بالاتر یا گروه</option>
+              </select>
+            </div>
+            <div class="ad-field ad-field-role">
+              <label class="ad-label" for="adSystemRole">نقش سیستمی:</label>
+              <select id="adSystemRole" class="ad-input ad-select" aria-label="نقش سیستمی"></select>
+            </div>
+            <div class="ad-field ad-field-contra">
+              <label class="ad-label" for="adContraOf">حساب کاهنده از:</label>
+              <select id="adContraOf" class="ad-input ad-select" aria-label="حساب کاهنده از"></select>
+            </div>
+            <div class="ad-field ad-field-contra-kind">
+              <label class="ad-label" for="adContraKind">نوع کاهنده:</label>
+              <select id="adContraKind" class="ad-input ad-select" aria-label="نوع کاهنده"></select>
+            </div>
+            <div class="ad-field ad-field-opposite">
+              <label class="ad-label" for="adOppositeFsLine">سرفصل مقابل:</label>
+              <select id="adOppositeFsLine" class="ad-input ad-select" aria-label="سرفصل مقابل">
+                <option value="">— بدون سرفصل مقابل —</option>
+              </select>
+            </div>
+            <div class="ad-field ad-field-split">
+              <span class="ad-label">تفکیک علامت:</span>
+              <label class="ad-check" for="adSplitBySign">
+                <input id="adSplitBySign" type="checkbox" />
+                <span>تفکیک بر اساس علامت</span>
+              </label>
+            </div>
+            <div class="ad-effective" id="adEffective" hidden></div>
+          </div>
         </form>
       </fieldset>
     </main>

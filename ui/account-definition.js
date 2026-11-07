@@ -18,6 +18,13 @@
   const MAX_LEVEL = 3;
   const MAX_ACCOUNT_NAME = 255;
   const NATURES = ['debtor', 'creditor', 'dual'];
+  const CLASSIFICATION_SOURCE_LABELS = {
+    seed: 'داده اولیه',
+    inherit: 'ارث از حساب بالاتر',
+    inherited: 'ارث از حساب بالاتر',
+    auto: 'پیشنهاد گروه',
+    manual: 'تعیین دستی',
+  };
 
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
@@ -64,6 +71,7 @@
   const state = {
     accounts: [],
     groups: [],
+    fsCatalog: null,
     drillPath: [],
     selectedId: null,
     mode: 'view', // view | new | edit
@@ -110,6 +118,12 @@
       parentCode: '',
       nature: 'debtor',
       isActive: true,
+      fsLine: '',
+      contraOf: '',
+      contraKind: '',
+      oppositeFsLine: '',
+      splitBySign: false,
+      systemRole: '',
     };
   }
 
@@ -122,6 +136,12 @@
       state.form.parentCode || '',
       state.form.nature || 'debtor',
       Boolean(state.form.isActive),
+      state.form.fsLine || '',
+      state.form.contraOf || '',
+      state.form.contraKind || '',
+      state.form.oppositeFsLine || '',
+      Boolean(state.form.splitBySign),
+      state.form.systemRole || '',
     ]);
   }
 
@@ -140,6 +160,16 @@
       parentName: String((raw && raw.parentName) ?? ''),
       isPostable: Boolean(raw && raw.isPostable),
       isActive: !raw || raw.isActive !== false,
+      fsLine: String((raw && raw.fsLine) ?? ''),
+      contraOf: String((raw && raw.contraOf) ?? ''),
+      contraKind: String((raw && raw.contraKind) ?? ''),
+      oppositeFsLine: String((raw && raw.oppositeFsLine) ?? ''),
+      splitBySign: Boolean(raw && raw.splitBySign),
+      systemRole: String((raw && raw.systemRole) ?? ''),
+      effectiveFsLine: String((raw && raw.effectiveFsLine) ?? ''),
+      effectiveFsLineTitle: String((raw && raw.effectiveFsLineTitle) ?? ''),
+      effectiveSection: String((raw && raw.effectiveSection) ?? ''),
+      classificationSource: String((raw && raw.classificationSource) ?? ''),
     };
   }
 
@@ -210,6 +240,15 @@
       parentCode: account.parentCode || '',
       nature: NATURES.includes(account.nature) ? account.nature : 'debtor',
       isActive: account.isActive !== false,
+      fsLine: account.fsLine || '',
+      contraOf: account.contraOf || '',
+      contraKind: account.contraKind || '',
+      oppositeFsLine: account.oppositeFsLine || '',
+      splitBySign: Boolean(account.splitBySign),
+      systemRole: account.systemRole || '',
+      effectiveFsLineTitle: account.effectiveFsLineTitle || '',
+      effectiveSection: account.effectiveSection || '',
+      classificationSource: account.classificationSource || '',
     };
   }
 
@@ -224,6 +263,15 @@
       parentCode: parent ? parent.code : '',
       nature: parent ? parent.nature : 'debtor',
       isActive: true,
+      fsLine: '',
+      contraOf: '',
+      contraKind: '',
+      oppositeFsLine: '',
+      splitBySign: false,
+      systemRole: '',
+      effectiveFsLineTitle: '',
+      effectiveSection: '',
+      classificationSource: '',
     };
   }
 
@@ -440,6 +488,53 @@
 
     activeCheck.checked = Boolean(form.isActive);
     activeCheck.disabled = !editing || busy;
+
+    const classificationRow = $('.ad-form-row-classification');
+    const hasCatalog = Boolean(state.fsCatalog && state.fsCatalog.lines);
+    if (classificationRow) classificationRow.hidden = !hasCatalog;
+    if (!hasCatalog) return;
+
+    fillContraOptions();
+
+    const fsLineSelect = $('#adFsLine');
+    const roleSelect = $('#adSystemRole');
+    const contraSelect = $('#adContraOf');
+    const kindSelect = $('#adContraKind');
+    const oppositeSelect = $('#adOppositeFsLine');
+    const splitCheck = $('#adSplitBySign');
+    const effective = $('#adEffective');
+
+    if (fsLineSelect) {
+      fsLineSelect.value = form.fsLine || '';
+      fsLineSelect.disabled = !editing || busy;
+    }
+    if (roleSelect) {
+      roleSelect.value = form.systemRole || '';
+      roleSelect.disabled = !editing || busy;
+    }
+    if (contraSelect) {
+      contraSelect.value = form.contraOf || '';
+      contraSelect.disabled = !editing || busy;
+    }
+    if (kindSelect) {
+      kindSelect.value = form.contraKind || '';
+      kindSelect.disabled = !editing || busy;
+    }
+    if (oppositeSelect) {
+      oppositeSelect.value = form.oppositeFsLine || '';
+      oppositeSelect.disabled = !editing || busy || !form.splitBySign;
+    }
+    if (splitCheck) {
+      splitCheck.checked = Boolean(form.splitBySign);
+      splitCheck.disabled = !editing || busy;
+    }
+    if (effective) {
+      const title = form.effectiveFsLineTitle || '';
+      effective.hidden = !title;
+      effective.textContent = title
+        ? `سرفصل مؤثر فعلی: ${title} — ${form.effectiveSection || ''} (${CLASSIFICATION_SOURCE_LABELS[form.classificationSource] || form.classificationSource || '—'})`
+        : '';
+    }
   }
 
   function fillGroupOptions() {
@@ -449,6 +544,75 @@
     groupSelect.innerHTML = state.groups.map((group) => (
       `<option value="${esc(group.code)}">${esc(toFaDigits(group.code))} - ${esc(group.name)}</option>`
     )).join('');
+  }
+
+  function fsLineOptionsHtml(catalog, selected) {
+    const statements = [
+      { key: 'balance_sheet', label: 'صورت وضعیت مالی' },
+      { key: 'income_statement', label: 'صورت سود و زیان' },
+      { key: 'memorandum', label: 'حساب‌های انتظامی' },
+    ];
+    return statements.map((statement) => {
+      const lines = catalog.lines.filter((line) => line.statement === statement.key);
+      if (!lines.length) return '';
+      return `<optgroup label="${statement.label}">${lines.map((line) => (
+        `<option value="${esc(line.code)}"${line.code === selected ? ' selected' : ''}>${esc(line.code)} — ${esc(line.title)}</option>`
+      )).join('')}</optgroup>`;
+    }).join('');
+  }
+
+  function fillFsCatalogOptions() {
+    const catalog = state.fsCatalog;
+    if (!catalog) return;
+
+    const fsLineSelect = $('#adFsLine');
+    if (fsLineSelect) {
+      // eslint-disable-next-line no-unsanitized/property -- catalog labels are escaped
+      fsLineSelect.innerHTML = '<option value="">خودکار — از حساب بالاتر یا گروه</option>'
+        + fsLineOptionsHtml(catalog, '');
+    }
+
+    const oppositeSelect = $('#adOppositeFsLine');
+    if (oppositeSelect) {
+      // eslint-disable-next-line no-unsanitized/property -- catalog labels are escaped
+      oppositeSelect.innerHTML = '<option value="">— بدون سرفصل مقابل —</option>'
+        + fsLineOptionsHtml(catalog, '');
+    }
+
+    const roleSelect = $('#adSystemRole');
+    if (roleSelect) {
+      // eslint-disable-next-line no-unsanitized/property -- option values and labels are escaped
+      roleSelect.innerHTML = '<option value="">— بدون نقش —</option>'
+        + (catalog.systemRoles || []).map((option) => (
+          `<option value="${esc(option.value)}">${esc(option.label)}</option>`
+        )).join('');
+    }
+
+    const kindSelect = $('#adContraKind');
+    if (kindSelect) {
+      // eslint-disable-next-line no-unsanitized/property -- option values and labels are escaped
+      kindSelect.innerHTML = '<option value="">— بدون نوع —</option>'
+        + (catalog.contraKinds || []).map((option) => (
+          `<option value="${esc(option.value)}">${esc(option.label)}</option>`
+        )).join('');
+    }
+
+    const contraSelect = $('#adContraOf');
+    if (contraSelect) {
+      fillContraOptions();
+    }
+  }
+
+  function fillContraOptions() {
+    const contraSelect = $('#adContraOf');
+    if (!contraSelect) return;
+    // eslint-disable-next-line no-unsanitized/property -- option values and labels are escaped
+    contraSelect.innerHTML = '<option value="">— حساب کاهنده نیست —</option>'
+      + state.accounts
+        .filter((account) => account.id !== state.form.id)
+        .map((account) => (
+          `<option value="${esc(account.code)}">${esc(toFaDigits(account.code))} — ${esc(account.name)}</option>`
+        )).join('');
   }
 
   function renderToolbar() {
@@ -598,9 +762,20 @@
       state.accounts = accountList.map(normalizeAccount).sort(compareCodes);
       state.groups = groupList.map(normalizeGroup)
         .sort((a, b) => a.code.localeCompare(b.code, 'en', { numeric: true }));
+      if (!state.fsCatalog) {
+        try {
+          const catalog = await invoke('list_fs_lines');
+          if (catalog && Array.isArray(catalog.lines) && catalog.lines.length) {
+            state.fsCatalog = catalog;
+          }
+        } catch {
+          // Classification is an enhancement; the basic form still works.
+        }
+      }
       state.loaded = true;
       state.loading = false;
       fillGroupOptions();
+      fillFsCatalogOptions();
 
       const chain = drillChain();
       state.drillPath = chain.map((account) => account.code);
@@ -723,6 +898,15 @@
       parentCode,
       nature: parent ? parent.nature : 'debtor',
       isActive: true,
+      fsLine: '',
+      contraOf: '',
+      contraKind: '',
+      oppositeFsLine: '',
+      splitBySign: false,
+      systemRole: '',
+      effectiveFsLineTitle: '',
+      effectiveSection: '',
+      classificationSource: '',
     };
     state.initial = snapshot();
     clearError();
@@ -767,6 +951,12 @@
     const parentCode = level === 1 ? '' : (state.form.parentCode || '');
     const nature = NATURES.includes(state.form.nature) ? state.form.nature : '';
     const isActive = Boolean(state.form.isActive);
+    const fsLine = state.form.fsLine || '';
+    const contraOf = state.form.contraOf || '';
+    const contraKind = state.form.contraKind || '';
+    const splitBySign = Boolean(state.form.splitBySign);
+    const oppositeFsLine = splitBySign ? (state.form.oppositeFsLine || '') : '';
+    const systemRole = state.form.systemRole || '';
 
     if (!code || !name) {
       showError('لطفاً کد و نام حساب را وارد کنید.');
@@ -828,6 +1018,31 @@
       showError('ماهیت حساب باید بدهکار، بستانکار یا ماهیت دوگانه باشد.');
       return;
     }
+    if (contraOf && !contraKind) {
+      showError('برای حساب کاهنده، انتخاب نوع کاهنده الزامی است.');
+      return;
+    }
+    if (!contraOf && contraKind) {
+      showError('نوع کاهنده بدون انتخاب حساب کاهنده مجاز نیست.');
+      return;
+    }
+    if (splitBySign && !oppositeFsLine) {
+      showError('برای تفکیک بر اساس علامت، انتخاب سرفصل مقابل الزامی است.');
+      return;
+    }
+    if (oppositeFsLine && fsLine && oppositeFsLine === fsLine) {
+      showError('سرفصل مقابل باید با سرفصل اصلی متفاوت باشد.');
+      return;
+    }
+
+    const classificationArgs = state.fsCatalog && state.fsCatalog.lines ? {
+      fsLine,
+      contraOf,
+      contraKind,
+      oppositeFsLine,
+      splitBySign,
+      systemRole,
+    } : {};
 
     state.saving = true;
     clearError();
@@ -842,6 +1057,7 @@
           nature,
           parentCode,
           isActive,
+          ...classificationArgs,
         });
       } else {
         await invoke('create_account', {
@@ -853,6 +1069,7 @@
           parentCode,
           isPostable: level <= 2,
           isActive,
+          ...classificationArgs,
         });
       }
 
@@ -1444,6 +1661,26 @@
     });
     $('#adActive')?.addEventListener('change', (event) => {
       state.form.isActive = event.target.checked;
+    });
+    $('#adFsLine')?.addEventListener('change', (event) => {
+      state.form.fsLine = event.target.value;
+    });
+    $('#adSystemRole')?.addEventListener('change', (event) => {
+      state.form.systemRole = event.target.value;
+    });
+    $('#adContraOf')?.addEventListener('change', (event) => {
+      state.form.contraOf = event.target.value;
+    });
+    $('#adContraKind')?.addEventListener('change', (event) => {
+      state.form.contraKind = event.target.value;
+    });
+    $('#adOppositeFsLine')?.addEventListener('change', (event) => {
+      state.form.oppositeFsLine = event.target.value;
+    });
+    $('#adSplitBySign')?.addEventListener('change', (event) => {
+      state.form.splitBySign = event.target.checked;
+      if (!state.form.splitBySign) state.form.oppositeFsLine = '';
+      renderForm();
     });
 
     $('#adNew')?.addEventListener('click', startNew);

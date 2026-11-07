@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 use crate::commands::state::{
-    lock, notify_accounts_changed, require_main_or_preview_window, require_window, AppState,
-    RestoreSelection,
+    lock, notify_accounts_changed, notify_vouchers_changed, require_main_or_preview_window,
+    require_window, AppState, RestoreSelection,
 };
 use crate::commands::windows::open_external;
 use crate::db;
@@ -348,6 +348,115 @@ pub(crate) fn delete_fiscal_year(
 ) -> Result<(), String> {
     require_window(&window, &["main"])?;
     state.database.delete_fiscal_year(id)
+}
+
+/* ── Year-end closing ──────────────────────────────────────── */
+
+#[tauri::command(async)]
+pub(crate) fn get_closing_preview(
+    year_id: i64,
+    as_of_date: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::ClosingPreview, String> {
+    require_window(&window, &["main"])?;
+    state
+        .database
+        .get_closing_preview(year_id, as_of_date.as_deref())
+}
+
+#[tauri::command(async)]
+pub(crate) fn assign_closing_roles(
+    year_id: i64,
+    income_summary_code: Option<String>,
+    retained_earnings_code: Option<String>,
+    closing_balance_code: Option<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::ClosingRoles, String> {
+    require_window(&window, &["main"])?;
+    let roles = state.database.assign_closing_roles(
+        year_id,
+        income_summary_code.as_deref(),
+        retained_earnings_code.as_deref(),
+        closing_balance_code.as_deref(),
+    )?;
+    // The role is stored on the account, so open account windows must refresh.
+    notify_accounts_changed(&app);
+    Ok(roles)
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_closing(
+    year_id: i64,
+    as_of_date: Option<String>,
+    income_summary_code: Option<String>,
+    retained_earnings_code: Option<String>,
+    closing_balance_code: Option<String>,
+    reason: Option<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::ClosingExecutionResult, String> {
+    require_window(&window, &["main"])?;
+    let result = state.database.execute_closing(
+        year_id,
+        as_of_date.as_deref(),
+        income_summary_code.as_deref(),
+        retained_earnings_code.as_deref(),
+        closing_balance_code.as_deref(),
+        reason.as_deref(),
+    )?;
+    notify_vouchers_changed(&app);
+    Ok(result)
+}
+
+#[tauri::command(async)]
+pub(crate) fn reverse_closing(
+    year_id: i64,
+    reason: Option<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::ClosingReversalResult, String> {
+    require_window(&window, &["main"])?;
+    let result = state.database.reverse_closing(year_id, reason.as_deref())?;
+    notify_vouchers_changed(&app);
+    Ok(result)
+}
+
+#[tauri::command(async)]
+pub(crate) fn get_carry_forward_preview(
+    source_year_id: i64,
+    target_year_id: i64,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::CarryForwardPlan, String> {
+    require_window(&window, &["main"])?;
+    state
+        .database
+        .get_carry_forward_preview(source_year_id, target_year_id)
+}
+
+#[tauri::command(async)]
+pub(crate) fn execute_carry_forward(
+    source_year_id: i64,
+    target_year_id: i64,
+    force: Option<bool>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::CarryForwardExecutionResult, String> {
+    require_window(&window, &["main"])?;
+    let result = state.database.execute_carry_forward(
+        source_year_id,
+        target_year_id,
+        force.unwrap_or(false),
+    )?;
+    notify_vouchers_changed(&app);
+    Ok(result)
 }
 
 /* ── Audit history ─────────────────────────────────────────── */

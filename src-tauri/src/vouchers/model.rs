@@ -483,6 +483,10 @@ pub struct AmountRow {
     pub account_name: String,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub amount: i64,
+    /// Statement line the amount was contributed to, including the
+    /// `UNCLASSIFIED` review bucket.
+    #[serde(default)]
+    pub fs_line: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

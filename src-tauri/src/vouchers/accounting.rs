@@ -1,5 +1,7 @@
 //! Account activity and classification shared by validation and reports.
 
+use crate::db::classification::{self, AccountClassificationRow, EffectiveClassification};
+use crate::db::fs_catalog::FsStatement;
 use crate::db::{self};
 use crate::vouchers::model::{ReportScope, CLOSING_FINAL, VOUCHER_TYPES};
 use rusqlite::{params, Connection};
@@ -9,11 +11,19 @@ use std::collections::HashMap;
 pub(crate) struct AccountActivity {
     pub(crate) account_code: String,
     pub(crate) account_name: String,
-    pub(crate) group_code: String,
-    pub(crate) group_type: String,
-    pub(crate) default_section: String,
-    pub(crate) debit: i64,
-    pub(crate) credit: i64,
+    /// Effective statement classification resolved from the account, its
+    /// ancestors and its group.
+    pub(crate) effective: EffectiveClassification,
+    /// Line and signed amount actually contributed to the statement after
+    /// contra and split-by-sign rules.
+    pub(crate) contribution_line: String,
+    pub(crate) contribution_amount: i64,
+}
+
+impl AccountActivity {
+    pub(crate) fn statement(&self) -> FsStatement {
+        self.effective.statement
+    }
 }
 
 /// Per-account totals for a date range. Vouchers whose type is in
@@ -110,38 +120,26 @@ pub(crate) fn account_activities(
 
     // Step 2: every account of the chart (accounts without movement stay at
     // zero, exactly like the old LEFT JOIN), in code order.
-    let mut stmt = conn
-        .prepare(
-            "SELECT a.code, a.name, g.code, g.type, g.default_section
-               FROM accounts a
-               JOIN account_groups g ON g.code = a.group_code
-              ORDER BY a.code",
-        )
-        .map_err(db::db_error)?;
-    let raw = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-            ))
-        })
-        .map_err(db::db_error)?;
+    let rows = classification::load_account_classifications(conn)?;
+    let classification_map: HashMap<String, AccountClassificationRow> = rows
+        .iter()
+        .map(|row| (row.code.clone(), row.clone()))
+        .collect();
 
-    let mut activities: Vec<AccountActivity> = Vec::with_capacity(totals.len());
-    for row in raw {
-        let (code, name, group_code, group_type, default_section) = row.map_err(db::db_error)?;
-        let (debit, credit) = totals.get(&code).copied().unwrap_or((0, 0));
+    let mut activities: Vec<AccountActivity> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let (debit, credit) = totals.get(&row.code).copied().unwrap_or((0, 0));
+        let net = debit.checked_sub(credit).ok_or_else(|| {
+            "مانده حساب از محدوده عددی مجاز بیشتر است؛ بازه گزارش را کوچک‌تر کنید.".to_string()
+        })?;
+        let effective = classification::resolve_account(&row, &classification_map);
+        let contribution = classification::contribution(&row, &effective, net, &classification_map);
         activities.push(AccountActivity {
-            account_code: code,
-            account_name: name,
-            group_code,
-            group_type,
-            default_section,
-            debit,
-            credit,
+            account_code: row.code.clone(),
+            account_name: row.name.clone(),
+            contribution_line: contribution.fs_line,
+            contribution_amount: contribution.amount,
+            effective,
         });
     }
     Ok(activities)
@@ -160,6 +158,11 @@ pub(crate) enum AccountClass {
 /// Financial-statement placement chosen for an account group. Keys match
 /// `ACCOUNT_GROUP_SECTIONS`; an empty or unknown value keeps the legacy
 /// group-type/code-prefix classification.
+///
+/// Reports now use `db::fs_catalog`, but the table below is still asserted
+/// against the UI classification matrix, so it stays as the single shared
+/// source for that check.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatementSection {
     CurrentAsset,
@@ -178,6 +181,7 @@ pub(crate) enum StatementSection {
     Memorandum,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn section_of(key: &str) -> Option<StatementSection> {
     REPORT_SECTIONS
         .iter()
@@ -189,6 +193,7 @@ pub(crate) fn section_of(key: &str) -> Option<StatementSection> {
 /// key, its Rust enum and its reported class in one table prevents the UI and
 /// backend mappings from drifting apart; `report_section_mapping_matches_ui`
 /// also checks the table against `ui/js/pages/settings.js`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn section_class(key: &str) -> Option<&'static str> {
     REPORT_SECTIONS
         .iter()
@@ -196,6 +201,7 @@ pub(crate) fn section_class(key: &str) -> Option<&'static str> {
         .map(|entry| entry.2)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const REPORT_SECTIONS: [(&str, StatementSection, &str); 14] = [
     ("current_asset", StatementSection::CurrentAsset, "asset"),
     (
@@ -269,34 +275,4 @@ pub(crate) fn group_type_class(group_type: &str) -> Option<&'static str> {
         .iter()
         .find(|entry| entry.0 == group_type)
         .map(|entry| entry.1)
-}
-
-pub(crate) fn classify_activity(activity: &AccountActivity, net: i64) -> AccountClass {
-    if let Some(class) = section_class(&activity.default_section) {
-        return match class {
-            "asset" => AccountClass::Asset,
-            "liability" => AccountClass::Liability,
-            "equity" => AccountClass::Equity,
-            "income" => AccountClass::Income,
-            "expense" => AccountClass::Expense,
-            "memorandum" => AccountClass::Memorandum,
-            "dual" => {
-                if net < 0 {
-                    AccountClass::Income
-                } else {
-                    AccountClass::Expense
-                }
-            }
-            _ => return classify(&activity.group_type, &activity.account_code),
-        };
-    }
-    if matches!(activity.group_code.as_str(), "10" | "11") {
-        if net < 0 {
-            AccountClass::Income
-        } else {
-            AccountClass::Expense
-        }
-    } else {
-        classify(&activity.group_type, &activity.account_code)
-    }
 }

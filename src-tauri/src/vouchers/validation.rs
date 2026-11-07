@@ -3,10 +3,11 @@
 //! Saving, Excel import and export all use the same account-eligibility
 //! checks so they cannot disagree about which postings are allowed.
 
-use crate::db::{self, normalize_digits, Database};
+use crate::db::fs_catalog::{section_of, FsNormalSide, FsSection};
+use crate::db::{self, classification, normalize_digits, Database};
 use crate::vouchers::accounting::{classify, AccountClass};
 use crate::vouchers::model::{VoucherLineInput, CLOSING_FINAL, CLOSING_TEMPORARY, VOUCHER_TYPES};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /* ── Validation helpers ─────────────────────────────────────── */
@@ -452,39 +453,34 @@ fn account_class_for_type_rule(
     conn: &Connection,
     account_code: &str,
 ) -> Result<AccountClass, String> {
-    let account = conn
-        .query_row(
-            "SELECT g.code, g.type, a.nature
-               FROM accounts a
-               JOIN account_groups g ON g.code = a.group_code
-              WHERE a.code = ?1",
-            params![account_code],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
+    let map = classification::load_classifications(conn)?;
+    let row = map.get(account_code).ok_or_else(|| {
+        format!(
+            "حساب {} برای تعیین نوع سند یافت نشد.",
+            db::to_fa_digits(account_code)
         )
-        .optional()
-        .map_err(db::db_error)?
-        .ok_or_else(|| {
-            format!(
-                "حساب {} برای تعیین نوع سند یافت نشد.",
-                db::to_fa_digits(account_code)
-            )
-        })?;
-    if account.0 == db::OTHER_OPERATING_GROUP_CODE
-        || account.0 == db::OTHER_NON_OPERATING_GROUP_CODE
-    {
-        return Ok(if account.2 == "creditor" {
-            AccountClass::Income
-        } else {
-            AccountClass::Expense
-        });
-    }
-    Ok(classify(&account.1, account_code))
+    })?;
+    let effective = classification::resolve_account(row, &map);
+    Ok(match section_of(&effective.fs_line) {
+        FsSection::NonCurrentAsset | FsSection::CurrentAsset => AccountClass::Asset,
+        FsSection::NonCurrentLiability | FsSection::CurrentLiability => AccountClass::Liability,
+        FsSection::Equity => AccountClass::Equity,
+        FsSection::Revenue => AccountClass::Income,
+        FsSection::Cogs
+        | FsSection::SellingExpense
+        | FsSection::AdminExpense
+        | FsSection::FinanceCost
+        | FsSection::IncomeTax => AccountClass::Expense,
+        FsSection::OtherOperating | FsSection::OtherNonOperating => {
+            if effective.normal_side == FsNormalSide::Credit {
+                AccountClass::Income
+            } else {
+                AccountClass::Expense
+            }
+        }
+        FsSection::Memorandum => AccountClass::Memorandum,
+        FsSection::Unclassified => classify(&row.group_type, account_code),
+    })
 }
 
 pub fn format_amount(value: i64) -> String {

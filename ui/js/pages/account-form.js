@@ -2,13 +2,59 @@
 
 /* ── Account form ───────────────────────────────────────────── */
 
-function openAccountDialog(account) {
+let fsCatalogCache = null;
+
+async function ensureFsCatalog() {
+  if (fsCatalogCache) return fsCatalogCache;
+  try {
+    const payload = await invoke('list_fs_lines');
+    if (payload && Array.isArray(payload.lines) && payload.lines.length) {
+      fsCatalogCache = payload;
+    }
+  } catch (error) {
+    // The classification selector is an enhancement: a catalog failure must
+    // not stop the user from editing the basic account fields.
+  }
+  return fsCatalogCache;
+}
+
+const CLASSIFICATION_SOURCE_LABELS = {
+  seed: 'داده اولیه',
+  inherit: 'ارث از حساب بالاتر',
+  inherited: 'ارث از حساب بالاتر',
+  auto: 'پیشنهاد گروه',
+  manual: 'تعیین دستی',
+};
+
+function fsLineOptions(catalog, selected) {
+  const statements = [
+    { key: 'balance_sheet', label: 'صورت وضعیت مالی' },
+    { key: 'income_statement', label: 'صورت سود و زیان' },
+    { key: 'memorandum', label: 'حساب‌های انتظامی' },
+  ];
+  return statements.map((statement) => {
+    const lines = catalog.lines.filter((line) => line.statement === statement.key);
+    if (!lines.length) return '';
+    return `<optgroup label="${statement.label}">${lines.map((line) => (
+      `<option value="${esc(line.code)}"${line.code === selected ? ' selected' : ''}>${esc(line.code)} — ${esc(line.title)}</option>`
+    )).join('')}</optgroup>`;
+  }).join('');
+}
+
+function optionList(options, selected, emptyLabel) {
+  return `<option value="">${esc(emptyLabel)}</option>${options.map((option) => (
+    `<option value="${esc(option.value)}"${option.value === selected ? ' selected' : ''}>${esc(option.label)}</option>`
+  )).join('')}`;
+}
+
+async function openAccountDialog(account) {
   const isEdit = Boolean(account);
   const groups = state.groups;
   if (!groups.length) {
     toast('ابتدا حداقل یک گروه حساب تعریف کنید.', 'info');
     return;
   }
+  const catalog = await ensureFsCatalog();
 
   const hierarchy = state.accountDrillPath
     .map((code) => state.accounts.find((item) => item.code === code))
@@ -24,6 +70,56 @@ function openAccountDialog(account) {
   const groupOptions = groups.map((g) => `<option value="${esc(g.code)}"${initialGroupCode === g.code ? ' selected' : ''}>${toFa(g.code)} — ${esc(g.name)} (${esc(g.type)})</option>`).join('');
   const nature = account ? account.nature : 'debtor';
   const suggestedCode = account?.code || nextAccountCode(state.accounts, level, initialParentCode);
+
+  const contraTargets = catalog
+    ? state.accounts
+      .filter((item) => !account || Number(item.id) !== Number(account.id))
+      .map((item) => ({ value: item.code, label: `${toFa(item.code)} — ${item.name}` }))
+    : [];
+  const classificationPanel = catalog ? `
+        <fieldset class="acct-classification">
+          <legend>طبقه‌بندی صورت‌های مالی</legend>
+          <div class="field wide">
+            <label for="acctFsLine">سرفصل صورت‌های مالی</label>
+            <select id="acctFsLine" class="input">
+              <option value="">خودکار — از حساب بالاتر یا گروه</option>
+              ${fsLineOptions(catalog, account?.fsLine || '')}
+            </select>
+          </div>
+          <div class="field">
+            <label for="acctSystemRole">نقش سیستمی</label>
+            <select id="acctSystemRole" class="input">
+              ${optionList(catalog.systemRoles || [], account?.systemRole || '', '— بدون نقش —')}
+            </select>
+          </div>
+          <div class="field">
+            <label for="acctContraOf">حساب کاهنده از</label>
+            <select id="acctContraOf" class="input">
+              ${optionList(contraTargets, account?.contraOf || '', '— حساب کاهنده نیست —')}
+            </select>
+          </div>
+          <div class="field">
+            <label for="acctContraKind">نوع کاهنده</label>
+            <select id="acctContraKind" class="input">
+              ${optionList(catalog.contraKinds || [], account?.contraKind || '', '— بدون نوع —')}
+            </select>
+          </div>
+          <div class="field">
+            <label for="acctOppositeFsLine">سرفصل مقابل (تفکیک علامت)</label>
+            <select id="acctOppositeFsLine" class="input">
+              <option value="">— بدون سرفصل مقابل —</option>
+              ${fsLineOptions(catalog, account?.oppositeFsLine || '')}
+            </select>
+          </div>
+          <div class="field">
+            <label>&nbsp;</label>
+            <label class="check-field" style="padding-top:0">
+              <input id="acctSplitBySign" type="checkbox"${account?.splitBySign ? ' checked' : ''} />
+              <span>تفکیک بر اساس علامت مانده</span>
+            </label>
+          </div>
+          ${account?.effectiveFsLineTitle ? `<div class="form-note acct-effective">سرفصل مؤثر فعلی: <b>${esc(account.effectiveFsLineTitle)}</b> — ${esc(account.effectiveSection || '')} (${esc(CLASSIFICATION_SOURCE_LABELS[account.classificationSource] || account.classificationSource || '—')})</div>` : ''}
+        </fieldset>` : '';
 
   const dialog = openDialog({
     title: isEdit ? 'ویرایش حساب' : 'تعریف حساب جدید',
@@ -67,6 +163,7 @@ function openAccountDialog(account) {
             <span>قابل ثبت در سند (کل و معین)</span>
           </label>
         </div>
+        ${classificationPanel}
         <div class="form-error" id="acctError" hidden></div>
       </form>
       <div class="form-note">
@@ -163,6 +260,13 @@ async function submitAccountForm(ref, button, account) {
   const groupSelect = $('#acctGroup', ref.body);
   const natureSelect = $('#acctNature', ref.body);
   const parentSelect = $('#acctParent', ref.body);
+  const fsLineSelect = $('#acctFsLine', ref.body);
+  const systemRoleSelect = $('#acctSystemRole', ref.body);
+  const contraOfSelect = $('#acctContraOf', ref.body);
+  const contraKindSelect = $('#acctContraKind', ref.body);
+  const oppositeFsLineSelect = $('#acctOppositeFsLine', ref.body);
+  const splitBySignCheck = $('#acctSplitBySign', ref.body);
+  const hasClassification = Boolean(fsLineSelect);
 
   const showError = (message) => {
     if (!errorBox) return;
@@ -177,11 +281,32 @@ async function submitAccountForm(ref, button, account) {
   const nature = natureSelect?.value || 'debtor';
   const parentCode = level <= 1 ? '' : (parentSelect?.value || '');
   const isPostable = level <= 2;
+  const fsLine = fsLineSelect?.value || '';
+  const systemRole = systemRoleSelect?.value || '';
+  const contraOf = contraOfSelect?.value || '';
+  const contraKind = contraKindSelect?.value || '';
+  const splitBySign = Boolean(splitBySignCheck?.checked);
+  const oppositeFsLine = splitBySign ? (oppositeFsLineSelect?.value || '') : '';
 
   if (!account && !code) return showError('کد حساب الزامی است.');
   if (!name) return showError('نام حساب الزامی است.');
   if (!groupCode) return showError('گروه حساب را انتخاب کنید.');
   if (level > 1 && !parentCode) return showError('برای این سطح، انتخاب حساب بالاتر الزامی است.');
+  if (contraOf && !contraKind) return showError('برای حساب کاهنده، انتخاب نوع کاهنده الزامی است.');
+  if (!contraOf && contraKind) return showError('نوع کاهنده بدون انتخاب حساب کاهنده مجاز نیست.');
+  if (splitBySign && !oppositeFsLine) return showError('برای تفکیک بر اساس علامت، انتخاب سرفصل مقابل الزامی است.');
+  if (oppositeFsLine && fsLine && oppositeFsLine === fsLine) {
+    return showError('سرفصل مقابل باید با سرفصل اصلی متفاوت باشد.');
+  }
+
+  const classification = hasClassification ? {
+    fsLine,
+    contraOf,
+    contraKind,
+    oppositeFsLine,
+    splitBySign,
+    systemRole,
+  } : null;
 
   if (errorBox) errorBox.hidden = true;
   if (button) button.disabled = true;
@@ -194,6 +319,7 @@ async function submitAccountForm(ref, button, account) {
         groupCode,
         nature,
         parentCode,
+        ...(classification || {}),
       });
       toast('حساب با موفقیت ویرایش شد.', 'ok');
     } else {
@@ -205,6 +331,7 @@ async function submitAccountForm(ref, button, account) {
         nature,
         parentCode,
         isPostable,
+        ...(classification || {}),
       });
       toast('حساب جدید ثبت شد.', 'ok');
     }

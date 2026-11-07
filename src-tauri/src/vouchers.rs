@@ -28,6 +28,10 @@ mod storage;
 mod transfer;
 mod validation;
 
+pub(crate) use model::{
+    serialize_exact_amount, CLOSING_FINAL, CLOSING_TEMPORARY, MAX_DESCRIPTION, MAX_LINES,
+    MAX_LINE_DESCRIPTION, TOUCHED_AT,
+};
 pub use model::{
     AmountRow, BalanceSheetReport, BulkVoucherDeleteDateRange, BulkVoucherDeleteInput,
     BulkVoucherDeleteNumberRange, BulkVoucherDeletePreview, BulkVoucherDeleteResult,
@@ -39,7 +43,6 @@ pub use model::{
     DEFAULT_VOUCHER_PAGE_SIZE, MAX_AMOUNT, MAX_BULK_DELETE_TARGETS, MAX_PAGE_SIZE,
     MAX_VOUCHER_NUMBER, VOUCHER_TYPES,
 };
-pub(crate) use model::{MAX_DESCRIPTION, MAX_LINES, MAX_LINE_DESCRIPTION};
 pub(crate) use validation::normalize_date;
 pub use validation::{format_amount, normalize_filter_date, validate_voucher_date};
 

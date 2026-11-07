@@ -87,6 +87,64 @@ fn ensure_no_temporary_vouchers(conn: &Connection, year_id: i64) -> Result<(), S
     Ok(())
 }
 
+/// True when the year has a closing run that has not been reversed.
+fn has_executed_closing(conn: &Connection, year_id: i64) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM closing_runs
+             WHERE fiscal_year_id = ?1 AND status = 'executed'
+         )",
+        params![year_id],
+        |row| row.get(0),
+    )
+    .map_err(db_error)
+}
+
+/// Keeps `fiscal_years.status` aligned with the closing history:
+///
+/// - `final` requires a successful closing run (the close is the audit event);
+/// - a year with an executed run may not be reopened (`open`); reopening means
+///   reversing the close first;
+/// - leaving `final` for `closed` is allowed (with the usual reason/confirm) so
+///   the operator can then reverse the close.
+///
+/// A no-op (same status) is always accepted so saving an unrelated field does
+/// not fail.
+fn ensure_status_aligns_with_closing(
+    conn: &Connection,
+    year_id: i64,
+    before: &str,
+    new_status: &str,
+) -> Result<(), String> {
+    if before == new_status {
+        return Ok(());
+    }
+    let executed = has_executed_closing(conn, year_id)?;
+    if new_status == "final" && !executed {
+        return Err(
+            "نهایی‌سازی سال مالی فقط پس از اجرای موفق «بستن سال مالی» مجاز است.".to_string(),
+        );
+    }
+    if executed && new_status == "open" {
+        return Err(
+            "بستن این سال مالی اجرا شده است؛ برای بازگشایی ابتدا «برگشت بستن» را اجرا کنید."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Refuses a voucher write in a year whose closing run is still active even if
+/// its status was changed outside the normal workflow.
+fn ensure_year_not_closed(conn: &Connection, year_id: i64) -> Result<(), String> {
+    if has_executed_closing(conn, year_id)? {
+        return Err(
+            "سال مالی بسته شده است؛ برای تغییر اسناد ابتدا «برگشت بستن» را اجرا کنید.".to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn fetch_year(conn: &Connection, id: i64) -> Result<FiscalYear, String> {
     conn.query_row(
         "SELECT f.id, f.title, f.start_date, f.end_date, f.status, f.created_at, f.updated_at,
@@ -281,6 +339,7 @@ pub(crate) fn ensure_year_accepts_date(
             }
         ));
     }
+    ensure_year_not_closed(conn, year_id)?;
     if date < year.start_date.as_str() || date > year.end_date.as_str() {
         return Err(format!(
             "تاریخ سند ({}) خارج از بازه سال مالی «{}» ({} تا {}) است.",
@@ -297,7 +356,10 @@ pub(crate) fn ensure_year_accepts_date(
 /// necessary. Saving or editing a voucher in a closed/final year is refused.
 pub(crate) fn ensure_open_period(conn: &Connection, date: &str) -> Result<i64, String> {
     match fiscal_year_for_date(conn, date)? {
-        Some(year) if year.status == "open" => Ok(year.id),
+        Some(year) if year.status == "open" => {
+            ensure_year_not_closed(conn, year.id)?;
+            Ok(year.id)
+        }
         Some(year) => Err(format!(
             "سال مالی «{}» {} است؛ ثبت یا تغییر سند در این دوره مجاز نیست.",
             year.title,
@@ -457,6 +519,7 @@ impl Database {
                 .map_err(db_error)?;
             let before = fetch_year(&tx, id)?;
             let reopen_reason = reopen_reason_for(&before, &status, reason, confirm)?;
+            ensure_status_aligns_with_closing(&tx, id, &before.status, &status)?;
             if status == "final" && before.status != "final" {
                 ensure_no_temporary_vouchers(&tx, id)?;
             }
@@ -520,6 +583,7 @@ impl Database {
                 .map_err(db_error)?;
             let before = fetch_year(&tx, id)?;
             let reopen_reason = reopen_reason_for(&before, &status, reason, confirm)?;
+            ensure_status_aligns_with_closing(&tx, id, &before.status, &status)?;
             if status == "final" && before.status != "final" {
                 ensure_no_temporary_vouchers(&tx, id)?;
             }
@@ -559,6 +623,19 @@ impl Database {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(db_error)?;
             let before = fetch_year(&tx, id)?;
+            let has_history: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM closing_runs WHERE fiscal_year_id = ?1)",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .map_err(db_error)?;
+            if has_history {
+                return Err(
+                    "این سال مالی سابقه بستن دارد و قابل حذف نیست؛ فقط عنوان یا وضعیت آن را تغییر دهید."
+                        .to_string(),
+                );
+            }
             if before.voucher_count > 0 {
                 return Err(format!(
                     "این سال مالی {} سند دارد و قابل حذف نیست؛ در صورت نیاز آن را ببندید.",

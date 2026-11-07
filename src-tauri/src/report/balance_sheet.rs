@@ -52,6 +52,7 @@ pub fn balance_sheet_print_doc(
         account_code: String::new(),
         account_name: "سود (زیان) انباشته دوره".to_string(),
         amount: report.profit,
+        fs_line: "BS.EQ.RE".to_string(),
     });
 
     let body = format!(

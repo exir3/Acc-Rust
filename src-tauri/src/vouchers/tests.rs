@@ -280,12 +280,14 @@ fn saves_balanced_voucher_and_builds_reports() {
 fn non_operating_accounts_change_net_profit_not_operating_profit() {
     let db = db::memory_database();
     db.with_conn(|conn| {
+        // The shared «other operating» section resolves its line from the
+        // account nature: creditor → IS.OOI, debtor → IS.OOE.
         conn.execute(
             "INSERT INTO accounts (code, name, level, group_code, nature, is_postable)
-               VALUES ('1305', 'درآمد عملیاتی آزمایشی', 1, '10', 'dual', 1),
-                   ('1405', 'هزینه عملیاتی آزمایشی', 1, '10', 'dual', 1),
-                   ('1105', 'درآمد غیرعملیاتی آزمایشی', 1, '11', 'dual', 1),
-                   ('1205', 'هزینه غیرعملیاتی آزمایشی', 1, '11', 'dual', 1)",
+               VALUES ('1305', 'درآمد عملیاتی آزمایشی', 1, '10', 'creditor', 1),
+                   ('1405', 'هزینه عملیاتی آزمایشی', 1, '10', 'debtor', 1),
+                   ('1105', 'درآمد غیرعملیاتی آزمایشی', 1, '11', 'creditor', 1),
+                   ('1205', 'هزینه غیرعملیاتی آزمایشی', 1, '11', 'debtor', 1)",
             [],
         )
         .map_err(db::db_error)?;
@@ -1830,13 +1832,7 @@ fn trial_balance_open_ended_ranges_split_opening_and_period() {
             .rows
             .iter()
             .find(|row| row.account_code == "110101")
-            .map(|row| {
-                (
-                    row.opening_debit,
-                    row.period_debit,
-                    row.closing_debit,
-                )
-            })
+            .map(|row| (row.opening_debit, row.period_debit, row.closing_debit))
             .unwrap()
     };
 
@@ -2867,7 +2863,7 @@ fn audit_snapshots_keep_the_full_before_and_after_image() {
 }
 
 #[test]
-fn final_fiscal_year_requires_a_reason_and_confirmation_to_reopen() {
+fn final_fiscal_year_requires_a_close_and_reopening_requires_reversal() {
     let db = db::memory_database();
     let draft = db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
     let year = db
@@ -2880,26 +2876,47 @@ fn final_fiscal_year_requires_a_reason_and_confirmation_to_reopen() {
         })
         .expect("the saved voucher must have a fiscal year");
 
-    let temporary_error = db
+    let close_error = db
         .set_fiscal_year_status(year.id, "final", None, false)
         .unwrap_err();
-    assert!(temporary_error.contains("موقت"));
+    assert!(close_error.contains("بستن سال مالی"));
 
     db.set_voucher_permanent(draft.id, Some(&draft.updated_at))
+        .unwrap();
+    db.execute_closing(year.id, None, None, None, None, None)
         .unwrap();
     db.set_fiscal_year_status(year.id, "final", None, false)
         .unwrap();
 
+    // While the close is executed the year cannot go back to `open`; the
+    // operator must reverse the close first. Leaving `final` for `closed`
+    // still needs the usual reason and confirmation.
     assert!(db
-        .set_fiscal_year_status(year.id, "open", None, true)
+        .set_fiscal_year_status(year.id, "open", Some("بازگشایی"), true)
+        .unwrap_err()
+        .contains("برگشت بستن"));
+    assert!(db
+        .set_fiscal_year_status(year.id, "closed", None, true)
         .unwrap_err()
         .contains("دلیل"));
     assert!(db
-        .set_fiscal_year_status(year.id, "open", Some("اصلاح سند"), false)
+        .set_fiscal_year_status(year.id, "closed", Some("اصلاح سند"), false)
         .unwrap_err()
         .contains("تأیید"));
-    db.set_fiscal_year_status(year.id, "open", Some("اصلاح سند اشتباه"), true)
+    db.set_fiscal_year_status(year.id, "closed", Some("اصلاح سند اشتباه"), true)
         .unwrap();
+    db.reverse_closing(year.id, Some("اصلاح سند اشتباه"))
+        .unwrap();
+
+    let status = db
+        .list_fiscal_years()
+        .unwrap()
+        .years
+        .into_iter()
+        .find(|item| item.id == year.id)
+        .unwrap()
+        .status;
+    assert_eq!(status, "open");
 
     let logs = db.list_audit_logs(Some(100), None, None).unwrap();
     assert!(logs.entries.iter().any(|entry| {

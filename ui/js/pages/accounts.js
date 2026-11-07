@@ -45,7 +45,7 @@ function renderAccounts(data) {
       if (filters.group && account.groupCode !== filters.group) return false;
       if (filters.level && Number(account.level) !== Number(filters.level)) return false;
     }
-    const haystack = normalizeSearch(`${account.code} ${account.name} ${account.groupName} ${account.parentName}`);
+    const haystack = normalizeSearch(`${account.code} ${account.name} ${account.groupName} ${account.parentName} ${account.effectiveFsLineTitle || ''}`);
     if (search && !haystack.includes(search)) return false;
     return true;
   });
@@ -60,6 +60,7 @@ function renderAccounts(data) {
       <td class="center"><span class="level-pill ${levelClass(account.level)}">${levelLabel(account.level)}</span></td>
       <td>${esc(account.groupName)}</td>
       <td class="center">${badge(natureLabel(account.nature), account.nature === 'creditor' ? 'warn' : account.nature === 'debtor' ? 'info' : 'neutral')}</td>
+      <td class="muted" title="${esc(account.effectiveFsLine || '')}">${esc(account.effectiveFsLineTitle) || '—'}</td>
       <td class="muted">${esc(account.parentName) || '—'}</td>
       <td class="center">${account.isPostable ? badge('قابل ثبت', 'ok') : badge('غیرقابل ثبت', 'neutral')}</td>
       <td class="center nowrap">
@@ -117,6 +118,7 @@ function renderAccounts(data) {
           <thead><tr>
             <th style="width:52px">ردیف</th><th style="width:96px">کد حساب</th><th>نام حساب</th><th style="width:92px">سطح</th>
             <th style="width:180px">گروه</th><th style="width:92px">ماهیت</th>
+            <th style="width:190px">سرفصل صورت‌های مالی</th>
             <th style="width:180px">حساب بالاتر</th><th style="width:96px">ثبت سند</th><th style="width:104px">عملیات</th>
           </tr></thead>
           <tbody>${rows}</tbody>

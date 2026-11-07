@@ -10,7 +10,7 @@ pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
 /// `CURRENT_SCHEMA_VERSION`. Keeping the two constants separate is intentional:
 /// a fresh database must still run the v5 voucher-pair migration.
 pub(crate) const BASE_SCHEMA_VERSION: i64 = 4;
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 10;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 12;
 // A pre-delete snapshot must preserve legacy vouchers exactly as they existed,
 // even when an old document already violates the current balancing rules.
 pub(crate) const BULK_DELETE_SNAPSHOT_KEY: &str = "backup_snapshot_kind";
@@ -20,9 +20,6 @@ pub(crate) const BULK_DELETE_SNAPSHOT_VALUE: &str = "bulk-delete-preimage-v1";
 pub(crate) const LEGACY_LEVEL4_SNAPSHOT_VALUE: &str = "legacy-level4-migration-v1";
 pub(crate) const LEGACY_DB_FILE_NAME: &str = "audit-analyzer.sqlite3";
 pub(crate) const LEGACY_IDENTIFIER: &str = "ir.audit.account-analyzer";
-/// Built-in groups whose account nature determines whether a row is income or expense.
-pub(crate) const OTHER_OPERATING_GROUP_CODE: &str = "10";
-pub(crate) const OTHER_NON_OPERATING_GROUP_CODE: &str = "11";
 
 pub(crate) fn today_jalali() -> String {
     let d = jalali_calendar::JalaliDate::today();

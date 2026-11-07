@@ -3,7 +3,9 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::db::audit;
+use crate::db::classification::{self, AccountClassificationRow, EffectiveClassification};
 use crate::db::common::{db_error, normalize_code, to_fa_digits};
+use crate::db::fs_catalog::{get_fs_line, FsNormalSide};
 use crate::db::model::{
     Account, AccountGroup, AccountGroupList, AccountList, BulkAccountDeleteFailure,
     BulkAccountDeleteResult, Database, NewAccount,
@@ -12,6 +14,19 @@ use crate::db::validation::{
     validate_account_code, validate_group_code, validate_level, validate_name, validate_nature,
     validate_section, validate_type,
 };
+
+/// Classification fields accepted by the account edit command. An empty
+/// `fs_line` clears the explicit line so resolution can fall back to
+/// inheritance or the group section.
+#[derive(Debug, Clone, Default)]
+pub struct ClassificationUpdate {
+    pub(crate) fs_line: String,
+    pub(crate) contra_of: String,
+    pub(crate) contra_kind: String,
+    pub(crate) opposite_fs_line: String,
+    pub(crate) split_by_sign: bool,
+    pub(crate) system_role: String,
+}
 
 fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, String> {
     let group_exists = conn
@@ -53,10 +68,24 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
     // level 3 (تفصیلی) is only detail1_code and is never postable.
     // The is_postable flag on NewAccount is ignored so callers cannot drift.
     let postable = account.level <= 2;
+    if !account.system_role.is_empty() {
+        let role_taken: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM accounts WHERE system_role = ?1)",
+                params![account.system_role],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if role_taken {
+            return Err("این نقش سیستمی قبلاً به حساب دیگری اختصاص یافته است.".to_string());
+        }
+    }
     conn.execute(
         "INSERT INTO accounts
-            (code, name, level, group_code, nature, parent_code, parent_name, is_postable, is_active)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            (code, name, level, group_code, nature, parent_code, parent_name,
+             is_postable, is_active, fs_line, contra_of, contra_kind,
+             opposite_fs_line, split_by_sign, system_role, classification_source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             account.code,
             account.name,
@@ -66,13 +95,34 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
             parent_code,
             parent_name,
             i64::from(postable),
-            i64::from(account.is_active)
+            i64::from(account.is_active),
+            optional_text(&account.fs_line),
+            optional_text(&account.contra_of),
+            optional_text(&account.contra_kind),
+            optional_text(&account.opposite_fs_line),
+            i64::from(account.split_by_sign),
+            optional_text(&account.system_role),
+            if account.fs_line.trim().is_empty() {
+                "auto"
+            } else {
+                "manual"
+            },
         ],
     )
     .map_err(db_error)?;
     let new_id = conn.last_insert_rowid();
 
-    fetch_account(conn, new_id)
+    let mut created = fetch_account(conn, new_id)?;
+    enrich_accounts(conn, std::slice::from_mut(&mut created))?;
+    Ok(created)
+}
+
+fn optional_text(value: &str) -> Option<&str> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value.trim())
+    }
 }
 
 impl Database {
@@ -382,6 +432,12 @@ impl Database {
                 parent_code: normalize_code(&account.parent_code),
                 is_postable: account.is_postable,
                 is_active: account.is_active,
+                fs_line: classification::validate_fs_line(&account.fs_line)?,
+                contra_of: normalize_code(&account.contra_of),
+                contra_kind: classification::validate_contra_kind(&account.contra_kind)?,
+                opposite_fs_line: classification::validate_fs_line(&account.opposite_fs_line)?,
+                split_by_sign: account.split_by_sign,
+                system_role: classification::validate_system_role(&account.system_role)?,
             });
         }
 
@@ -419,7 +475,7 @@ impl Database {
         nature: &str,
         parent_code: &str,
     ) -> Result<Account, String> {
-        self.update_account_inner(id, name, group_code, nature, parent_code, None)
+        self.update_account_inner(id, name, group_code, nature, parent_code, None, None)
     }
 
     pub fn update_account_with_active(
@@ -431,9 +487,40 @@ impl Database {
         parent_code: &str,
         is_active: bool,
     ) -> Result<Account, String> {
-        self.update_account_inner(id, name, group_code, nature, parent_code, Some(is_active))
+        self.update_account_inner(
+            id,
+            name,
+            group_code,
+            nature,
+            parent_code,
+            Some(is_active),
+            None,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_account_with_classification(
+        &self,
+        id: i64,
+        name: &str,
+        group_code: &str,
+        nature: &str,
+        parent_code: &str,
+        is_active: Option<bool>,
+        classification: ClassificationUpdate,
+    ) -> Result<Account, String> {
+        self.update_account_inner(
+            id,
+            name,
+            group_code,
+            nature,
+            parent_code,
+            is_active,
+            Some(classification),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn update_account_inner(
         &self,
         id: i64,
@@ -442,6 +529,7 @@ impl Database {
         nature: &str,
         parent_code: &str,
         is_active: Option<bool>,
+        classification: Option<ClassificationUpdate>,
     ) -> Result<Account, String> {
         if id <= 0 {
             return Err("شناسه حساب نامعتبر است.".to_string());
@@ -560,6 +648,58 @@ impl Database {
                 ],
             )
             .map_err(db_error)?;
+
+            if let Some(classification) = classification {
+                let fs_line = classification::validate_fs_line(&classification.fs_line)?;
+                let contra_of = normalize_code(&classification.contra_of);
+                let contra_kind = classification::validate_contra_kind(&classification.contra_kind)?;
+                let opposite_fs_line =
+                    classification::validate_fs_line(&classification.opposite_fs_line)?;
+                let system_role =
+                    classification::validate_system_role(&classification.system_role)?;
+                if !contra_of.is_empty() && contra_of == code {
+                    return Err("حساب کاهنده نمی‌تواند به خودش اشاره کند.".to_string());
+                }
+                if !contra_of.is_empty() && contra_kind.is_empty() {
+                    return Err(
+                        "برای حساب کاهنده انتخاب نوع کاهنده الزامی است.".to_string()
+                    );
+                }
+                // The unique system-role index rejects a second account for
+                // the same role.
+                if !system_role.is_empty() {
+                    let occupied: Option<i64> = tx
+                        .query_row(
+                            "SELECT id FROM accounts WHERE system_role = ?1 AND id <> ?2",
+                            params![system_role, id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(db_error)?;
+                    if occupied.is_some() {
+                        return Err("این نقش سیستمی قبلاً به حساب دیگری اختصاص یافته است.".to_string());
+                    }
+                }
+                tx.execute(
+                    "UPDATE accounts
+                        SET fs_line = ?1, contra_of = ?2, contra_kind = ?3,
+                            opposite_fs_line = ?4, split_by_sign = ?5, system_role = ?6,
+                            classification_source = ?7,
+                            updated_at = datetime('now', 'localtime')
+                      WHERE id = ?8",
+                    params![
+                        optional_text(&fs_line),
+                        optional_text(&contra_of),
+                        optional_text(&contra_kind),
+                        optional_text(&opposite_fs_line),
+                        i64::from(classification.split_by_sign),
+                        optional_text(&system_role),
+                        if fs_line.is_empty() { "auto" } else { "manual" },
+                        id
+                    ],
+                )
+                .map_err(db_error)?;
+            }
 
             // parent_name is denormalized for fast hierarchy rendering. Keep
             // direct children in sync with the parent's new display name.
@@ -753,7 +893,12 @@ fn list_accounts(conn: &mut Connection) -> Result<Vec<Account>, String> {
             "SELECT a.id, a.code, a.name, a.level, a.group_code, g.name, g.type,
                     a.nature, COALESCE(a.parent_code, ''), COALESCE(p.name, ''),
                     CASE WHEN a.level IN (1, 2) THEN a.is_postable ELSE 0 END,
-                    a.is_active, a.created_at, a.updated_at
+                    a.is_active,
+                    COALESCE(a.fs_line, ''), COALESCE(a.contra_of, ''),
+                    COALESCE(a.contra_kind, ''), COALESCE(a.opposite_fs_line, ''),
+                    COALESCE(a.split_by_sign, 0), COALESCE(a.system_role, ''),
+                    COALESCE(a.classification_source, 'auto'),
+                    a.created_at, a.updated_at
                FROM accounts a
                JOIN account_groups g ON g.code = a.group_code
                LEFT JOIN accounts p ON p.code = a.parent_code
@@ -761,7 +906,69 @@ fn list_accounts(conn: &mut Connection) -> Result<Vec<Account>, String> {
         )
         .map_err(db_error)?;
     let rows = stmt.query_map([], row_to_account).map_err(db_error)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_error)
+    let mut accounts = rows
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db_error)?;
+    enrich_accounts(conn, &mut accounts)?;
+    Ok(accounts)
+}
+
+/// Fills the effective line, its section/statement and contra flag from the
+/// shared resolver. The stored columns stay untouched.
+fn enrich_accounts(conn: &Connection, accounts: &mut [Account]) -> Result<(), String> {
+    if accounts.is_empty() {
+        return Ok(());
+    }
+    let map = classification::load_classifications(conn)?;
+    for account in accounts.iter_mut() {
+        if let Some(row) = map.get(&account.code) {
+            apply_classification(account, row, &map);
+        }
+    }
+    Ok(())
+}
+
+fn apply_classification(
+    account: &mut Account,
+    row: &AccountClassificationRow,
+    map: &std::collections::HashMap<String, AccountClassificationRow>,
+) {
+    let effective = classification::resolve_account(row, map);
+    account.effective_fs_line = effective.fs_line.clone();
+    account.effective_section = effective.section.key().to_string();
+    account.effective_statement = statement_key(effective.statement).to_string();
+    account.effective_fs_line_title = get_fs_line(&effective.fs_line)
+        .map(|line| line.title.to_string())
+        .unwrap_or_else(|| "طبقه‌بندی‌نشده".to_string());
+    account.is_contra = is_contra(row, &effective);
+    account.classification_source = effective.source.clone();
+    account.fs_line = row.stored_fs_line.clone();
+    account.contra_of = row.contra_of.clone();
+    account.contra_kind = row.contra_kind.clone();
+    account.opposite_fs_line = row.opposite_fs_line.clone();
+    account.split_by_sign = row.split_by_sign;
+    account.system_role = row.system_role.clone();
+}
+
+fn is_contra(row: &AccountClassificationRow, effective: &EffectiveClassification) -> bool {
+    if row.nature == "dual" {
+        return false;
+    }
+    let nature_side = if row.nature == "debtor" {
+        FsNormalSide::Debit
+    } else {
+        FsNormalSide::Credit
+    };
+    nature_side != effective.normal_side
+}
+
+fn statement_key(statement: crate::db::fs_catalog::FsStatement) -> &'static str {
+    use crate::db::fs_catalog::FsStatement;
+    match statement {
+        FsStatement::BalanceSheet => "balance_sheet",
+        FsStatement::IncomeStatement => "income_statement",
+        FsStatement::Memorandum => "memorandum",
+    }
 }
 
 fn fetch_group(conn: &Connection, id: i64) -> Result<AccountGroup, String> {
@@ -783,21 +990,29 @@ fn fetch_group(conn: &Connection, id: i64) -> Result<AccountGroup, String> {
 }
 
 fn fetch_account(conn: &Connection, id: i64) -> Result<Account, String> {
-    conn.query_row(
-        "SELECT a.id, a.code, a.name, a.level, a.group_code, g.name, g.type,
-                a.nature, COALESCE(a.parent_code, ''), COALESCE(p.name, ''),
-                CASE WHEN a.level IN (1, 2) THEN a.is_postable ELSE 0 END,
-                a.is_active, a.created_at, a.updated_at
-           FROM accounts a
-           JOIN account_groups g ON g.code = a.group_code
-           LEFT JOIN accounts p ON p.code = a.parent_code
-          WHERE a.id = ?1",
-        params![id],
-        row_to_account,
-    )
-    .optional()
-    .map_err(db_error)?
-    .ok_or_else(|| "حساب یافت نشد.".to_string())
+    let mut account = conn
+        .query_row(
+            "SELECT a.id, a.code, a.name, a.level, a.group_code, g.name, g.type,
+                    a.nature, COALESCE(a.parent_code, ''), COALESCE(p.name, ''),
+                    CASE WHEN a.level IN (1, 2) THEN a.is_postable ELSE 0 END,
+                    a.is_active,
+                    COALESCE(a.fs_line, ''), COALESCE(a.contra_of, ''),
+                    COALESCE(a.contra_kind, ''), COALESCE(a.opposite_fs_line, ''),
+                    COALESCE(a.split_by_sign, 0), COALESCE(a.system_role, ''),
+                    COALESCE(a.classification_source, 'auto'),
+                    a.created_at, a.updated_at
+               FROM accounts a
+               JOIN account_groups g ON g.code = a.group_code
+               LEFT JOIN accounts p ON p.code = a.parent_code
+              WHERE a.id = ?1",
+            params![id],
+            row_to_account,
+        )
+        .optional()
+        .map_err(db_error)?
+        .ok_or_else(|| "حساب یافت نشد.".to_string())?;
+    enrich_accounts(conn, std::slice::from_mut(&mut account))?;
+    Ok(account)
 }
 
 fn row_to_group(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountGroup> {
@@ -817,6 +1032,7 @@ fn row_to_group(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountGroup> {
 fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     let postable: i64 = row.get(10)?;
     let active: i64 = row.get(11)?;
+    let split_by_sign: i64 = row.get(16)?;
     Ok(Account {
         id: row.get(0)?,
         code: row.get(1)?,
@@ -830,8 +1046,20 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         parent_name: row.get(9)?,
         is_postable: postable != 0,
         is_active: active != 0,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
+        fs_line: row.get(12)?,
+        effective_fs_line: String::new(),
+        effective_fs_line_title: String::new(),
+        effective_section: String::new(),
+        effective_statement: String::new(),
+        classification_source: row.get(18)?,
+        system_role: row.get(17)?,
+        contra_of: row.get(13)?,
+        contra_kind: row.get(14)?,
+        opposite_fs_line: row.get(15)?,
+        split_by_sign: split_by_sign != 0,
+        is_contra: false,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
     })
 }
 

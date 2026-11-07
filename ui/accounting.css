@@ -519,6 +519,28 @@ body.is-voucher-list-popup .page-scroll {
 
 .acct-form .field.wide { grid-column: span 2; }
 
+.acct-classification {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 2px 0 0;
+  padding: 10px 14px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  background: var(--surface-2, #f8fafc);
+}
+
+.acct-classification legend {
+  padding: 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #33475f;
+}
+
+.acct-classification .form-note,
+.acct-classification .acct-effective { grid-column: 1 / -1; }
+
 .acct-form label {
   font-size: 11px;
   font-weight: 700;
@@ -1502,6 +1524,7 @@ body.is-voucher-list-popup .page-scroll {
   .page-head { flex-direction: column; align-items: stretch; gap: 9px; }
   .acct-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .acct-form .field.wide { grid-column: span 2; }
+  .acct-classification { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media print {

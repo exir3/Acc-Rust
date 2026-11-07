@@ -2,6 +2,9 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::db::classification::{
+    backfill_classifications, ensure_closing_system_accounts, seed_starter_classifications,
+};
 use crate::db::common::{
     db_error, normalize_digits, to_fa_digits, BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION,
 };
@@ -128,6 +131,30 @@ pub(crate) const REFERENCE_SCHEMA: &str = r#"
     );
 
     CREATE INDEX IF NOT EXISTS idx_fiscal_years_range ON fiscal_years(start_date, end_date);
+
+    -- Year-end closing history. A fiscal year can have at most one executed
+    -- run; reversing it keeps the row for the audit trail and allows a new
+    -- execution later. This is the authoritative period lock, while the
+    -- fiscal-year status mirrors it for the UI.
+    CREATE TABLE IF NOT EXISTS closing_runs (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        fiscal_year_id        INTEGER NOT NULL REFERENCES fiscal_years(id),
+        status                TEXT NOT NULL DEFAULT 'executed'
+                              CHECK(status IN ('executed', 'reversed')),
+        temp_voucher_id       INTEGER,
+        closing_voucher_id    INTEGER,
+        net_income            INTEGER NOT NULL DEFAULT 0,
+        income_summary_code   TEXT NOT NULL,
+        retained_earnings_code TEXT NOT NULL,
+        closing_balance_code  TEXT,
+        executed_at           TEXT,
+        reversed_at           TEXT,
+        reverse_reason        TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_closing_runs_year ON closing_runs(fiscal_year_id, status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_closing_runs_executed_year
+        ON closing_runs(fiscal_year_id) WHERE status = 'executed';
 
     CREATE TABLE IF NOT EXISTS audit_logs (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -545,9 +572,22 @@ pub(crate) fn ensure_query_indexes(conn: &Connection) -> Result<(), String> {
 }
 
 /// Permanent vouchers are immutable across every database write path.
+///
+/// The only exception is an atomic closing reversal: it fills the
+/// `_closing_reversal_allowed` allowlist inside its own transaction, deletes
+/// those rows, and clears the allowlist before commit. The table is cleared on
+/// every open so a stale or restored row can never unlock a voucher.
+///
+/// The allowlist must be a normal table (not `TEMP`): a trigger created in the
+/// main schema resolves unqualified names to `main`, so it cannot see a temp
+/// table.
 pub(crate) fn ensure_permanent_voucher_guards(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
-        "DROP TRIGGER IF EXISTS vouchers_permanent_update;
+        "CREATE TABLE IF NOT EXISTS _closing_reversal_allowed (
+             voucher_id INTEGER PRIMARY KEY
+         );
+         DELETE FROM _closing_reversal_allowed;
+         DROP TRIGGER IF EXISTS vouchers_permanent_update;
          DROP TRIGGER IF EXISTS vouchers_permanent_delete;
          DROP TRIGGER IF EXISTS voucher_lines_permanent_insert;
          DROP TRIGGER IF EXISTS voucher_lines_permanent_update;
@@ -555,10 +595,12 @@ pub(crate) fn ensure_permanent_voucher_guards(conn: &Connection) -> Result<(), S
          CREATE TRIGGER vouchers_permanent_update
          BEFORE UPDATE ON vouchers
          WHEN OLD.is_temporary = 0
+          AND OLD.id NOT IN (SELECT voucher_id FROM _closing_reversal_allowed)
          BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;
          CREATE TRIGGER vouchers_permanent_delete
          BEFORE DELETE ON vouchers
          WHEN OLD.is_temporary = 0
+          AND OLD.id NOT IN (SELECT voucher_id FROM _closing_reversal_allowed)
          BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;
          CREATE TRIGGER voucher_lines_permanent_insert
          BEFORE INSERT ON voucher_lines
@@ -572,6 +614,7 @@ pub(crate) fn ensure_permanent_voucher_guards(conn: &Connection) -> Result<(), S
          CREATE TRIGGER voucher_lines_permanent_delete
          BEFORE DELETE ON voucher_lines
          WHEN EXISTS (SELECT 1 FROM vouchers v WHERE v.id = OLD.voucher_id AND v.is_temporary = 0)
+          AND OLD.voucher_id NOT IN (SELECT voucher_id FROM _closing_reversal_allowed)
          BEGIN SELECT RAISE(ABORT, 'voucher is permanent'); END;",
     )
     .map_err(db_error)
@@ -707,6 +750,38 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
             )
             .map_err(db_error)?;
         }
+
+        // Per-account statement classification (schema v11). The columns are
+        // added here rather than in the base schema so a fresh and a restored
+        // database pass through the same migration and backfill path.
+        let classification_columns = [
+            ("fs_line", "TEXT"),
+            ("contra_of", "TEXT"),
+            ("contra_kind", "TEXT"),
+            ("opposite_fs_line", "TEXT"),
+            (
+                "split_by_sign",
+                "INTEGER NOT NULL DEFAULT 0 CHECK(split_by_sign IN (0, 1))",
+            ),
+            ("system_role", "TEXT"),
+            ("classification_source", "TEXT NOT NULL DEFAULT 'auto'"),
+        ];
+        for (name, definition) in classification_columns {
+            if !account_columns.iter().any(|column| column == name) {
+                tx.execute(
+                    &format!("ALTER TABLE accounts ADD COLUMN {name} {definition}"),
+                    [],
+                )
+                .map_err(db_error)?;
+            }
+        }
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_accounts_fs_line ON accounts(fs_line);
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_system_role
+                 ON accounts(system_role)
+              WHERE system_role IS NOT NULL AND system_role <> '';",
+        )
+        .map_err(db_error)?;
     }
     if table_exists(&tx, "account_groups")? {
         let group_columns = table_columns(&tx, "account_groups")?;
@@ -787,6 +862,10 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
     ensure_permanent_voucher_guards(&tx)?;
     ensure_query_indexes(&tx)?;
 
+    if version < 11 {
+        backfill_classifications(&tx)?;
+    }
+
     if version < CURRENT_SCHEMA_VERSION {
         tx.execute(
             "UPDATE app_meta SET value = ?1 WHERE key = 'schema_version'",
@@ -795,6 +874,10 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
         .map_err(db_error)?;
     }
     tx.commit().map_err(db_error)
+}
+
+fn classification_error(message: String) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(message)))
 }
 
 pub(crate) fn seed_default_groups(conn: &mut Connection) -> rusqlite::Result<()> {
@@ -814,60 +897,82 @@ pub(crate) fn seed_default_groups(conn: &mut Connection) -> rusqlite::Result<()>
     Ok(())
 }
 
+/// True once the v11 classification columns exist. Some legacy tests seed the
+/// starter chart on the base schema before running migrations; the seed must
+/// not fail there, and the migration later backfills the classification.
+fn has_classification_columns(conn: &Connection) -> rusqlite::Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('accounts')
+          WHERE name IN ('fs_line', 'system_role', 'classification_source')",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count == 3)
+}
+
 pub(crate) fn seed_default_accounts(conn: &mut Connection) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     let count: i64 = tx.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
-    if count > 0 {
-        return Ok(());
+    let classified = has_classification_columns(&tx)?;
+    if count == 0 {
+        for (code, name, level, group_code, nature, parent_code, _postable) in DEFAULT_ACCOUNTS {
+            let group_exists: bool = tx
+                .query_row(
+                    "SELECT 1 FROM account_groups WHERE code = ?1",
+                    params![group_code],
+                    |_| Ok(true),
+                )
+                .optional()?
+                .unwrap_or(false);
+            if !group_exists {
+                continue;
+            }
+
+            let parent_name: String = if parent_code.is_empty() {
+                String::new()
+            } else {
+                tx.query_row(
+                    "SELECT name FROM accounts WHERE code = ?1",
+                    params![parent_code],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or_default()
+            };
+            if !parent_code.is_empty() && parent_name.is_empty() {
+                continue;
+            }
+
+            tx.execute(
+                "INSERT OR IGNORE INTO accounts
+                    (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    code,
+                    name,
+                    level,
+                    group_code,
+                    nature,
+                    if parent_code.is_empty() {
+                        None
+                    } else {
+                        Some(parent_code)
+                    },
+                    parent_name,
+                    i64::from(level <= 2)
+                ],
+            )?;
+        }
+        // The migration runs before the chart exists on a fresh database, so
+        // the starter classification is applied here, after the accounts.
+        if classified {
+            seed_starter_classifications(&tx).map_err(classification_error)?;
+        }
     }
-
-    for (code, name, level, group_code, nature, parent_code, _postable) in DEFAULT_ACCOUNTS {
-        let group_exists: bool = tx
-            .query_row(
-                "SELECT 1 FROM account_groups WHERE code = ?1",
-                params![group_code],
-                |_| Ok(true),
-            )
-            .optional()?
-            .unwrap_or(false);
-        if !group_exists {
-            continue;
-        }
-
-        let parent_name: String = if parent_code.is_empty() {
-            String::new()
-        } else {
-            tx.query_row(
-                "SELECT name FROM accounts WHERE code = ?1",
-                params![parent_code],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or_default()
-        };
-        if !parent_code.is_empty() && parent_name.is_empty() {
-            continue;
-        }
-
-        tx.execute(
-            "INSERT OR IGNORE INTO accounts
-                (code, name, level, group_code, nature, parent_code, parent_name, is_postable)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                code,
-                name,
-                level,
-                group_code,
-                nature,
-                if parent_code.is_empty() {
-                    None
-                } else {
-                    Some(parent_code)
-                },
-                parent_name,
-                i64::from(level <= 2)
-            ],
-        )?;
+    // Required by the closing workflow; provisioning is idempotent and never
+    // invents a role for an existing account.
+    if classified {
+        ensure_closing_system_accounts(&tx).map_err(classification_error)?;
     }
     tx.commit()?;
     Ok(())

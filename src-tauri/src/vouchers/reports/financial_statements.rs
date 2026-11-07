@@ -1,10 +1,13 @@
 //! Income statement and balance sheet builders.
+//!
+//! Both statements are driven by each account's effective `fs_line`, not by
+//! its group type alone. The contribution amount already applies the WebApp
+//! rules for contra accounts and `split_by_sign`, so a misclassified account
+//! stays visible instead of silently making the statement unbalanced.
 
-use crate::db::{self, Database};
-use crate::vouchers::accounting::{
-    account_activities, classify_activity, section_of, AccountActivity, AccountClass,
-    StatementSection,
-};
+use crate::db::fs_catalog::{FsSection, UNCLASSIFIED};
+use crate::db::Database;
+use crate::vouchers::accounting::account_activities;
 use crate::vouchers::model::{
     AmountRow, BalanceSheetReport, IncomeStatementReport, ReportScope, CLOSING_FINAL,
     CLOSING_TEMPORARY,
@@ -68,10 +71,19 @@ impl Database {
     }
 }
 
+fn row(activity: &crate::vouchers::accounting::AccountActivity, amount: i64) -> AmountRow {
+    AmountRow {
+        account_code: activity.account_code.clone(),
+        account_name: activity.account_name.clone(),
+        amount,
+        fs_line: activity.contribution_line.clone(),
+    }
+}
+
 fn build_income_statement(
     from: String,
     to: String,
-    activities: Vec<AccountActivity>,
+    activities: Vec<crate::vouchers::accounting::AccountActivity>,
 ) -> Result<IncomeStatementReport, String> {
     let mut revenues = Vec::new();
     let mut cogs = Vec::new();
@@ -84,133 +96,36 @@ fn build_income_statement(
     let mut income_taxes = Vec::new();
 
     for activity in activities {
-        let net = checked_sub(
-            activity.debit,
-            activity.credit,
-            "مانده حساب صورت سود و زیان",
-        )?;
-        if net == 0 {
+        let amount = activity.contribution_amount;
+        if amount == 0 {
             continue;
         }
-
-        let section = section_of(&activity.default_section);
-        if matches!(section, Some(StatementSection::Memorandum)) {
-            continue;
-        }
-        match section {
-            Some(StatementSection::OtherOperating) | Some(StatementSection::OtherNonOperating) => {
-                let other_operating = matches!(section, Some(StatementSection::OtherOperating));
-                let amount = if net < 0 {
-                    checked_neg(net, "مبلغ درآمد گروه‌های سایر")?
-                } else {
-                    net
-                };
-                let row = AmountRow {
-                    account_code: activity.account_code,
-                    account_name: activity.account_name,
-                    amount,
-                };
-                match (other_operating, net < 0) {
-                    (true, true) => other_operating_revenues.push(row),
-                    (true, false) => other_operating_expenses.push(row),
-                    (false, true) => non_operating_revenues.push(row),
-                    (false, false) => non_operating_expenses.push(row),
-                }
-                continue;
-            }
-            Some(StatementSection::Revenue) => {
-                revenues.push(AmountRow {
-                    account_code: activity.account_code,
-                    account_name: activity.account_name,
-                    amount: checked_neg(net, "مبلغ درآمد")?,
-                });
-                continue;
-            }
-            Some(StatementSection::Cogs) => {
-                cogs.push(AmountRow {
-                    account_code: activity.account_code,
-                    account_name: activity.account_name,
-                    amount: net,
-                });
-                continue;
-            }
-            Some(StatementSection::SellingExpense) | Some(StatementSection::AdminExpense) => {
-                expenses.push(AmountRow {
-                    account_code: activity.account_code,
-                    account_name: activity.account_name,
-                    amount: net,
-                });
-                continue;
-            }
-            Some(StatementSection::FinanceCost) => {
-                finance_costs.push(AmountRow {
-                    account_code: activity.account_code,
-                    account_name: activity.account_name,
-                    amount: net,
-                });
-                continue;
-            }
-            Some(StatementSection::IncomeTax) => {
-                income_taxes.push(AmountRow {
-                    account_code: activity.account_code,
-                    account_name: activity.account_name,
-                    amount: net,
-                });
-                continue;
-            }
-            // Balance-sheet sections are skipped below by classification.
-            Some(_) | None => {}
-        }
-
-        if activity.group_code == db::OTHER_OPERATING_GROUP_CODE
-            || activity.group_code == db::OTHER_NON_OPERATING_GROUP_CODE
+        if activity.statement() == crate::db::fs_catalog::FsStatement::BalanceSheet
+            || activity.statement() == crate::db::fs_catalog::FsStatement::Memorandum
         {
-            let amount = if net < 0 {
-                checked_neg(net, "مبلغ درآمد گروه‌های سایر")?
-            } else {
-                net
-            };
-            let row = AmountRow {
-                account_code: activity.account_code,
-                account_name: activity.account_name,
-                amount,
-            };
-            match (activity.group_code.as_str(), net < 0) {
-                (db::OTHER_OPERATING_GROUP_CODE, true) => other_operating_revenues.push(row),
-                (db::OTHER_OPERATING_GROUP_CODE, false) => other_operating_expenses.push(row),
-                (db::OTHER_NON_OPERATING_GROUP_CODE, true) => non_operating_revenues.push(row),
-                (db::OTHER_NON_OPERATING_GROUP_CODE, false) => non_operating_expenses.push(row),
-                _ => unreachable!(),
-            }
             continue;
         }
-        match classify_activity(&activity, net) {
-            AccountClass::Income => {
-                let amount = checked_neg(net, "مبلغ درآمد")?;
-                if amount != 0 {
-                    let row = AmountRow {
-                        account_code: activity.account_code,
-                        account_name: activity.account_name,
-                        amount,
-                    };
-                    revenues.push(row);
+        match activity.contribution_line.as_str() {
+            "IS.REV" => revenues.push(row(&activity, amount)),
+            "IS.COGS" => cogs.push(row(&activity, amount)),
+            "IS.SELL" | "IS.ADM" => expenses.push(row(&activity, amount)),
+            "IS.OOI" => other_operating_revenues.push(row(&activity, amount)),
+            "IS.OOE" => other_operating_expenses.push(row(&activity, amount)),
+            "IS.FIN" => finance_costs.push(row(&activity, amount)),
+            "IS.NOI" => {
+                if amount < 0 {
+                    non_operating_expenses.push(row(
+                        &activity,
+                        checked_neg(amount, "مبلغ هزینه غیرعملیاتی")?,
+                    ));
+                } else {
+                    non_operating_revenues.push(row(&activity, amount));
                 }
             }
-            AccountClass::Expense => {
-                let amount = net;
-                if amount == 0 {
-                    continue;
-                }
-                let row = AmountRow {
-                    account_code: activity.account_code.clone(),
-                    account_name: activity.account_name,
-                    amount,
-                };
-                if activity.group_code == "9" {
-                    cogs.push(row);
-                } else {
-                    expenses.push(row);
-                }
+            "IS.TAX" => income_taxes.push(row(&activity, amount)),
+            UNCLASSIFIED => {
+                // Unclassified balances belong to the balance-sheet review
+                // bucket, not to a guessed income-statement line.
             }
             _ => {}
         }
@@ -303,51 +218,60 @@ fn build_income_statement(
 
 fn build_balance_sheet(
     as_of: String,
-    activities: Vec<AccountActivity>,
+    activities: Vec<crate::vouchers::accounting::AccountActivity>,
 ) -> Result<BalanceSheetReport, String> {
     let mut assets = Vec::new();
     let mut liabilities = Vec::new();
     let mut equity = Vec::new();
-    let mut revenue = 0;
-    let mut expenses = 0;
+    let mut profit = 0i64;
 
     for activity in activities {
-        let net = checked_sub(activity.debit, activity.credit, "مانده حساب ترازنامه")?;
-        if net == 0 {
+        let amount = activity.contribution_amount;
+        if amount == 0 {
             continue;
         }
-        match classify_activity(&activity, net) {
-            AccountClass::Asset => assets.push(AmountRow {
-                account_code: activity.account_code,
-                account_name: activity.account_name,
-                amount: net,
-            }),
-            AccountClass::Liability => liabilities.push(AmountRow {
-                account_code: activity.account_code,
-                account_name: activity.account_name,
-                amount: checked_neg(net, "مانده بدهی ترازنامه")?,
-            }),
-            AccountClass::Equity => equity.push(AmountRow {
-                account_code: activity.account_code,
-                account_name: activity.account_name,
-                amount: checked_neg(net, "مانده سرمایه ترازنامه")?,
-            }),
-            AccountClass::Income => {
-                revenue = checked_add(
-                    revenue,
-                    checked_neg(net, "درآمد ترازنامه")?,
-                    "جمع درآمد ترازنامه",
-                )?
+        let line = activity.contribution_line.as_str();
+        let section = crate::db::fs_catalog::section_of(line);
+        match section {
+            FsSection::NonCurrentAsset | FsSection::CurrentAsset => {
+                assets.push(row(&activity, amount));
             }
-            AccountClass::Expense => expenses = checked_add(expenses, net, "جمع هزینه ترازنامه")?,
-            AccountClass::Memorandum => {}
+            FsSection::NonCurrentLiability | FsSection::CurrentLiability => {
+                liabilities.push(row(&activity, amount));
+            }
+            FsSection::Equity => equity.push(row(&activity, amount)),
+            FsSection::Revenue | FsSection::OtherOperating | FsSection::OtherNonOperating => {
+                // A negative amount here is a contra-revenue item and reduces
+                // the period result instead of being dropped.
+                if line == "IS.OOE" || line == "IS.COGS" {
+                    profit = checked_sub(profit, amount, "سود ترازنامه")?;
+                } else {
+                    profit = checked_add(profit, amount, "سود ترازنامه")?;
+                }
+            }
+            FsSection::Cogs
+            | FsSection::SellingExpense
+            | FsSection::AdminExpense
+            | FsSection::FinanceCost
+            | FsSection::IncomeTax => {
+                profit = checked_sub(profit, amount, "سود ترازنامه")?;
+            }
+            FsSection::Memorandum => {}
+            FsSection::Unclassified => {
+                // Keep the accounting equation intact and visible instead of
+                // making the sheet silently unbalanced.
+                if amount > 0 {
+                    assets.push(row(&activity, amount));
+                } else {
+                    liabilities.push(row(&activity, checked_neg(amount, "مانده طبقه‌بندی‌نشده")?));
+                }
+            }
         }
     }
 
     let assets_total = checked_sum(assets.iter().map(|r| r.amount), "جمع دارایی ترازنامه")?;
     let liabilities_total = checked_sum(liabilities.iter().map(|r| r.amount), "جمع بدهی ترازنامه")?;
     let equity_total = checked_sum(equity.iter().map(|r| r.amount), "جمع سرمایه ترازنامه")?;
-    let profit = checked_sub(revenue, expenses, "سود ترازنامه")?;
     let total_liabilities_equity = checked_add(
         checked_add(
             liabilities_total,
