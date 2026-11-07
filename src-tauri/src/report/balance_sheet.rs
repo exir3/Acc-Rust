@@ -8,6 +8,8 @@ use crate::vouchers::BalanceSheetReport;
 fn balance_section(
     title: &str,
     rows: &[crate::vouchers::AmountRow],
+    unclassified: &[crate::vouchers::AmountRow],
+    unclassified_title: &str,
     total: i64,
     total_label: &str,
 ) -> String {
@@ -20,7 +22,21 @@ fn balance_section(
             amount = money(row.amount),
         ));
     }
-    if rows.is_empty() {
+    if !unclassified.is_empty() {
+        body.push_str(&format!(
+            r#"<tr class="rpt-unclassified-head"><td colspan="3">{title}</td></tr>"#,
+            title = html(unclassified_title),
+        ));
+        for row in unclassified {
+            body.push_str(&format!(
+                r#"<tr class="rpt-unclassified"><td class="code">{code}</td><td class="title">{name}</td><td class="num">{amount}</td></tr>"#,
+                code = code(&row.account_code),
+                name = html(&row.account_name),
+                amount = money(row.amount),
+            ));
+        }
+    }
+    if rows.is_empty() && unclassified.is_empty() {
         body.push_str("<tr><td colspan=\"3\" class=\"rpt-empty\">موردی ثبت نشده است.</td></tr>");
     }
     format!(
@@ -55,6 +71,14 @@ pub fn balance_sheet_print_doc(
         fs_line: "BS.EQ.RE".to_string(),
     });
 
+    let unclassified_note = if report.unclassified_debit_total != 0
+        || report.unclassified_credit_total != 0
+    {
+        r#"<div class="rpt-note">مانده‌های طبقه‌بندی‌نشده در ردیف جداگانه نمایش داده و در جمع دارایی‌ها/بدهی‌ها لحاظ شده‌اند؛ تا تعیین سرفصل، ترازنامه را تأییدشده تلقی نکنید.</div>"#
+    } else {
+        ""
+    };
+
     let body = format!(
         r#"{head}
 {assets}
@@ -62,7 +86,9 @@ pub fn balance_sheet_print_doc(
 {equity}
 <div class="rpt-total net"><span>جمع دارایی‌ها</span><span>{assets_total}</span></div>
 <div class="rpt-total net"><span>جمع بدهی‌ها و حقوق مالکانه</span><span>{total}</span></div>
-<div class="rpt-note">{balance_note}</div>"#,
+<div class="rpt-note">{balance_note}</div>
+{unclassified_note}
+{integrity}"#,
         head = head(
             "ترازنامه",
             meta,
@@ -71,18 +97,24 @@ pub fn balance_sheet_print_doc(
         assets = balance_section(
             "دارایی‌ها",
             &report.assets,
+            &report.unclassified_debit,
+            "طبقه‌بندی‌نشده (مانده بدهکار)",
             report.assets_total,
             "جمع دارایی‌ها"
         ),
         liabilities = balance_section(
             "بدهی‌ها",
             &report.liabilities,
+            &report.unclassified_credit,
+            "طبقه‌بندی‌نشده (مانده بستانکار)",
             report.liabilities_total,
             "جمع بدهی‌ها"
         ),
         equity = balance_section(
             "حقوق مالکانه",
             &equity_rows,
+            &[],
+            "",
             equity_total,
             "جمع حقوق مالکانه"
         ),
@@ -93,6 +125,8 @@ pub fn balance_sheet_print_doc(
         } else {
             "توجه: جمع دارایی‌ها با جمع بدهی‌ها و حقوق مالکانه برابر نیست."
         },
+        unclassified_note = unclassified_note,
+        integrity = integrity_panel(&report.integrity),
     );
 
     Ok(page("ترازنامه", &body, meta, false, "ترازنامه.html"))

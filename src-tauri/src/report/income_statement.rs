@@ -33,6 +33,48 @@ fn section(title: &str, rows: &[crate::vouchers::AmountRow], total: i64) -> Stri
     )
 }
 
+/// Balances that could not be assigned to an income-statement line. They are
+/// printed after net profit because they are outside the period result until
+/// an accountant classifies them.
+fn unclassified_section(report: &IncomeStatementReport) -> String {
+    if report.unclassified_debit.is_empty() && report.unclassified_credit.is_empty() {
+        return String::new();
+    }
+    let mut body = String::new();
+    let mut rows = |title: &str, rows: &[crate::vouchers::AmountRow]| {
+        if rows.is_empty() {
+            return;
+        }
+        body.push_str(&format!(
+            r#"<tr class="rpt-unclassified-head"><td colspan="3">{title}</td></tr>"#,
+            title = html(title),
+        ));
+        for row in rows {
+            body.push_str(&format!(
+                r#"<tr class="rpt-unclassified"><td class="code">{code}</td><td class="title">{name}</td><td class="num">{amount}</td></tr>"#,
+                code = code(&row.account_code),
+                name = html(&row.account_name),
+                amount = money(row.amount),
+            ));
+        }
+    };
+    rows("مانده بدهکار طبقه‌بندی‌نشده", &report.unclassified_debit);
+    rows("مانده بستانکار طبقه‌بندی‌نشده", &report.unclassified_credit);
+    format!(
+        r#"<div class="rpt-section">
+<h2>طبقه‌بندی‌نشده (خارج از سود خالص دوره)</h2>
+<table class="rpt-table">
+<thead><tr><th style="width:78px">کد</th><th>عنوان</th><th style="width:120px">مبلغ</th></tr></thead>
+<tbody>{body}</tbody>
+<tfoot><tr><td colspan="2" class="title">اثر خالص (بستانکار − بدهکار)</td><td class="num">{net}</td></tr></tfoot>
+</table>
+<div class="rpt-note">این مانده‌ها در سود خالص دوره لحاظ نشده‌اند؛ پس از تعیین سرفصل، صورت سود و زیان را دوباره تهیه کنید.</div>
+</div>"#,
+        body = body,
+        net = money(report.unclassified_total),
+    )
+}
+
 pub fn income_statement_print_doc(report: &IncomeStatementReport, meta: &ReportMeta) -> PrintDoc {
     let body = format!(
         r#"{head}
@@ -48,7 +90,9 @@ pub fn income_statement_print_doc(report: &IncomeStatementReport, meta: &ReportM
 {finance_costs}
 <div class="rpt-total"><span>سود (زیان) پیش از مالیات</span><span>{before_tax}</span></div>
 {income_taxes}
-<div class="rpt-total net"><span>سود (زیان) خالص دوره</span><span>{net}</span></div>"#,
+<div class="rpt-total net"><span>سود (زیان) خالص دوره</span><span>{net}</span></div>
+{unclassified}
+{integrity}"#,
         head = head("صورت سود و زیان", meta, &period(&report.from, &report.to)),
         revenues = section("درآمدها", &report.revenues, report.revenue_total),
         cogs = section("بهای تمام شده درآمدها", &report.cogs, report.cogs_total),
@@ -87,6 +131,8 @@ pub fn income_statement_print_doc(report: &IncomeStatementReport, meta: &ReportM
         operating = money(report.operating_profit),
         before_tax = money(report.profit_before_tax),
         net = money(report.net_profit),
+        unclassified = unclassified_section(report),
+        integrity = integrity_panel(&report.integrity),
     );
 
     page(

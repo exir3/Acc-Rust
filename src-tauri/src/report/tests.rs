@@ -16,13 +16,18 @@ mod tests {
             as_of: "1405/01/01".to_string(),
             assets: Vec::new(),
             assets_total: 0,
+            unclassified_debit: Vec::new(),
+            unclassified_debit_total: 0,
             liabilities: Vec::new(),
             liabilities_total: 0,
+            unclassified_credit: Vec::new(),
+            unclassified_credit_total: 0,
             equity: Vec::new(),
             equity_total: i64::MAX,
             profit: 1,
             total_liabilities_equity: 0,
             balanced: false,
+            integrity: Default::default(),
         };
         let meta = ReportMeta {
             company: String::new(),

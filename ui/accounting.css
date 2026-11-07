@@ -391,6 +391,72 @@ body.is-voucher-list-popup .page-scroll {
 
 .report-total-line .money { font-weight: 700; }
 
+/* ── Unclassified rows and integrity panel ──────────────────── */
+
+.data-table tr.unclassified-head td {
+  background: #fdf1d8;
+  color: #7a4a00;
+  font-weight: 700;
+}
+
+.data-table tr.unclassified td {
+  background: #fff8e6;
+  color: #7a4a00;
+}
+
+.integrity-panel {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #d7e3f2;
+  border-inline-start: 4px solid var(--accent);
+  border-radius: 8px;
+  background: #f7faff;
+  font-size: 12px;
+}
+
+.integrity-panel[data-tone="ok"] {
+  border-inline-start-color: var(--ok);
+  background: #f2fbf8;
+}
+
+.integrity-panel[data-tone="danger"] {
+  border-inline-start-color: var(--danger);
+  background: #fff7f6;
+}
+
+.integrity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.integrity-issue {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-inline-start: 3px solid #b9cbe4;
+  background: #fff;
+  border-radius: 6px;
+}
+
+.integrity-issue[data-tone="danger"] { border-inline-start-color: var(--danger); }
+.integrity-issue[data-tone="warn"] { border-inline-start-color: var(--warn); }
+.integrity-issue[data-tone="info"] { border-inline-start-color: var(--accent); }
+
+.integrity-issue-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  line-height: 1.7;
+}
+
+.integrity-issue .mono {
+  direction: ltr;
+  font-variant-numeric: tabular-nums;
+}
+
 .empty-state {
   display: flex;
   flex-direction: column;

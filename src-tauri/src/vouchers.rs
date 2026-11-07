@@ -35,13 +35,14 @@ pub(crate) use model::{
 pub use model::{
     AmountRow, BalanceSheetReport, BulkVoucherDeleteDateRange, BulkVoucherDeleteInput,
     BulkVoucherDeleteNumberRange, BulkVoucherDeletePreview, BulkVoucherDeleteResult,
-    BulkVoucherDeleteSample, IncomeStatementReport, JournalReport, JournalRow, LedgerReport,
-    LedgerRow, ReportScope, TrialBalanceReport, TrialBalanceRow, Voucher, VoucherCounters,
-    VoucherInput, VoucherLine, VoucherLineInput, VoucherList, VoucherMergePreview,
-    VoucherNumberChange, VoucherReorganizationPreview, VoucherReorganizationResult, VoucherSummary,
+    BulkVoucherDeleteSample, IncomeStatementReport, IntegrityCounts, IntegrityIssue,
+    IntegrityReport, JournalReport, JournalRow, LedgerReport, LedgerRow, ReportScope,
+    TrialBalanceReport, TrialBalanceRow, Voucher, VoucherCounters, VoucherInput, VoucherLine,
+    VoucherLineInput, VoucherList, VoucherMergePreview, VoucherNumberChange,
+    VoucherReorganizationPreview, VoucherReorganizationResult, VoucherSummary,
     VoucherTransferInput, VoucherTransferResult, DEFAULT_JOURNAL_PAGE_SIZE,
-    DEFAULT_VOUCHER_PAGE_SIZE, MAX_AMOUNT, MAX_BULK_DELETE_TARGETS, MAX_PAGE_SIZE,
-    MAX_VOUCHER_NUMBER, VOUCHER_TYPES,
+    DEFAULT_VOUCHER_PAGE_SIZE, INTEGRITY_ERROR, INTEGRITY_INFO, INTEGRITY_WARNING, MAX_AMOUNT,
+    MAX_BULK_DELETE_TARGETS, MAX_PAGE_SIZE, MAX_VOUCHER_NUMBER, VOUCHER_TYPES,
 };
 pub(crate) use validation::normalize_date;
 pub use validation::{format_amount, normalize_filter_date, validate_voucher_date};

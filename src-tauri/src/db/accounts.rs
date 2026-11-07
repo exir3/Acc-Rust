@@ -462,6 +462,20 @@ impl Database {
                 )?;
                 created.push(created_account);
             }
+            // Contra references are checked after every account in the batch
+            // exists, so a batch may create a target and its contra together.
+            for account in &normalized {
+                if account.contra_of.is_empty() {
+                    if !account.contra_kind.is_empty() {
+                        return Err("«نوع کاهنده» بدون تعیین «حساب اصلی» معنا ندارد.".to_string());
+                    }
+                    continue;
+                }
+                if account.contra_kind.is_empty() {
+                    return Err("برای حساب کاهنده انتخاب نوع کاهنده الزامی است.".to_string());
+                }
+                classification::validate_contra_target(&tx, &account.code, &account.contra_of)?;
+            }
             tx.commit().map_err(db_error)?;
             Ok(created)
         })
@@ -665,6 +679,11 @@ impl Database {
                         "برای حساب کاهنده انتخاب نوع کاهنده الزامی است.".to_string()
                     );
                 }
+                if contra_of.is_empty() && !contra_kind.is_empty() {
+                    return Err(
+                        "«نوع کاهنده» بدون تعیین «حساب اصلی» معنا ندارد.".to_string()
+                    );
+                }
                 // The unique system-role index rejects a second account for
                 // the same role.
                 if !system_role.is_empty() {
@@ -710,7 +729,6 @@ impl Database {
                 params![name, code],
             )
             .map_err(db_error)?;
-
             // Match WebApp: changing a parent account's group also changes
             // every descendant in the same hierarchy, in this transaction.
             if old_group != group_code {
@@ -728,6 +746,20 @@ impl Database {
                     params![code, group_code],
                 )
                 .map_err(db_error)?;
+            }
+
+            // Re-read the persisted contra reference: a group or parent change
+            // can invalidate an existing target even when the classification
+            // fields were not part of this update.
+            let current_contra: String = tx
+                .query_row(
+                    "SELECT COALESCE(contra_of, '') FROM accounts WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .map_err(db_error)?;
+            if !current_contra.is_empty() {
+                classification::validate_contra_target(&tx, &code, &current_contra)?;
             }
 
             let updated = fetch_account(&tx, id)?;

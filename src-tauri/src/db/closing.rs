@@ -23,7 +23,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use crate::db::audit;
 use crate::db::classification::{self, AccountClassificationRow, EffectiveClassification};
 use crate::db::common::{db_error, to_fa_digits};
-use crate::db::fs_catalog::{is_fs_line_code, section_of, FsSection, FsStatement, UNCLASSIFIED};
+use crate::db::fs_catalog::{is_fs_line_code, FsStatement, UNCLASSIFIED};
 use crate::db::model::{
     CarryForwardExecutionResult, CarryForwardLine, CarryForwardPlan, ClosingBlocker, ClosingCounts,
     ClosingExecutionResult, ClosingLine, ClosingLineTotals, ClosingPreview, ClosingReversalResult,
@@ -215,7 +215,7 @@ fn normalize_rows(
     Ok(map.into_values().collect())
 }
 
-fn merge_details(sources: &[&[DetailPair]]) -> Vec<DetailPair> {
+fn merge_details(sources: &[&[DetailPair]]) -> Result<Vec<DetailPair>, String> {
     let mut map: BTreeMap<(String, String), DetailPair> = BTreeMap::new();
     for rows in sources {
         for row in *rows {
@@ -227,17 +227,27 @@ fn merge_details(sources: &[&[DetailPair]]) -> Vec<DetailPair> {
                     debit: 0,
                     credit: 0,
                 });
-            entry.debit = entry.debit.saturating_add(row.debit);
-            entry.credit = entry.credit.saturating_add(row.credit);
+            entry.debit = entry
+                .debit
+                .checked_add(row.debit)
+                .ok_or_else(|| "جمع مانده حساب از محدوده عددی مجاز بیشتر است.".to_string())?;
+            entry.credit = entry
+                .credit
+                .checked_add(row.credit)
+                .ok_or_else(|| "جمع مانده حساب از محدوده عددی مجاز بیشتر است.".to_string())?;
         }
     }
-    map.into_values().collect()
+    Ok(map.into_values().collect())
 }
 
-fn net_of(rows: &[DetailPair], code: &str) -> i64 {
-    rows.iter()
-        .filter(|row| row.account_code == code)
-        .fold(0, |total, row| total.saturating_add(row.net()))
+fn net_of(rows: &[DetailPair], code: &str) -> Result<i64, String> {
+    let mut total = 0i64;
+    for row in rows.iter().filter(|row| row.account_code == code) {
+        total = total
+            .checked_add(row.net())
+            .ok_or_else(|| "جمع مانده حساب از محدوده عددی مجاز بیشتر است.".to_string())?;
+    }
+    Ok(total)
 }
 
 fn has_balance(rows: &[DetailPair], code: &str) -> bool {
@@ -257,32 +267,7 @@ fn effective_of(
 }
 
 fn group_type_matches_fs_line(group_type: &str, fs_line: &str) -> bool {
-    if group_type.is_empty() {
-        return true;
-    }
-    let section = section_of(fs_line);
-    let allowed: &[FsSection] = match group_type {
-        "دارایی" => &[FsSection::CurrentAsset, FsSection::NonCurrentAsset],
-        "بدهی" => &[FsSection::CurrentLiability, FsSection::NonCurrentLiability],
-        "سرمایه" => &[FsSection::Equity],
-        "درآمد" => &[
-            FsSection::Revenue,
-            FsSection::OtherOperating,
-            FsSection::OtherNonOperating,
-        ],
-        "هزینه" => &[
-            FsSection::Cogs,
-            FsSection::SellingExpense,
-            FsSection::AdminExpense,
-            FsSection::OtherOperating,
-            FsSection::OtherNonOperating,
-            FsSection::FinanceCost,
-            FsSection::IncomeTax,
-        ],
-        // "سایر" can hold any section.
-        _ => return true,
-    };
-    allowed.contains(&section)
+    classification::group_type_matches_fs_line(group_type, fs_line)
 }
 
 fn classification_status(
@@ -473,8 +458,8 @@ fn load_snapshot(
         &accounts,
     )?;
 
-    let statement_details = merge_details(&[&opening_rows, &statement_turnover]);
-    let pre_details = merge_details(&[&opening_rows, &pre_turnover]);
+    let statement_details = merge_details(&[&opening_rows, &statement_turnover])?;
+    let pre_details = merge_details(&[&opening_rows, &pre_turnover])?;
 
     let (outside_count, outside_number) = conn
         .query_row(
@@ -568,13 +553,18 @@ fn make_line(
     }
 }
 
-fn line_totals(lines: &[ClosingLine]) -> ClosingLineTotals {
+fn line_totals(lines: &[ClosingLine]) -> Result<ClosingLineTotals, String> {
     let mut totals = ClosingLineTotals::default();
     for line in lines {
-        totals.debit = totals.debit.saturating_add(line.debit);
-        totals.credit = totals.credit.saturating_add(line.credit);
+        totals.debit = totals
+            .debit
+            .checked_add(line.debit)
+            .ok_or_else(|| "جمع بدهکار ردیف‌های بستن از محدوده عددی مجاز بیشتر است.".to_string())?;
+        totals.credit = totals.credit.checked_add(line.credit).ok_or_else(|| {
+            "جمع بستانکار ردیف‌های بستن از محدوده عددی مجاز بیشتر است.".to_string()
+        })?;
     }
-    totals
+    Ok(totals)
 }
 
 fn build_plan(snapshot: &Snapshot, roles: &ResolvedRoles) -> Result<Plan, String> {
@@ -662,7 +652,7 @@ fn build_plan(snapshot: &Snapshot, roles: &ResolvedRoles) -> Result<Plan, String
                 debit: if net_income < 0 { -net_income } else { 0 },
                 credit: if net_income > 0 { net_income } else { 0 },
             });
-            permanent_details = merge_details(&[&permanent_details]);
+            permanent_details = merge_details(&[&permanent_details])?;
         }
     }
 
@@ -967,7 +957,7 @@ fn build_blockers(
             }
         }
         if effective.fs_line == UNCLASSIFIED || !is_fs_line_code(&effective.fs_line) {
-            if net_of(&snapshot.statement_details, code) != 0
+            if net_of(&snapshot.statement_details, code)? != 0
                 || has_balance(&snapshot.statement_details, code)
             {
                 unclassified.push(code.clone());
@@ -975,14 +965,14 @@ fn build_blockers(
             continue;
         }
         if effective.statement == FsStatement::IncomeStatement
-            && (net_of(&snapshot.opening_details, code) != 0
+            && (net_of(&snapshot.opening_details, code)? != 0
                 || has_balance(&snapshot.opening_details, code))
         {
             temporary_opening.push(code.clone());
         }
         if effective.statement == FsStatement::Memorandum {
             memorandum_net = memorandum_net
-                .checked_add(net_of(&snapshot.statement_details, code))
+                .checked_add(net_of(&snapshot.statement_details, code)?)
                 .ok_or_else(|| "جمع حساب‌های انتظامی از محدوده عددی مجاز بیشتر است.".to_string())?;
         }
     }
@@ -1073,8 +1063,8 @@ fn build_blockers(
         );
     }
 
-    let temp_totals = line_totals(&plan.temp_lines);
-    let closing_totals = line_totals(&plan.closing_lines);
+    let temp_totals = line_totals(&plan.temp_lines)?;
+    let closing_totals = line_totals(&plan.closing_lines)?;
     if !plan.temp_lines.is_empty() {
         if plan.temp_lines.len() < 2 {
             push_blocker(
@@ -1136,8 +1126,8 @@ fn preview_from_snapshot(snapshot: Snapshot) -> Result<ClosingPreview, String> {
         "open"
     };
     let totals = ClosingTotals {
-        temp: line_totals(&plan.temp_lines),
-        closing: line_totals(&plan.closing_lines),
+        temp: line_totals(&plan.temp_lines)?,
+        closing: line_totals(&plan.closing_lines)?,
     };
 
     Ok(ClosingPreview {
@@ -1889,7 +1879,9 @@ fn build_carry_forward_plan_conn(
             continue;
         };
         if effective.statement == FsStatement::IncomeStatement {
-            income_residual = income_residual.saturating_add(net);
+            income_residual = income_residual
+                .checked_add(net)
+                .ok_or_else(|| "جمع مانده سود و زیان از محدوده عددی مجاز بیشتر است.".to_string())?;
             temporary.insert(row.account_code.clone());
             continue;
         }
@@ -1950,7 +1942,11 @@ fn build_carry_forward_plan_conn(
             }
             let pre = pre_net_by_account.get(&code).copied().unwrap_or(0);
             let close = closing_net.get(&code).copied().unwrap_or(0);
-            if pre.saturating_add(close) != 0 {
+            if pre
+                .checked_add(close)
+                .ok_or_else(|| "جمع مانده بستن از محدوده عددی مجاز بیشتر است.".to_string())?
+                != 0
+            {
                 mismatched.push(code);
             }
         }
@@ -1992,7 +1988,11 @@ fn build_carry_forward_plan_conn(
                 .get(&(code, detail))
                 .copied()
                 .unwrap_or(0);
-            if pre.saturating_add(close) != 0 {
+            if pre
+                .checked_add(close)
+                .ok_or_else(|| "جمع مانده بستن از محدوده عددی مجاز بیشتر است.".to_string())?
+                != 0
+            {
                 detail_mismatch = true;
                 break;
             }
@@ -2100,8 +2100,13 @@ fn build_carry_forward_plan_conn(
 
     let mut totals = ClosingLineTotals::default();
     for line in &lines {
-        totals.debit = totals.debit.saturating_add(line.debit);
-        totals.credit = totals.credit.saturating_add(line.credit);
+        totals.debit = totals
+            .debit
+            .checked_add(line.debit)
+            .ok_or_else(|| "جمع بدهکار سند افتتاحیه از محدوده عددی مجاز بیشتر است.".to_string())?;
+        totals.credit = totals.credit.checked_add(line.credit).ok_or_else(|| {
+            "جمع بستانکار سند افتتاحیه از محدوده عددی مجاز بیشتر است.".to_string()
+        })?;
     }
     if lines.is_empty() {
         errors.push(

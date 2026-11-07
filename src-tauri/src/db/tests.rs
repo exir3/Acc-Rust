@@ -264,6 +264,139 @@ mod tests {
     }
 
     #[test]
+    fn contra_accounts_require_an_existing_same_line_non_contra_target() {
+        let db = test_database();
+        let target = NewAccount::new("1109", "نقد اصلی", 1, "1", "debtor", "", true)
+            .with_fs_line("BS.CA.CASH");
+        let valid = NewAccount::new("110901", "نقد کاهنده", 2, "1", "creditor", "1109", true)
+            .with_fs_line("BS.CA.CASH")
+            .with_classification("1109", "other", "", false, "");
+        let created = db
+            .create_accounts_atomic(vec![target.clone(), valid])
+            .unwrap();
+        assert_eq!(created.len(), 2);
+        assert_eq!(created[1].contra_of, "1109");
+
+        let missing = NewAccount::new("110902", "کاهنده بی‌مقصد", 2, "1", "creditor", "1109", true)
+            .with_fs_line("BS.CA.CASH")
+            .with_classification("999999", "other", "", false, "");
+        let error = db.create_accounts_atomic(vec![missing]).unwrap_err();
+        assert!(error.contains("یافت نشد"), "{error}");
+
+        let different_line = NewAccount::new(
+            "110903",
+            "کاهنده سرفصل دیگر",
+            2,
+            "1",
+            "creditor",
+            "1109",
+            true,
+        )
+        .with_fs_line("BS.CA.REC")
+        .with_classification("1109", "other", "", false, "");
+        assert!(db
+            .create_accounts_atomic(vec![different_line])
+            .unwrap_err()
+            .contains("همان سرفصل"));
+
+        let self_reference =
+            NewAccount::new("110904", "کاهنده خود", 2, "1", "creditor", "1109", true)
+                .with_fs_line("BS.CA.CASH")
+                .with_classification("110904", "other", "", false, "");
+        assert!(db
+            .create_accounts_atomic(vec![self_reference])
+            .unwrap_err()
+            .contains("خودش"));
+
+        let without_kind =
+            NewAccount::new("110905", "کاهنده بی‌نوع", 2, "1", "creditor", "1109", true)
+                .with_fs_line("BS.CA.CASH")
+                .with_classification("1109", "", "", false, "");
+        assert!(db
+            .create_accounts_atomic(vec![without_kind])
+            .unwrap_err()
+            .contains("نوع کاهنده"));
+
+        let kind_without_target =
+            NewAccount::new("110906", "نوع بی‌حساب", 2, "1", "creditor", "1109", true)
+                .with_fs_line("BS.CA.CASH")
+                .with_classification("", "other", "", false, "");
+        assert!(db
+            .create_accounts_atomic(vec![kind_without_target])
+            .unwrap_err()
+            .contains("حساب اصلی"));
+
+        // A target that is itself a contra account is rejected.
+        let nested = NewAccount::new("110907", "کاهنده دوم", 2, "1", "creditor", "1109", true)
+            .with_fs_line("BS.CA.CASH")
+            .with_classification("110901", "other", "", false, "");
+        assert!(db
+            .create_accounts_atomic(vec![nested])
+            .unwrap_err()
+            .contains("غیرکاهنده"));
+    }
+
+    #[test]
+    fn updating_a_contra_account_to_another_line_is_rejected() {
+        let db = test_database();
+        db.create_accounts_atomic(vec![
+            NewAccount::new("1109", "نقد اصلی", 1, "1", "debtor", "", true)
+                .with_fs_line("BS.CA.CASH"),
+            NewAccount::new("110901", "نقد کاهنده", 2, "1", "creditor", "1109", true)
+                .with_fs_line("BS.CA.CASH")
+                .with_classification("1109", "other", "", false, ""),
+        ])
+        .unwrap();
+        let contra = db
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .into_iter()
+            .find(|account| account.code == "110901")
+            .unwrap();
+
+        let error = db
+            .update_account_with_classification(
+                contra.id,
+                "نقد کاهنده",
+                "1",
+                "creditor",
+                "1109",
+                None,
+                ClassificationUpdate {
+                    fs_line: "BS.CA.REC".to_string(),
+                    contra_of: "1109".to_string(),
+                    contra_kind: "other".to_string(),
+                    opposite_fs_line: String::new(),
+                    split_by_sign: false,
+                    system_role: String::new(),
+                },
+            )
+            .unwrap_err();
+        assert!(error.contains("همان سرفصل"));
+
+        let error = db
+            .update_account_with_classification(
+                contra.id,
+                "نقد کاهنده",
+                "1",
+                "creditor",
+                "1109",
+                None,
+                ClassificationUpdate {
+                    fs_line: "BS.CA.CASH".to_string(),
+                    contra_of: String::new(),
+                    contra_kind: "other".to_string(),
+                    opposite_fs_line: String::new(),
+                    split_by_sign: false,
+                    system_role: String::new(),
+                },
+            )
+            .unwrap_err();
+        assert!(error.contains("حساب اصلی"), "{error}");
+    }
+
+    #[test]
     fn migration_backfills_classification_for_an_existing_chart() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();

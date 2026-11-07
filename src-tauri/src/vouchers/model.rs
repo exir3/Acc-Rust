@@ -19,6 +19,19 @@ where
     }
 }
 
+pub(crate) fn serialize_optional_exact_amount<S>(
+    value: &Option<i64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(value) => serialize_exact_amount(value, serializer),
+        None => serializer.serialize_none(),
+    }
+}
+
 pub const VOUCHER_TYPES: [&str; 4] = [
     "سند حسابداری عادی",
     "سند حسابداری افتتاحیه",
@@ -489,6 +502,60 @@ pub struct AmountRow {
     pub fs_line: String,
 }
 
+/// Severity of one integrity finding.
+pub const INTEGRITY_ERROR: &str = "error";
+pub const INTEGRITY_WARNING: &str = "warning";
+pub const INTEGRITY_INFO: &str = "info";
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrityCounts {
+    pub error: i64,
+    pub warning: i64,
+    pub info: i64,
+}
+
+/// One accounting-health finding attached to a financial statement.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrityIssue {
+    pub code: String,
+    /// `error`, `warning` or `info`.
+    pub severity: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<i64>,
+    #[serde(
+        serialize_with = "serialize_optional_exact_amount",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub amount: Option<i64>,
+    /// Up to 20 sample account codes, so the UI can link back to the chart.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<String>,
+}
+
+/// Health checks that accompany every financial statement.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrityReport {
+    /// True only when no issue has `error` severity. Warnings and information
+    /// do not block viewing the statement.
+    pub ok: bool,
+    pub counts: IntegrityCounts,
+    pub issues: Vec<IntegrityIssue>,
+}
+
+impl Default for IntegrityReport {
+    fn default() -> Self {
+        Self {
+            ok: true,
+            counts: IntegrityCounts::default(),
+            issues: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IncomeStatementReport {
@@ -529,6 +596,20 @@ pub struct IncomeStatementReport {
     pub profit_before_tax: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub net_profit: i64,
+    /// Accounts without a statement line and a debit balance. They are shown
+    /// below net profit and are never folded into an income-statement section.
+    pub unclassified_debit: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub unclassified_debit_total: i64,
+    /// Accounts without a statement line and a credit balance.
+    pub unclassified_credit: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub unclassified_credit_total: i64,
+    /// Net effect of the unclassified balances (`credit − debit`), reported
+    /// outside net profit.
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub unclassified_total: i64,
+    pub integrity: IntegrityReport,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -538,9 +619,19 @@ pub struct BalanceSheetReport {
     pub assets: Vec<AmountRow>,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub assets_total: i64,
+    /// Unclassified debit balances are shown as their own row and included in
+    /// `assets_total`, but never mixed into the classified `assets` list.
+    pub unclassified_debit: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub unclassified_debit_total: i64,
     pub liabilities: Vec<AmountRow>,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub liabilities_total: i64,
+    /// Unclassified credit balances are shown as their own row and included
+    /// in `liabilities_total`, but never mixed into `liabilities`.
+    pub unclassified_credit: Vec<AmountRow>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub unclassified_credit_total: i64,
     pub equity: Vec<AmountRow>,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub equity_total: i64,
@@ -548,5 +639,8 @@ pub struct BalanceSheetReport {
     pub profit: i64,
     #[serde(serialize_with = "serialize_exact_amount")]
     pub total_liabilities_equity: i64,
+    /// The accounting equation holds. This alone does not prove that every
+    /// account is classified; `integrity` must also be clean.
     pub balanced: bool,
+    pub integrity: IntegrityReport,
 }

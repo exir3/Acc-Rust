@@ -355,6 +355,99 @@ pub(crate) fn validate_contra_kind(value: &str) -> Result<String, String> {
     Err(format!("نوع حساب کاهنده نامعتبر است: «{value}»."))
 }
 
+/// True when an account's nature is opposite to the normal side of its
+/// statement line. Dual-nature accounts are never contra. Mirrors
+/// `isContraNature` in the WebApp catalog.
+pub(crate) fn is_contra_nature(nature: &str, fs_line: &str) -> bool {
+    if nature == "dual" {
+        return false;
+    }
+    let Some(line) = get_fs_line(fs_line) else {
+        return false;
+    };
+    let nature_side = if nature == "debtor" {
+        FsNormalSide::Debit
+    } else {
+        FsNormalSide::Credit
+    };
+    nature_side != line.normal_side
+}
+
+/// Whether a group type may own accounts on the given statement line.
+/// `سایر` deliberately accepts every section, matching the WebApp warning
+/// rule so custom charts are not flagged without cause.
+pub(crate) fn group_type_matches_fs_line(group_type: &str, fs_line: &str) -> bool {
+    if group_type.is_empty() {
+        return true;
+    }
+    let section = section_of(fs_line);
+    let allowed: &[FsSection] = match group_type {
+        "دارایی" => &[FsSection::CurrentAsset, FsSection::NonCurrentAsset],
+        "بدهی" => &[FsSection::CurrentLiability, FsSection::NonCurrentLiability],
+        "سرمایه" => &[FsSection::Equity],
+        "درآمد" => &[
+            FsSection::Revenue,
+            FsSection::OtherOperating,
+            FsSection::OtherNonOperating,
+        ],
+        "هزینه" => &[
+            FsSection::Cogs,
+            FsSection::SellingExpense,
+            FsSection::AdminExpense,
+            FsSection::OtherOperating,
+            FsSection::OtherNonOperating,
+            FsSection::FinanceCost,
+            FsSection::IncomeTax,
+        ],
+        // "سایر" can hold any section.
+        _ => return true,
+    };
+    allowed.contains(&section)
+}
+
+/// Validates a contra reference against the persisted chart: the target must
+/// exist, must not be the account itself, must resolve to the same effective
+/// line, and must not itself be a contra account. The account's own line must
+/// already be classified.
+pub(crate) fn validate_contra_target(
+    conn: &Connection,
+    code: &str,
+    contra_of: &str,
+) -> Result<(), String> {
+    let contra_of = contra_of.trim();
+    if contra_of.is_empty() {
+        return Ok(());
+    }
+    if contra_of == code {
+        return Err("حساب کاهنده نمی‌تواند به خودش ارجاع دهد.".to_string());
+    }
+
+    let by_code = load_classifications(conn)?;
+    let own = by_code
+        .get(code)
+        .ok_or_else(|| "حساب جاری یافت نشد.".to_string())?;
+    let own_effective = resolve_account(own, &by_code);
+    if !is_fs_line_code(&own_effective.fs_line) {
+        return Err(
+            "پیش از تعیین حساب کاهنده، ابتدا سرفصل صورت مالی این حساب را مشخص کنید.".to_string(),
+        );
+    }
+
+    let Some(target) = by_code.get(contra_of) else {
+        return Err(format!("حساب اصلی انتخاب‌شده ({contra_of}) یافت نشد."));
+    };
+    let target_effective = resolve_account(target, &by_code);
+    if target_effective.fs_line != own_effective.fs_line {
+        return Err(
+            "حساب اصلی کاهنده باید همان سرفصل صورت مالی این حساب را داشته باشد.".to_string(),
+        );
+    }
+    if is_contra_nature(&target.nature, &target_effective.fs_line) || !target.contra_of.is_empty() {
+        return Err("حساب اصلی نباید خودش کاهنده باشد؛ یک حساب غیرکاهنده انتخاب کنید.".to_string());
+    }
+    Ok(())
+}
+
 /// Stores the classification suggested by each group section on an existing
 /// book. Accounts without an explicit group section stay `NULL` so the runtime
 /// resolver can keep following their ancestors and group type.

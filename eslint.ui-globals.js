@@ -197,6 +197,7 @@ export default {
   'incomeFilterBar': 'writable',
   'incomeSection': 'writable',
   'init': 'writable',
+  'integrityPanel': 'writable',
   'invoke': 'writable',
   'IS_TRIAL_POPUP': 'writable',
   'IS_VOUCHER_LIST_POPUP': 'writable',

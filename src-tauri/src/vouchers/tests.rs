@@ -268,12 +268,20 @@ fn saves_balanced_voucher_and_builds_reports() {
     assert_eq!(income.revenue_total, 1_000_000);
     assert_eq!(income.cogs_total, 0);
     assert_eq!(income.net_profit, 1_000_000);
+    assert!(income.unclassified_debit.is_empty());
+    assert!(income.unclassified_credit.is_empty());
+    assert!(income.integrity.ok, "{:?}", income.integrity.issues);
+    assert_eq!(income.integrity.counts.error, 0);
 
     let balance = db.get_balance_sheet("1405/01/31").unwrap();
     assert_eq!(balance.assets_total, 1_000_000);
     assert_eq!(balance.profit, 1_000_000);
     assert_eq!(balance.total_liabilities_equity, 1_000_000);
     assert!(balance.balanced);
+    assert!(balance.unclassified_debit.is_empty());
+    assert!(balance.unclassified_credit.is_empty());
+    assert!(balance.integrity.ok, "{:?}", balance.integrity.issues);
+    assert_eq!(balance.integrity.counts.error, 0);
 }
 
 #[test]

@@ -4,18 +4,25 @@
 //! its group type alone. The contribution amount already applies the WebApp
 //! rules for contra accounts and `split_by_sign`, so a misclassified account
 //! stays visible instead of silently making the statement unbalanced.
+//!
+//! Accounts without a valid statement line are never guessed into assets,
+//! liabilities or an income-statement section. Their debit and credit balances
+//! are reported separately, and an integrity report explains why the statement
+//! needs classification work before it can be trusted.
 
-use crate::db::fs_catalog::{FsSection, UNCLASSIFIED};
+use crate::db::fs_catalog::{section_of, FsSection, UNCLASSIFIED};
 use crate::db::Database;
 use crate::vouchers::accounting::account_activities;
 use crate::vouchers::model::{
-    AmountRow, BalanceSheetReport, IncomeStatementReport, ReportScope, CLOSING_FINAL,
-    CLOSING_TEMPORARY,
+    AmountRow, BalanceSheetReport, IncomeStatementReport, IntegrityReport, ReportScope,
+    CLOSING_FINAL, CLOSING_TEMPORARY,
 };
 use crate::vouchers::validation::{
     check_range, checked_add, checked_neg, checked_sub, checked_sum, normalize_date,
     normalize_filter_date,
 };
+
+use super::integrity::run_integrity_checks;
 
 impl Database {
     pub fn get_income_statement(
@@ -47,7 +54,10 @@ impl Database {
                 &[CLOSING_TEMPORARY, CLOSING_FINAL],
                 scope,
             )?;
-            build_income_statement(from, to, activities)
+            let mut report = build_income_statement(from, to, activities)?;
+            report.integrity =
+                run_integrity_checks(conn, &report.from, &report.to, false, scope, None)?;
+            Ok(report)
         })
     }
 
@@ -66,7 +76,14 @@ impl Database {
             // every balance-sheet account, so the statement is prepared from
             // the books before it. `account_activities` applies that rule.
             let activities = account_activities(conn, "", &as_of, true, &[], scope)?;
-            build_balance_sheet(as_of, activities)
+            let mut report = build_balance_sheet(as_of.clone(), activities)?;
+            let variance = checked_sub(
+                report.assets_total,
+                report.total_liabilities_equity,
+                "مغایرت ترازنامه",
+            )?;
+            report.integrity = run_integrity_checks(conn, "", &as_of, true, scope, Some(variance))?;
+            Ok(report)
         })
     }
 }
@@ -94,10 +111,24 @@ fn build_income_statement(
     let mut non_operating_expenses = Vec::new();
     let mut finance_costs = Vec::new();
     let mut income_taxes = Vec::new();
+    let mut unclassified_debit = Vec::new();
+    let mut unclassified_credit = Vec::new();
 
     for activity in activities {
         let amount = activity.contribution_amount;
         if amount == 0 {
+            continue;
+        }
+        // An unclassified balance has no reliable statement side. It is shown
+        // below net profit instead of being guessed into a revenue or expense
+        // line, so the period result stays aligned with the balance sheet.
+        if activity.contribution_line == UNCLASSIFIED {
+            if amount > 0 {
+                unclassified_debit.push(row(&activity, amount));
+            } else {
+                unclassified_credit
+                    .push(row(&activity, checked_neg(amount, "مانده طبقه‌بندی‌نشده")?));
+            }
             continue;
         }
         if activity.statement() == crate::db::fs_catalog::FsStatement::BalanceSheet
@@ -123,10 +154,6 @@ fn build_income_statement(
                 }
             }
             "IS.TAX" => income_taxes.push(row(&activity, amount)),
-            UNCLASSIFIED => {
-                // Unclassified balances belong to the balance-sheet review
-                // bucket, not to a guessed income-statement line.
-            }
             _ => {}
         }
     }
@@ -160,6 +187,19 @@ fn build_income_statement(
         checked_sum(finance_costs.iter().map(|r| r.amount), "جمع هزینه‌های مالی")?;
     let income_tax_total =
         checked_sum(income_taxes.iter().map(|r| r.amount), "جمع مالیات بر درآمد")?;
+    let unclassified_debit_total = checked_sum(
+        unclassified_debit.iter().map(|r| r.amount),
+        "جمع مانده بدهکار طبقه‌بندی‌نشده",
+    )?;
+    let unclassified_credit_total = checked_sum(
+        unclassified_credit.iter().map(|r| r.amount),
+        "جمع مانده بستانکار طبقه‌بندی‌نشده",
+    )?;
+    let unclassified_total = checked_sub(
+        unclassified_credit_total,
+        unclassified_debit_total,
+        "خالص مانده طبقه‌بندی‌نشده",
+    )?;
     let gross_profit = checked_sub(revenue_total, cogs_total, "سود ناخالص")?;
     let operating_profit = checked_sub(
         checked_add(
@@ -213,6 +253,12 @@ fn build_income_statement(
         operating_profit,
         profit_before_tax,
         net_profit,
+        unclassified_debit,
+        unclassified_debit_total,
+        unclassified_credit,
+        unclassified_credit_total,
+        unclassified_total,
+        integrity: IntegrityReport::default(),
     })
 }
 
@@ -223,6 +269,8 @@ fn build_balance_sheet(
     let mut assets = Vec::new();
     let mut liabilities = Vec::new();
     let mut equity = Vec::new();
+    let mut unclassified_debit = Vec::new();
+    let mut unclassified_credit = Vec::new();
     let mut profit = 0i64;
 
     for activity in activities {
@@ -231,7 +279,19 @@ fn build_balance_sheet(
             continue;
         }
         let line = activity.contribution_line.as_str();
-        let section = crate::db::fs_catalog::section_of(line);
+        // Keep unclassified balances in their own review buckets. Their sign
+        // only says which side of the ledger they came from; it does not prove
+        // they are an asset or a liability.
+        if line == UNCLASSIFIED {
+            if amount > 0 {
+                unclassified_debit.push(row(&activity, amount));
+            } else {
+                unclassified_credit
+                    .push(row(&activity, checked_neg(amount, "مانده طبقه‌بندی‌نشده")?));
+            }
+            continue;
+        }
+        let section = section_of(line);
         match section {
             FsSection::NonCurrentAsset | FsSection::CurrentAsset => {
                 assets.push(row(&activity, amount));
@@ -256,21 +316,32 @@ fn build_balance_sheet(
             | FsSection::IncomeTax => {
                 profit = checked_sub(profit, amount, "سود ترازنامه")?;
             }
-            FsSection::Memorandum => {}
-            FsSection::Unclassified => {
-                // Keep the accounting equation intact and visible instead of
-                // making the sheet silently unbalanced.
-                if amount > 0 {
-                    assets.push(row(&activity, amount));
-                } else {
-                    liabilities.push(row(&activity, checked_neg(amount, "مانده طبقه‌بندی‌نشده")?));
-                }
-            }
+            FsSection::Memorandum | FsSection::Unclassified => {}
         }
     }
 
-    let assets_total = checked_sum(assets.iter().map(|r| r.amount), "جمع دارایی ترازنامه")?;
-    let liabilities_total = checked_sum(liabilities.iter().map(|r| r.amount), "جمع بدهی ترازنامه")?;
+    let classified_assets_total =
+        checked_sum(assets.iter().map(|r| r.amount), "جمع دارایی ترازنامه")?;
+    let unclassified_debit_total = checked_sum(
+        unclassified_debit.iter().map(|r| r.amount),
+        "جمع مانده بدهکار طبقه‌بندی‌نشده",
+    )?;
+    let assets_total = checked_add(
+        classified_assets_total,
+        unclassified_debit_total,
+        "جمع دارایی ترازنامه با طبقه‌بندی‌نشده",
+    )?;
+    let classified_liabilities_total =
+        checked_sum(liabilities.iter().map(|r| r.amount), "جمع بدهی ترازنامه")?;
+    let unclassified_credit_total = checked_sum(
+        unclassified_credit.iter().map(|r| r.amount),
+        "جمع مانده بستانکار طبقه‌بندی‌نشده",
+    )?;
+    let liabilities_total = checked_add(
+        classified_liabilities_total,
+        unclassified_credit_total,
+        "جمع بدهی ترازنامه با طبقه‌بندی‌نشده",
+    )?;
     let equity_total = checked_sum(equity.iter().map(|r| r.amount), "جمع سرمایه ترازنامه")?;
     let total_liabilities_equity = checked_add(
         checked_add(
@@ -285,12 +356,126 @@ fn build_balance_sheet(
         as_of,
         assets,
         assets_total,
+        unclassified_debit,
+        unclassified_debit_total,
         liabilities,
         liabilities_total,
+        unclassified_credit,
+        unclassified_credit_total,
         equity,
         equity_total,
         profit,
         total_liabilities_equity,
         balanced: assets_total == total_liabilities_equity,
+        integrity: IntegrityReport::default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::classification::EffectiveClassification;
+    use crate::db::fs_catalog::{FsNormalSide, FsPermanence, FsStatement};
+    use crate::vouchers::accounting::AccountActivity;
+
+    fn activity(
+        code: &str,
+        name: &str,
+        line: &str,
+        amount: i64,
+        statement: FsStatement,
+    ) -> AccountActivity {
+        AccountActivity {
+            account_code: code.to_string(),
+            account_name: name.to_string(),
+            effective: EffectiveClassification {
+                fs_line: line.to_string(),
+                source: "manual".to_string(),
+                section: section_of(line),
+                statement,
+                normal_side: FsNormalSide::Debit,
+                permanence: FsPermanence::Permanent,
+                contra_of: String::new(),
+                opposite_fs_line: String::new(),
+                split_by_sign: false,
+                system_role: String::new(),
+            },
+            contribution_line: line.to_string(),
+            contribution_amount: amount,
+        }
+    }
+
+    #[test]
+    fn balance_sheet_keeps_unclassified_balances_in_separate_buckets() {
+        let report = build_balance_sheet(
+            "1405/01/01".to_string(),
+            vec![
+                activity("1101", "نقد", "BS.CA.CASH", 50, FsStatement::BalanceSheet),
+                activity(
+                    "9001",
+                    "بدهکار ناشناخته",
+                    UNCLASSIFIED,
+                    100,
+                    FsStatement::BalanceSheet,
+                ),
+                activity(
+                    "9002",
+                    "بستانکار ناشناخته",
+                    UNCLASSIFIED,
+                    -30,
+                    FsStatement::BalanceSheet,
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(report.assets.len(), 1);
+        assert_eq!(report.assets[0].account_code, "1101");
+        assert_eq!(report.unclassified_debit.len(), 1);
+        assert_eq!(report.unclassified_debit[0].amount, 100);
+        assert_eq!(report.unclassified_credit.len(), 1);
+        assert_eq!(report.unclassified_credit[0].amount, 30);
+        // Unclassified balances stay in the totals, but not in the classified
+        // lists; the audit can see exactly where they went.
+        assert_eq!(report.assets_total, 150);
+        assert_eq!(report.liabilities_total, 30);
+        assert!(!report.balanced);
+        // The test only checks the classification split; integrity is attached
+        // by the database method.
+        assert!(report.integrity.ok);
+    }
+
+    #[test]
+    fn income_statement_reports_unclassified_below_net_profit() {
+        let report = build_income_statement(
+            "1405/01/01".to_string(),
+            "1405/12/29".to_string(),
+            vec![
+                activity("4101", "فروش", "IS.REV", 100, FsStatement::IncomeStatement),
+                activity(
+                    "9001",
+                    "بدهکار ناشناخته",
+                    UNCLASSIFIED,
+                    25,
+                    FsStatement::BalanceSheet,
+                ),
+                activity(
+                    "9002",
+                    "بستانکار ناشناخته",
+                    UNCLASSIFIED,
+                    -40,
+                    FsStatement::BalanceSheet,
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(report.revenue_total, 100);
+        assert_eq!(report.net_profit, 100);
+        assert_eq!(report.unclassified_debit_total, 25);
+        assert_eq!(report.unclassified_credit_total, 40);
+        assert_eq!(report.unclassified_total, 15);
+        assert_eq!(report.unclassified_debit.len(), 1);
+        assert_eq!(report.unclassified_credit.len(), 1);
+    }
 }

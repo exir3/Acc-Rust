@@ -233,3 +233,31 @@ function badge(value, tone) {
   return `<span class="badge" data-tone="${esc(tone || 'neutral')}">${esc(value)}</span>`;
 }
 
+function integrityPanel(integrity) {
+  if (!integrity) return '';
+  const counts = integrity.counts || {};
+  const issues = Array.isArray(integrity.issues) ? integrity.issues : [];
+  const ok = integrity.ok !== false;
+  const tone = ok ? 'ok' : 'danger';
+  const severityTone = { error: 'danger', warning: 'warn', info: 'info' };
+  const severityLabel = { error: 'خطا', warning: 'هشدار', info: 'اطلاع' };
+  const rows = issues.map((issue) => {
+    const issueTone = severityTone[issue.severity] || 'neutral';
+    const label = severityLabel[issue.severity] || issue.severity;
+    const accounts = Array.isArray(issue.accounts) && issue.accounts.length
+      ? `<div class="muted small">نمونه حساب‌ها: ${issue.accounts.map((code) => `<span class="mono">${esc(toFa(code))}</span>`).join('، ')}</div>`
+      : '';
+    return `<div class="integrity-issue" data-tone="${issueTone}">
+      <div class="integrity-issue-head">${badge(label, issueTone)}<span>${esc(issue.message)}</span></div>
+      ${accounts}
+    </div>`;
+  }).join('');
+  return `<div class="integrity-panel" data-tone="${tone}">
+    <div class="integrity-head">
+      <div><strong>کنترل سلامت صورت‌های مالی</strong> ${badge(ok ? 'بدون خطا' : 'نیازمند بررسی', tone)}</div>
+      <div class="muted small">${toFa(counts.error || 0)} خطا · ${toFa(counts.warning || 0)} هشدار · ${toFa(counts.info || 0)} اطلاع</div>
+    </div>
+    ${rows || '<div class="muted small">هیچ موردی یافت نشد.</div>'}
+  </div>`;
+}
+

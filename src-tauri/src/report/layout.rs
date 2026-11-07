@@ -2,7 +2,7 @@
 
 pub(crate) use crate::db::to_fa_digits;
 pub(crate) use crate::report::model::{PrintDoc, ReportMeta};
-use crate::vouchers::format_amount;
+use crate::vouchers::{format_amount, IntegrityReport};
 use base64::Engine;
 
 /* ── Shared pieces ──────────────────────────────────────────── */
@@ -53,6 +53,17 @@ html, body { margin: 0; padding: 0; background: #fff; }
 .rpt-empty { text-align: center; color: #7c8ba4; padding: 22px 8px; border: 1px dashed #c5d2e3; margin-top: 8px; }
 .rpt-foot { margin-top: 14px; padding-top: 6px; border-top: 1px solid #dbe4f0; color: #7c8ba4; font-size: 10.5px; display: flex; justify-content: space-between; }
 .rpt-note { color: #7c8ba4; font-size: 10.5px; margin-top: 6px; }
+.rpt-table tr.rpt-unclassified td { background: #fff8e6; color: #7a4a00; }
+.rpt-table tr.rpt-unclassified-head td { background: #fdf1d8; color: #7a4a00; font-weight: 700; }
+.rpt-health { margin-top: 12px; border: 1px solid #d7e2f0; border-right: 4px solid #1f5fd0; padding: 6px 8px; font-size: 11px; }
+.rpt-health[data-ok="true"] { border-right-color: #0d7f7a; background: #f0fbf9; color: #0d5f5a; }
+.rpt-health[data-ok="false"] { border-right-color: #b42318; background: #fff5f5; color: #5c1a15; }
+.rpt-health h3 { margin: 0 0 4px; font-size: 11.5px; }
+.rpt-issue { margin: 3px 0; }
+.rpt-issue[data-severity="error"] { color: #b42318; }
+.rpt-issue[data-severity="warning"] { color: #9a5b00; }
+.rpt-issue[data-severity="info"] { color: #1a4fa0; }
+.rpt-issue-accounts { color: #7c8ba4; font-size: 10px; }
 "#;
 
 pub(crate) fn portable_base_style() -> String {
@@ -112,6 +123,53 @@ pub(crate) fn period(report_from: &str, report_to: &str) -> String {
         (false, true) => format!("از {}", date(report_from)),
         (false, false) => format!("از {} تا {}", date(report_from), date(report_to)),
     }
+}
+
+/// Print-side summary of the accounting-health checks attached to a
+/// statement. Every finding is listed with its severity so a clean report is
+/// still explicit about the checks that ran.
+pub(crate) fn integrity_panel(integrity: &IntegrityReport) -> String {
+    let status = if integrity.ok {
+        "بدون خطا"
+    } else {
+        "نیازمند بررسی"
+    };
+    let mut issues = String::new();
+    for issue in &integrity.issues {
+        let severity = match issue.severity.as_str() {
+            "error" => "خطا",
+            "warning" => "هشدار",
+            _ => "اطلاع",
+        };
+        let accounts = if issue.accounts.is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#"<div class="rpt-issue-accounts">نمونه حساب‌ها: {}</div>"#,
+                html(&issue.accounts.join("، "))
+            )
+        };
+        issues.push_str(&format!(
+            r#"<div class="rpt-issue" data-severity="{severity_key}"><b>{severity}:</b> {message}{accounts}</div>"#,
+            severity_key = html(&issue.severity),
+            severity = severity,
+            message = html(&issue.message),
+            accounts = accounts,
+        ));
+    }
+    format!(
+        r#"<div class="rpt-health" data-ok="{ok}">
+<h3>کنترل سلامت صورت‌های مالی — {status}</h3>
+<div>{errors} خطا، {warnings} هشدار، {info} اطلاع</div>
+{issues}
+</div>"#,
+        ok = integrity.ok,
+        status = status,
+        errors = to_fa_digits(integrity.counts.error.to_string()),
+        warnings = to_fa_digits(integrity.counts.warning.to_string()),
+        info = to_fa_digits(integrity.counts.info.to_string()),
+        issues = issues,
+    )
 }
 
 pub(crate) fn page(

@@ -35,6 +35,8 @@ function incomeFilterBar() {
 
 function renderIncomeStatement(report) {
   const net = amountBigInt(report.netProfit);
+  const integrity = report.integrity || { ok: true, counts: { error: 0, warning: 0, info: 0 }, issues: [] };
+  const errorCount = Number(integrity.counts?.error || 0);
   return `
   ${incomeFilterBar()}
   <div class="report-summary">
@@ -49,6 +51,7 @@ function renderIncomeStatement(report) {
     <div class="kpi"><span>مالیات بر درآمد</span><strong>${money(report.incomeTaxTotal)}</strong></div>
     <div class="kpi"><span>سود (زیان) ناخالص</span><strong>${money(report.grossProfit)}</strong></div>
     <div class="kpi" data-tone="${net >= 0n ? 'ok' : 'danger'}"><span>سود (زیان) خالص</span><strong>${money(net)}</strong></div>
+    <div class="kpi" data-tone="${integrity.ok ? 'ok' : 'danger'}"><span>کنترل سلامت</span><strong>${integrity.ok ? 'بدون خطا' : `${toFa(errorCount)} خطا`}</strong></div>
   </div>
   <div class="report-layout">
     <div class="card">
@@ -94,6 +97,41 @@ function renderIncomeStatement(report) {
   <div class="card" style="margin-top:12px">
     <div class="report-total-line"><span>سود (زیان) پیش از مالیات</span><span class="money">${money(report.profitBeforeTax)}</span></div>
     <div class="report-total-line net"><span>سود (زیان) خالص دوره</span><span class="money">${money(net)}</span></div>
+  </div>
+  ${incomeUnclassifiedSection(report)}
+  ${integrityPanel(integrity)}`;
+}
+
+function incomeUnclassifiedSection(report) {
+  const debit = report.unclassifiedDebit || [];
+  const credit = report.unclassifiedCredit || [];
+  if (!debit.length && !credit.length) return '';
+  const renderRows = (rows, label) => {
+    if (!rows.length) return '';
+    return `<tr class="unclassified-head"><td colspan="3">${esc(label)}</td></tr>` +
+      rows.map((row) => `
+    <tr class="unclassified">
+      <td class="center mono">${esc(toFa(row.accountCode))}</td>
+      <td>${esc(row.accountName)}</td>
+      <td class="money ${row.amount >= 0 ? 'debit' : 'credit'}">${money(row.amount)}</td>
+    </tr>`).join('');
+  };
+  return `<div class="card" style="margin-top:12px">
+    <div class="section-head">
+      <h2>${icon('i-alert')} طبقه‌بندی‌نشده (خارج از سود خالص دوره)</h2>
+      ${badge(`${toFa(debit.length + credit.length)} حساب`, 'warn')}
+    </div>
+    <div class="note" data-tone="warn">این مانده‌ها در سود خالص دوره لحاظ نشده‌اند؛ پس از تعیین سرفصل، صورت سود و زیان را دوباره تهیه کنید.</div>
+    <div class="table-wrap short">
+      <table class="data-table">
+        <thead><tr><th style="width:96px">کد حساب</th><th>عنوان</th><th style="width:140px">مبلغ</th></tr></thead>
+        <tbody>
+          ${renderRows(debit, 'مانده بدهکار طبقه‌بندی‌نشده')}
+          ${renderRows(credit, 'مانده بستانکار طبقه‌بندی‌نشده')}
+        </tbody>
+        <tfoot><tr><td colspan="2" class="bold">اثر خالص (بستانکار − بدهکار)</td><td class="num bold">${money(report.unclassifiedTotal)}</td></tr></tfoot>
+      </table>
+    </div>
   </div>`;
 }
 
