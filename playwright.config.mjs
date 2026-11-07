@@ -18,6 +18,9 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     viewport: { width: 1280, height: 900 },
+    // Disable CSS entrance/exit animations and the application's deliberate
+    // 200 ms close delay. The two selector tests used to race that transition.
+    reducedMotion: 'reduce',
   },
   projects: [
     {

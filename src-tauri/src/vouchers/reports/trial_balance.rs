@@ -35,7 +35,7 @@ fn roll_up_trial_amounts(
         return Ok((0, 0, 0, 0));
     };
     let account = &accounts[index];
-    let mut total = if included.map_or(true, |codes| codes.contains(code)) {
+    let mut total = if included.is_none_or(|codes| codes.contains(code)) {
         (
             account.opening_debit,
             account.opening_credit,

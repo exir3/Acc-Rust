@@ -96,7 +96,9 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: Audit npm dependencies
-        run: npm audit --audit-level=high
+        # moderate catches prototype-pollution and ReDoS advisories that a
+        # "high" threshold silently skips; the lockfile currently reports none.
+        run: npm audit --audit-level=moderate
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -105,7 +107,8 @@ jobs:
 
       - name: Audit Rust dependencies
         working-directory: src-tauri
-        run: cargo audit
+        # The only accepted advisories are documented in src-tauri/.cargo/audit.toml.
+        run: cargo audit --deny warnings
 
   desktop-build:
     needs: [verify, ui-e2e, security-audit]
@@ -135,6 +138,13 @@ jobs:
         if: ${{ env.RELEASE_BUILD == 'true' && (env.WINDOWS_CERTIFICATE_BASE64 == '' || env.WINDOWS_CERTIFICATE_PASSWORD == '') }}
         shell: pwsh
         run: throw "Release builds require WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD."
+
+      - name: Require independent accounting report sign-off for release builds
+        if: ${{ env.RELEASE_BUILD == 'true' }}
+        shell: pwsh
+        # Fails unless Docs/Accounting-Report-Signoff.md is approved, names the
+        # reviewer and date, and pins the current report_reference.json hash.
+        run: node scripts/check-report-signoff.mjs
 
       - name: Build Windows executable (no bundle)
         run: npx tauri build --no-bundle
@@ -244,6 +254,10 @@ jobs:
             }
           }
           $signed = @($artifacts | Where-Object { $_.signatureStatus -ne 'Valid' }).Count -eq 0
+          # A plain-text checksum manifest so a user can verify a download with
+          # `certutil -hashfile` or `sha256sum -c` without opening the JSON.
+          $artifacts | ForEach-Object { "$($_.sha256)  $($_.name)" } |
+            Set-Content -Path "SHA256SUMS.txt" -Encoding ascii
           $releaseBuild = $env:RELEASE_BUILD -eq 'true'
           if ($releaseBuild -and -not $signed) {
             throw "Every official release artifact must have a valid Authenticode signature."
@@ -278,4 +292,5 @@ jobs:
             src-tauri/target/release/Hesabdari.exe
             src-tauri/target/release/bundle/nsis/*.exe
             release-metadata.json
+            SHA256SUMS.txt
           if-no-files-found: error

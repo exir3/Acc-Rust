@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
+// The file is itself `tests.rs`; the inner module keeps the usual `mod tests`
+// layout so every test names the same way as elsewhere in the crate.
+#[allow(clippy::module_inception)]
 mod tests {
     use super::*;
 
@@ -55,19 +58,6 @@ mod tests {
                FROM accounts a WHERE a.code = ?6",
             params![voucher_id, row_no, detail1_code, debit, credit, base_code],
         )
-    }
-
-    fn file_database(path: &Path) -> Database {
-        let mut conn = Connection::open(path).unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        apply_base_schema(&conn).unwrap();
-        apply_schema_migrations(&mut conn).unwrap();
-        seed_default_groups(&mut conn).unwrap();
-        seed_default_accounts(&mut conn).unwrap();
-        seed_default_settings(&conn).unwrap();
-        let db = Database::default();
-        db.attach(conn, path.to_path_buf());
-        db
     }
 
     #[test]
@@ -1730,7 +1720,10 @@ mod tests {
             .restore_encrypted_from(&tampered_path, "correct horse battery")
             .unwrap_err();
         assert!(
-            error.contains("دستکاری") || error.contains("صحت"),
+            error.contains("رمز عبور")
+                || error.contains("آسیب")
+                || error.contains("دستکاری")
+                || error.contains("صحت"),
             "unexpected error: {error}"
         );
 

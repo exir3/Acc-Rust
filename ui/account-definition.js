@@ -780,12 +780,25 @@
       showError('کد حساب باید فقط شامل عدد باشد.');
       return;
     }
+    if (code.length > 50) {
+      showError('کد حساب نمی‌تواند بیشتر از ۵۰ رقم باشد.');
+      return;
+    }
+    if (!/[1-9]/.test(code)) {
+      showError('کد حساب باید بزرگ‌تر از صفر باشد.');
+      return;
+    }
+    // The 4/2/3 digit prefixes are only a suggestion used by nextAccountCode().
+    // The Rust and Excel import paths deliberately accept any numeric code, so
+    // a different width must warn instead of blocking an otherwise valid code.
     if (mode === 'new' && !isValidNewAccountCode(code, level, parentCode)) {
       const width = CODE_WIDTHS[level];
-      showError(level === 1
-        ? `کد حساب کل باید دقیقاً ${toFaDigits(width || 4)} رقم باشد و از ${toFaDigits(10 ** ((width || 4) - 1))} شروع شود.`
-        : `کد حساب ${levelName(level)} باید ${toFaDigits(width || 2)} رقم بیشتر از کد والد داشته باشد.`);
-      return;
+      toast(
+        level === 1
+          ? `پیشنهاد برنامه آن است که کد حساب کل ${toFaDigits(width || 4)} رقم باشد؛ کد فعلی با سیاست پیشنهادی متفاوت است و ثبت می‌شود.`
+          : `پیشنهاد برنامه آن است که کد ${levelName(level)} ${toFaDigits(width || 2)} رقم بیشتر از کد والد داشته باشد؛ کد فعلی ثبت می‌شود.`,
+        'warn',
+      );
     }
     if (mode === 'new' && state.accounts.some((account) => account.code === code)) {
       const duplicate = state.accounts.find((account) => account.code === code);

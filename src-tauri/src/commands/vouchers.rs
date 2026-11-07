@@ -178,6 +178,7 @@ pub(crate) fn import_voucher_excel(
 
 #[tauri::command(async)]
 pub(crate) fn analyze_bulk_voucher_excel(
+    date_system: Option<String>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -187,6 +188,7 @@ pub(crate) fn analyze_bulk_voucher_excel(
     state.bulk_import_cancel.store(false, Ordering::Relaxed);
     let cancel = state.bulk_import_cancel.clone();
     let Some(import) = excel::import_vouchers_with_progress(
+        date_system.as_deref(),
         &mut |processed: usize, total: usize| {
             let _ = app.emit(
                 "bulk-import-progress",

@@ -191,32 +191,82 @@ pub(crate) fn gregorian_to_jalali_date(year: u32, month: u32, day: u32) -> Resul
     crate::vouchers::validate_voucher_date(&value)
 }
 
+/// How a workbook's text dates should be read. Excel date cells (`DateTime`)
+/// are always absolute Gregorian dates; this setting only disambiguates text
+/// and numeric dates written in a regional format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum DateSystem {
+    /// Treat years from 1600 onwards as Gregorian and smaller years as Jalali.
+    #[default]
+    Auto,
+    Jalali,
+    Gregorian,
+}
+
+impl DateSystem {
+    pub(crate) fn parse(input: Option<&str>) -> Result<Self, String> {
+        let value = input.unwrap_or("auto").trim().to_ascii_lowercase();
+        match value.as_str() {
+            "" | "auto" => Ok(Self::Auto),
+            "jalali" | "shamsi" | "persian" => Ok(Self::Jalali),
+            "gregorian" | "miladi" => Ok(Self::Gregorian),
+            other => Err(format!("نوع تاریخ فایل اکسل نامعتبر است: {other}")),
+        }
+    }
+}
+
+/// A parsed date plus whether the automatic mode had to guess between two
+/// calendars. Ambiguous rows are reported in the import preview instead of
+/// being interpreted silently.
+pub(crate) struct ParsedImportDate {
+    pub(crate) value: String,
+    pub(crate) ambiguous: bool,
+}
+
 /// Reads date values from Excel without assuming that every date is stored as
 /// a preformatted Jalali text cell. Calamine exposes styled Excel dates as
 /// `DateTime`; some exports instead provide ISO strings or serial numbers.
+#[cfg(test)]
 pub(crate) fn parse_bulk_voucher_date(cell: &Data) -> Result<String, String> {
+    parse_bulk_voucher_date_with_system(cell, DateSystem::Auto).map(|parsed| parsed.value)
+}
+
+pub(crate) fn parse_bulk_voucher_date_with_system(
+    cell: &Data,
+    system: DateSystem,
+) -> Result<ParsedImportDate, String> {
     match cell {
         Data::DateTime(value) => {
             if !value.is_datetime() {
                 return Err("سلول تاریخ به‌صورت مدت‌زمان ذخیره شده است، نه تاریخ.".to_string());
             }
             let (year, month, day, _, _, _, _) = value.to_ymd_hms_milli();
-            gregorian_to_jalali_date(year as u32, month as u32, day as u32)
+            Ok(ParsedImportDate {
+                value: gregorian_to_jalali_date(year as u32, month as u32, day as u32)?,
+                ambiguous: false,
+            })
         }
-        Data::DateTimeIso(value) => parse_bulk_voucher_date_text(value),
-        Data::Int(value) => parse_bulk_voucher_date_number(*value as f64),
-        Data::Float(value) => parse_bulk_voucher_date_number(*value),
-        _ => parse_bulk_voucher_date_text(&cell_text(cell)),
+        // An ISO date string is Gregorian by definition, whatever the workbook
+        // setting says.
+        Data::DateTimeIso(value) => {
+            parse_bulk_voucher_date_text_with_system(value, DateSystem::Gregorian)
+        }
+        Data::Int(value) => parse_bulk_voucher_date_number_with_system(*value as f64, system),
+        Data::Float(value) => parse_bulk_voucher_date_number_with_system(*value, system),
+        _ => parse_bulk_voucher_date_text_with_system(&cell_text(cell), system),
     }
 }
 
-pub(crate) fn parse_bulk_voucher_date_number(value: f64) -> Result<String, String> {
+pub(crate) fn parse_bulk_voucher_date_number_with_system(
+    value: f64,
+    system: DateSystem,
+) -> Result<ParsedImportDate, String> {
     if !value.is_finite() {
         return Err("تاریخ عددی اکسل معتبر نیست.".to_string());
     }
     let rounded = value.round();
-    if (value - rounded).abs() <= 1e-9 && rounded >= 10_000_000.0 && rounded <= 31_779_999.0 {
-        return parse_bulk_voucher_date_text(&format!("{rounded:.0}"));
+    if (value - rounded).abs() <= 1e-9 && (10_000_000.0..=31_779_999.0).contains(&rounded) {
+        return parse_bulk_voucher_date_text_with_system(&format!("{rounded:.0}"), system);
     }
     // Numeric cells without a date number format are ambiguous. Excel serials
     // in the normal modern-date range are supported using the 1900 date system.
@@ -224,53 +274,78 @@ pub(crate) fn parse_bulk_voucher_date_number(value: f64) -> Result<String, Strin
         let excel_date =
             calamine::ExcelDateTime::new(value, calamine::ExcelDateTimeType::DateTime, false);
         let (year, month, day, _, _, _, _) = excel_date.to_ymd_hms_milli();
-        return gregorian_to_jalali_date(year as u32, month as u32, day as u32);
+        return Ok(ParsedImportDate {
+            value: gregorian_to_jalali_date(year as u32, month as u32, day as u32)?,
+            ambiguous: false,
+        });
     }
     Err("تاریخ عددی اکسل باید یک تاریخ شمسی ۸ رقمی یا شماره سریال معتبر تاریخ باشد.".to_string())
 }
 
-pub(crate) fn parse_bulk_voucher_date_text(input: &str) -> Result<String, String> {
+pub(crate) fn parse_bulk_voucher_date_text_with_system(
+    input: &str,
+    system: DateSystem,
+) -> Result<ParsedImportDate, String> {
     let normalized = db::normalize_digits(input.trim());
-    let date_part = normalized
-        .trim()
-        .split(|ch| ch == 'T' || ch == ' ')
-        .next()
-        .unwrap_or("");
+    let date_part = normalized.trim().split(['T', ' ']).next().unwrap_or("");
     let date_part = date_part.replace('-', "/");
 
-    if date_part.chars().all(|ch| ch.is_ascii_digit()) && date_part.len() == 8 {
-        let year = date_part[0..4]
-            .parse::<u32>()
-            .map_err(|_| "سال تاریخ اکسل معتبر نیست.".to_string())?;
-        let month = date_part[4..6]
-            .parse::<u32>()
-            .map_err(|_| "ماه تاریخ اکسل معتبر نیست.".to_string())?;
-        let day = date_part[6..8]
-            .parse::<u32>()
-            .map_err(|_| "روز تاریخ اکسل معتبر نیست.".to_string())?;
-        return if year >= 1600 {
-            gregorian_to_jalali_date(year, month, day)
+    let (year, month, day) =
+        if date_part.chars().all(|ch| ch.is_ascii_digit()) && date_part.len() == 8 {
+            (
+                date_part[0..4]
+                    .parse::<u32>()
+                    .map_err(|_| "سال تاریخ اکسل معتبر نیست.".to_string())?,
+                date_part[4..6]
+                    .parse::<u32>()
+                    .map_err(|_| "ماه تاریخ اکسل معتبر نیست.".to_string())?,
+                date_part[6..8]
+                    .parse::<u32>()
+                    .map_err(|_| "روز تاریخ اکسل معتبر نیست.".to_string())?,
+            )
         } else {
-            crate::vouchers::validate_voucher_date(&format!("{year:04}/{month:02}/{day:02}"))
+            let parts: Vec<&str> = date_part.split('/').collect();
+            if parts.len() != 3 {
+                return Ok(ParsedImportDate {
+                    value: crate::vouchers::validate_voucher_date(&date_part)?,
+                    ambiguous: false,
+                });
+            }
+            (
+                parts[0]
+                    .parse::<u32>()
+                    .map_err(|_| "سال تاریخ اکسل معتبر نیست.".to_string())?,
+                parts[1]
+                    .parse::<u32>()
+                    .map_err(|_| "ماه تاریخ اکسل معتبر نیست.".to_string())?,
+                parts[2]
+                    .parse::<u32>()
+                    .map_err(|_| "روز تاریخ اکسل معتبر نیست.".to_string())?,
+            )
         };
-    }
 
-    let parts: Vec<&str> = date_part.split('/').collect();
-    if parts.len() == 3 {
-        let year = parts[0]
-            .parse::<u32>()
-            .map_err(|_| "سال تاریخ اکسل معتبر نیست.".to_string())?;
-        let month = parts[1]
-            .parse::<u32>()
-            .map_err(|_| "ماه تاریخ اکسل معتبر نیست.".to_string())?;
-        let day = parts[2]
-            .parse::<u32>()
-            .map_err(|_| "روز تاریخ اکسل معتبر نیست.".to_string())?;
-        if year >= 1600 {
-            return gregorian_to_jalali_date(year, month, day);
-        }
+    let jalali = || {
+        crate::vouchers::validate_voucher_date(&format!("{year:04}/{month:02}/{day:02}")).map(
+            |value| ParsedImportDate {
+                value,
+                ambiguous: false,
+            },
+        )
+    };
+    match system {
+        DateSystem::Jalali => jalali(),
+        DateSystem::Gregorian => Ok(ParsedImportDate {
+            value: gregorian_to_jalali_date(year, month, day)?,
+            ambiguous: false,
+        }),
+        DateSystem::Auto if year >= 1600 => Ok(ParsedImportDate {
+            value: gregorian_to_jalali_date(year, month, day)?,
+            // A year in this range is a valid Jalali year too, so auto mode is
+            // guessing. Report it rather than hiding the assumption.
+            ambiguous: year <= 3177,
+        }),
+        DateSystem::Auto => jalali(),
     }
-    crate::vouchers::validate_voucher_date(&date_part)
 }
 
 pub(crate) fn normalize_imported_voucher_type(input: &str) -> Result<String, String> {

@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct BulkVoucherImport {
     pub file_name: String,
     pub sheet_name: String,
+    pub date_warning_count: usize,
+    pub date_warnings: Vec<String>,
     pub vouchers: Vec<VoucherInput>,
     pub accounts: Vec<ImportedAccount>,
 }
@@ -61,6 +63,10 @@ pub struct BulkVoucherPreview {
     pub conflicting_voucher_numbers: Vec<i64>,
     pub inferred_group_count: usize,
     pub inferred_group_mappings: Vec<InferredGroupMapping>,
+    /// Number of auto-detected dates that could belong to either calendar.
+    pub date_warning_count: usize,
+    /// A capped sample of those ambiguous rows for display in the preview.
+    pub date_warnings: Vec<String>,
 }
 
 #[derive(Default)]

@@ -262,6 +262,7 @@ function openBulkVoucherImport() {
   if (!dialog) return;
 
   let selecting = false;
+  let dateSystem = 'auto';
 
   const renderWizard = (activeStep, content) => {
     const progress = activeStep === 4 ? 100 : Math.round(((activeStep + 1) / steps.length) * 100);
@@ -344,6 +345,15 @@ function openBulkVoucherImport() {
     ${message ? `<div class="note" data-tone="danger" role="alert">${esc(message)}</div>` : ''}
     <section class="bulk-import-file-panel">
       <div class="bulk-import-file-heading"><span class="bulk-import-file-icon">${icon('i-doc')}</span><div><h2>محل بارگذاری فایل دفاتر</h2><p>کاربرگ دارای اطلاعات به‌صورت خودکار شناسایی می‌شود.</p></div><span class="bulk-import-format">XLSX / XLS</span></div>
+      <label class="bulk-import-date-system">
+        <span>نوع تاریخ فایل اکسل</span>
+        <select id="bulkImportDateSystem">
+          <option value="auto"${dateSystem === 'auto' ? ' selected' : ''}>تشخیص خودکار (سال ۱۶۰۰ به بعد میلادی)</option>
+          <option value="jalali"${dateSystem === 'jalali' ? ' selected' : ''}>شمسی</option>
+          <option value="gregorian"${dateSystem === 'gregorian' ? ' selected' : ''}>میلادی</option>
+        </select>
+      </label>
+      <div class="note">اگر تاریخ‌های فایل به‌صورت متنی نوشته شده‌اند، نوع آن‌ها را انتخاب کنید. در حالت تشخیص خودکار، سال‌های ۱۶۰۰ تا ۳۱۷۷ میلادی خوانده می‌شوند؛ این تاریخ‌ها در پیش‌نمایش به‌عنوان موارد مبهم هشدار داده می‌شوند. سلول‌های تاریخ واقعی اکسل همیشه میلادی و به شمسی تبدیل می‌شوند.</div>
       <div class="note">ستون‌های شماره سند، تاریخ، کد و عنوان کل، کد و عنوان معین، بدهکار و بستانکار الزامی هستند. در صورت استفاده از کد تفصیلی ۱، عنوان آن نیز لازم است. نوع سند، شرح سند و شرح ردیف اختیاری هستند. ستون کد گروه برای کدینگ‌های سفارشی اختیاری است؛ در صورت نبود آن، گروه از پیشوند کد حساب کل بر اساس کدینگ پیش‌فرض برنامه تشخیص داده می‌شود. ستون‌های ماهیت حساب نیز اختیاری‌اند؛ برای ساخت حساب در گروه‌های سایر درآمدها و هزینه‌ها، ماهیت حساب معین/تفصیلی را با مقدار بدهکار، بستانکار یا دوگانه مشخص کنید. تاریخ شمسی متنی یا تاریخ واقعی اکسل پذیرفته می‌شود و مبالغ باید عدد صحیح ریال باشند. کدهای دارای صفر ابتدایی یا بیش از ۱۵ رقم را در اکسل به‌صورت متن ذخیره کنید.</div>
     </section>`;
 
@@ -352,6 +362,8 @@ function openBulkVoucherImport() {
     cancelRequested = false;
     const conflicts = Number(preview.numberConflictCount) || 0;
     const inferred = Number(preview.inferredGroupCount) || 0;
+    const dateWarningCount = Number(preview.dateWarningCount) || 0;
+    const dateWarnings = Array.isArray(preview.dateWarnings) ? preview.dateWarnings : [];
     const inferredMappings = Array.isArray(preview.inferredGroupMappings) ? preview.inferredGroupMappings : [];
     const mappingRows = inferredMappings.map((item) => `
       <tr>
@@ -371,8 +383,10 @@ function openBulkVoucherImport() {
         <div><dt>حساب‌های شناسایی‌شده</dt><dd>${toFa(preview.accountCount)}</dd></div>
         <div><dt>حساب‌های جدید</dt><dd>${toFa(preview.newAccountCount)}</dd></div>
         <div><dt>شماره‌های تکراری</dt><dd>${toFa(conflicts)}</dd></div>
+        <div><dt>تاریخ‌های مبهم</dt><dd>${toFa(dateWarningCount)}</dd></div>
         <div><dt>گروه‌های حدس‌زده‌شده</dt><dd>${toFa(inferred)}</dd></div>
       </dl>
+      ${dateWarningCount ? `<div class="note" data-tone="warn" role="alert"><strong>${toFa(dateWarningCount)} تاریخ در حالت تشخیص خودکار میلادی تفسیر شد.</strong><span>اگر تاریخ‌های فایل شمسی هستند، نوع تاریخ را «شمسی» انتخاب کنید و فایل را دوباره تحلیل کنید. نمونه موارد:</span><ul>${dateWarnings.map((warning) => `<li>${esc(warning)}</li>`).join('')}</ul></div>` : ''}
       ${conflicts ? `<div class="bulk-import-conflicts"><strong>شماره‌های موجود در برنامه</strong><span>${(preview.conflictingVoucherNumbers || []).map((number) => toFa(number)).join('، ') || 'جزئیات شماره‌ها در دسترس نیست'}</span></div>` : ''}
       ${inferred ? `<div class="note" data-tone="warn" role="alert"><strong>گروه ${toFa(inferred)} حساب از روی پیشوند کد حدس زده شد.</strong><span>این حساب‌ها ستون «کد گروه» نداشتند. گروه پیشنهادی را در ستون «گروه نهایی» بررسی و در صورت نیاز اصلاح کنید؛ تغییر گروه یک حساب کل به همه حساب‌های حدسی همان شاخه اعمال می‌شود. تا زمانی که همه نگاشت‌ها تأیید نشوند، ثبت اسناد ممکن نیست. تصمیم نهایی در گزارش رویدادها (Audit) با منبع فایل، حدس یا اصلاح دستی ثبت می‌شود.</span></div>
       <div class="bulk-import-mappings-wrap">
@@ -461,7 +475,11 @@ function openBulkVoucherImport() {
     cancelRequested = false;
     showBusy(1, 'فایل در حال بررسی و اسناد در حال اعتبارسنجی هستند…', 'ساختار ستون‌ها، تاریخ‌ها، تراز اسناد و کدینگ حساب کنترل می‌شود.');
     try {
-      const preview = await invoke('analyze_bulk_voucher_excel');
+      const chosen = dialog.body.querySelector('#bulkImportDateSystem')?.value;
+      if (chosen === 'auto' || chosen === 'jalali' || chosen === 'gregorian') {
+        dateSystem = chosen;
+      }
+      const preview = await invoke('analyze_bulk_voucher_excel', { dateSystem });
       if (!preview) {
         busy = false;
         renderWizard(0, selectContent('انتخاب فایل لغو شد.'));

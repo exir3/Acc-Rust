@@ -26,7 +26,9 @@ mod schema;
 mod settings;
 mod validation;
 
-pub(crate) use backup::{prune_backup_files, prune_restore_safety_files};
+pub(crate) use backup::{
+    cleanup_stale_plaintext_temps, prune_backup_files, prune_restore_safety_files,
+};
 pub use common::{normalize_digits, DB_FILE_NAME};
 pub use connection::initialize;
 pub use model::{
@@ -65,5 +67,36 @@ pub(crate) fn memory_database() -> Database {
     db
 }
 
+/// Opens a real on-disk SQLite database with the full schema and starter
+/// chart. Tests that cross the file boundary (backup, restore, Excel, two
+/// connections) use this instead of an in-memory database.
+#[cfg(test)]
+pub(crate) fn file_database(path: &std::path::Path) -> Database {
+    let mut conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+    apply_base_schema(&conn).unwrap();
+    apply_schema_migrations(&mut conn).unwrap();
+    seed_default_groups(&mut conn).unwrap();
+    seed_default_accounts(&mut conn).unwrap();
+    seed_default_settings(&conn).unwrap();
+    let db = Database::default();
+    db.attach(conn, path.to_path_buf());
+    db
+}
+
+/// Creates a fresh temporary directory for a real-file test.
+#[cfg(test)]
+pub(crate) fn test_temp_dir(prefix: &str) -> std::path::PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or(0);
+    let directory = std::env::temp_dir().join(format!("hesabdari-{prefix}-{stamp}"));
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+#[cfg(test)]
+mod integration_tests;
 #[cfg(test)]
 mod tests;

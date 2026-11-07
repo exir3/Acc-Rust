@@ -30,6 +30,11 @@ pub struct AccountImportPreview {
     pub file_path: String,
     /// Short-lived token that binds confirmation to this exact preview.
     pub preview_token: String,
+    /// Worksheet whose layout was selected for this preview.
+    pub sheet_name: String,
+    /// Every worksheet that looks like an account layout. More than one is
+    /// shown to the operator instead of silently picking by tab order.
+    pub available_sheets: Vec<String>,
     pub created_count: usize,
     pub skipped_count: usize,
     pub created_codes: Vec<String>,
@@ -59,6 +64,8 @@ struct PlannedAccountRow {
 }
 
 pub(crate) struct AccountWorkbookPlan {
+    sheet_name: String,
+    available_sheets: Vec<String>,
     rows: Vec<PlannedAccountRow>,
     created_codes: Vec<String>,
     skipped_codes: Vec<String>,
@@ -310,13 +317,40 @@ fn plan_account_workbook(
     ensure_excel_file_size(path)?;
     let mut workbook =
         open_workbook_auto(path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
-    let range = match workbook.worksheet_range_at(0) {
-        Some(Ok(range)) => range,
-        Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
-        None => return Err("فایل اکسل هیچ کاربرگی ندارد.".to_string()),
+    let sheet_names = workbook.sheet_names().to_vec();
+    if sheet_names.is_empty() {
+        return Err("فایل اکسل هیچ کاربرگی ندارد.".to_string());
+    }
+
+    // Cover sheets and instruction tabs are common in exported workbooks. Find
+    // every worksheet that has the account layout and use the first one; the
+    // preview lists all matches so a multi-sheet file is never ambiguous.
+    let mut available_sheets = Vec::new();
+    for sheet_name in &sheet_names {
+        let range = workbook
+            .worksheet_range(sheet_name)
+            .map_err(|error| format!("خواندن کاربرگ «{sheet_name}» ناموفق بود: {error}"))?;
+        if find_account_columns(&range).is_some() {
+            available_sheets.push(sheet_name.clone());
+        }
+    }
+    let Some(sheet_name) = available_sheets.first().cloned() else {
+        return Err("ستون‌های فایل با قالب حساب‌های WebApp مطابقت ندارد؛ ستون‌های «کد گروه»، «کد کل» و «عنوان کل» الزامی هستند.".to_string());
     };
-    ensure_sheet_dimensions(&range, MAX_ACCOUNT_IMPORT_ROWS, MAX_SHEET_COLUMNS)?;
-    let Some((header_row, columns)) = find_account_columns(&range) else {
+    let range = workbook
+        .worksheet_range(&sheet_name)
+        .map_err(|error| format!("خواندن کاربرگ «{sheet_name}» ناموفق بود: {error}"))?;
+    plan_account_sheet(database, &sheet_name, &available_sheets, &range)
+}
+
+fn plan_account_sheet(
+    database: &db::Database,
+    sheet_name: &str,
+    available_sheets: &[String],
+    range: &calamine::Range<Data>,
+) -> Result<AccountWorkbookPlan, String> {
+    ensure_sheet_dimensions(range, MAX_ACCOUNT_IMPORT_ROWS, MAX_SHEET_COLUMNS)?;
+    let Some((header_row, columns)) = find_account_columns(range) else {
         return Err("ستون‌های فایل با قالب حساب‌های WebApp مطابقت ندارد؛ ستون‌های «کد گروه»، «کد کل» و «عنوان کل» الزامی هستند.".to_string());
     };
     let read = |row: &[Data], index: Option<usize>| -> String {
@@ -338,6 +372,8 @@ fn plan_account_workbook(
         groups.into_iter().map(|group| group.code).collect();
     let mut planned: BTreeMap<String, db::NewAccount> = BTreeMap::new();
     let mut plan = AccountWorkbookPlan {
+        sheet_name: sheet_name.to_string(),
+        available_sheets: available_sheets.to_vec(),
         rows: Vec::new(),
         created_codes: Vec::new(),
         skipped_codes: Vec::new(),
@@ -429,7 +465,8 @@ fn plan_account_workbook(
                     return Err(format!("نام حساب «{}» بیش از ۲۵۵ کاراکتر است.", name));
                 }
                 // سلسله‌مراتب حساب با parent_code صریح اعتبارسنجی می‌شود؛
-                // الزام پیشوندی بین کد فرزند و والد، بخشی از مدل حسابداری نیست.
+                // الزام پیشوند/طول ثابت بین کد فرزند و والد بخشی از مدل
+                // حسابداری نیست. سیاست واحد در Docs/Account-Code-Policy.md است.
                 let nature = account_nature(raw_nature, &parent_nature)?;
                 if let Some(existing) = accounts.iter().find(|account| account.code == code) {
                     if existing.level != level
@@ -548,6 +585,8 @@ pub(crate) fn preview_accounts_at(
     let preview = AccountImportPreview {
         file_path: canonical_path.to_string_lossy().to_string(),
         preview_token: token.clone(),
+        sheet_name: plan.sheet_name.clone(),
+        available_sheets: plan.available_sheets.clone(),
         created_count: plan.created_codes.len(),
         skipped_count: plan.skipped_codes.len(),
         created_codes: plan.created_codes.clone(),

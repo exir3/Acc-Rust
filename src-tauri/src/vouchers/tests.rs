@@ -505,6 +505,8 @@ fn bulk_import_is_atomic_and_supports_large_vouchers() {
         crate::excel::BulkVoucherImport {
             file_name: "آزمایشی.xlsx".to_string(),
             sheet_name: "اسناد".to_string(),
+            date_warning_count: 0,
+            date_warnings: Vec::new(),
             accounts: source_accounts(general_code, subsidiary_code),
             vouchers: vec![VoucherInput {
                 id: None,
@@ -560,6 +562,8 @@ fn bulk_import_cancellation_rolls_back_every_voucher_and_account() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "cancel.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: vec![
             crate::excel::ImportedAccount {
                 code: "903".to_string(),
@@ -623,6 +627,8 @@ fn bulk_import_cancellation_at_the_final_check_rolls_back_the_whole_batch() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "final-cancel.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: vec![
             crate::excel::ImportedAccount {
                 code: "904".to_string(),
@@ -703,6 +709,8 @@ fn bulk_import_applies_a_confirmed_override_to_the_whole_inferred_branch() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "override.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: vec![
             crate::excel::ImportedAccount {
                 code: "905".to_string(),
@@ -783,6 +791,8 @@ fn bulk_import_rejects_an_override_for_a_group_read_from_the_file() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "explicit-group.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: vec![crate::excel::ImportedAccount {
             code: "906".to_string(),
             name: "حساب کل با گروه صریح".to_string(),
@@ -826,6 +836,8 @@ fn bulk_import_preview_reports_inferred_groups_and_audits_them() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "inferred.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: vec![
             crate::excel::ImportedAccount {
                 code: "901".to_string(),
@@ -891,6 +903,8 @@ fn bulk_import_supports_level3_as_a_separate_detail1_reference() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "detail1.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: vec![
             crate::excel::ImportedAccount {
                 code: "991".to_string(),
@@ -965,6 +979,8 @@ fn bulk_import_rejects_inactive_existing_parent_accounts() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "inactive-parent.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: vec![
             crate::excel::ImportedAccount {
                 code: "1101".to_string(),
@@ -1017,6 +1033,8 @@ fn bulk_import_allows_a_posting_base_to_gain_an_imported_detail_child() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "mixed-level.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: vec![
             crate::excel::ImportedAccount {
                 code: "991".to_string(),
@@ -1090,6 +1108,8 @@ fn bulk_import_preview_requires_nature_for_new_other_group_children() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "other-group.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: vec![
             crate::excel::ImportedAccount {
                 code: "7201".to_string(),
@@ -1133,6 +1153,8 @@ fn bulk_import_accepts_direct_posting_to_a_level1_account_with_children() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "legacy.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: Vec::new(),
         vouchers: vec![VoucherInput {
             id: None,
@@ -2542,6 +2564,8 @@ fn closed_fiscal_year_blocks_bulk_import_and_line_transfer() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "closed.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: Vec::new(),
         vouchers: vec![{
             let mut imported = cash_sale("1405/01/11", 2_000);
@@ -2594,6 +2618,8 @@ fn bulk_import_replays_a_completed_batch_without_duplicates() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "replay.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: Vec::new(),
         vouchers: vec![{
             let mut imported = cash_sale("1405/01/10", 1_000);
@@ -2612,6 +2638,8 @@ fn import_payload_hash_is_versioned_sha256_and_detects_small_changes() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "fingerprint.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: Vec::new(),
         vouchers: vec![{
             let mut imported = cash_sale("1405/01/10", 2_000);
@@ -2635,6 +2663,8 @@ fn legacy_fnv_import_batch_is_still_treated_as_a_replay() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "legacy-replay.xlsx".to_string(),
         sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
         accounts: Vec::new(),
         vouchers: vec![{
             let mut imported = cash_sale("1405/01/10", 3_000);

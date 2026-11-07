@@ -259,6 +259,8 @@ impl Database {
     ) -> Result<crate::excel::BulkVoucherPreview, String> {
         let file_name = import.file_name.clone();
         let sheet_name = import.sheet_name.clone();
+        let date_warning_count = import.date_warning_count;
+        let date_warnings = import.date_warnings.clone();
         let account_rows = import.accounts.clone();
         let account_codes: HashSet<String> = account_rows
             .iter()
@@ -483,6 +485,8 @@ impl Database {
                 conflicting_voucher_numbers,
                 inferred_group_count,
                 inferred_group_mappings,
+                date_warning_count,
+                date_warnings,
             })
         })
     }

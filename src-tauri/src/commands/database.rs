@@ -1,6 +1,7 @@
 //! Database backup, restore and report-file commands.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use tauri::{AppHandle, Emitter, State, WebviewWindow};
@@ -117,6 +118,66 @@ pub(crate) fn choose_restore_backup(
     }))
 }
 
+const RESTORE_SELECTION_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// Clears `restore_in_progress` however the command exits, including an early
+/// error return or a panic inside the restore path.
+struct RestoreInProgress<'a>(&'a Mutex<bool>);
+
+impl Drop for RestoreInProgress<'_> {
+    fn drop(&mut self) {
+        *lock(self.0) = false;
+    }
+}
+
+fn begin_restore(slot: &Mutex<bool>) -> Result<RestoreInProgress<'_>, String> {
+    let mut running = lock(slot);
+    if *running {
+        return Err("یک بازیابی دیگر در حال انجام است؛ تا پایان آن صبر کنید.".to_string());
+    }
+    *running = true;
+    Ok(RestoreInProgress(slot))
+}
+
+/// Reads the pending selection without consuming it. The token is cleared only
+/// after a successful restore, so a wrong password, a changed file or an
+/// expired selection can be retried without picking the file again.
+fn pending_restore_selection(
+    slot: &Mutex<Option<RestoreSelection>>,
+) -> Result<RestoreSelection, String> {
+    lock(slot)
+        .clone()
+        .ok_or_else(|| "فایل پشتیبان انتخاب‌شده منقضی شده است؛ دوباره انتخاب کنید.".to_string())
+}
+
+fn clear_restore_selection(slot: &Mutex<Option<RestoreSelection>>, token: &str) {
+    let mut stored = lock(slot);
+    if stored
+        .as_ref()
+        .is_some_and(|selection| selection.token == token)
+    {
+        *stored = None;
+    }
+}
+
+fn validate_restore_selection(
+    selection: &RestoreSelection,
+    token: &str,
+    now: SystemTime,
+) -> Result<(), String> {
+    if selection.token != token {
+        return Err("توکن بازیابی معتبر نیست؛ دوباره فایل را انتخاب کنید.".to_string());
+    }
+    if now
+        .duration_since(selection.created_at)
+        .map(|elapsed| elapsed > RESTORE_SELECTION_TTL)
+        .unwrap_or(true)
+    {
+        return Err("انتخاب فایل پشتیبان منقضی شده است؛ دوباره فایل را انتخاب کنید.".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub(crate) fn restore_database_file(
     app: AppHandle,
@@ -126,36 +187,33 @@ pub(crate) fn restore_database_file(
     password: Option<String>,
 ) -> Result<String, String> {
     require_window(&window, &["main"])?;
-    let selection = lock(&state.restore_selection)
-        .take()
-        .ok_or_else(|| "فایل پشتیبان انتخاب‌شده منقضی شده است؛ دوباره انتخاب کنید.".to_string())?;
-    if selection.token != token {
-        return Err("توکن بازیابی معتبر نیست؛ دوباره فایل را انتخاب کنید.".to_string());
-    }
-    if selection
-        .created_at
-        .elapsed()
-        .map(|elapsed| elapsed > Duration::from_secs(15 * 60))
-        .unwrap_or(true)
-    {
-        return Err("انتخاب فایل پشتیبان منقضی شده است؛ دوباره فایل را انتخاب کنید.".to_string());
-    }
+    let _restore_guard = begin_restore(&state.restore_in_progress)?;
+    let selection = pending_restore_selection(&state.restore_selection)?;
+    validate_restore_selection(&selection, &token, SystemTime::now())?;
     let current_hash = db::sha256_file(&selection.path)?;
     if current_hash != selection.file_sha256 {
         return Err("فایل پشتیبان پس از انتخاب تغییر کرده است و بازیابی انجام نشد.".to_string());
     }
+    // Validate the password presence before any destructive work. A wrong
+    // password is rejected inside the restore routine and keeps the selection.
+    let password = if selection.encrypted {
+        Some(
+            password
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "این پشتیبان رمزنگاری‌شده است؛ رمز عبور را وارد کنید.".to_string())?,
+        )
+    } else {
+        None
+    };
 
     let database_path = PathBuf::from(state.database.path_string());
-    let safety_path = if selection.encrypted {
-        let password = password
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "این پشتیبان رمزنگاری‌شده است؛ رمز عبور را وارد کنید.".to_string())?;
-        state
+    let safety_path = match password.as_deref() {
+        Some(password) => state
             .database
-            .restore_encrypted_from(&selection.path, &password)?
-    } else {
-        state.database.restore_from(&selection.path)?
+            .restore_encrypted_from(&selection.path, password)?,
+        None => state.database.restore_from(&selection.path)?,
     };
+    clear_restore_selection(&state.restore_selection, &selection.token);
     let _ = db::prune_restore_safety_files(&database_path);
     notify_accounts_changed(&app);
     let _ = app.emit("database-restored", ());
@@ -377,4 +435,73 @@ pub(crate) fn resolve_legacy_level4_account(
     notify_accounts_changed(&app);
     let _ = app.emit("database-restored", ());
     Ok(result)
+}
+
+#[cfg(test)]
+mod restore_selection_tests {
+    use super::*;
+
+    fn selection(token: &str, created_at: SystemTime) -> RestoreSelection {
+        RestoreSelection {
+            token: token.to_string(),
+            path: PathBuf::from("backup.hacc"),
+            file_sha256: "abc".to_string(),
+            encrypted: true,
+            created_at,
+        }
+    }
+
+    #[test]
+    fn pending_selection_is_not_consumed_before_restore_succeeds() {
+        let slot = Mutex::new(Some(selection("token-1", SystemTime::now())));
+        let pending = pending_restore_selection(&slot).expect("selection is available");
+        assert_eq!(pending.token, "token-1");
+        assert!(
+            slot.lock().unwrap().is_some(),
+            "reading the pending selection must not remove it"
+        );
+    }
+
+    #[test]
+    fn wrong_token_and_expired_selection_keep_the_choice() {
+        let slot = Mutex::new(Some(selection("token-1", SystemTime::now())));
+
+        let error = validate_restore_selection(
+            &pending_restore_selection(&slot).unwrap(),
+            "other-token",
+            SystemTime::now(),
+        )
+        .unwrap_err();
+        assert!(error.contains("توکن"));
+        assert!(slot.lock().unwrap().is_some());
+
+        let expired_at = SystemTime::now() - RESTORE_SELECTION_TTL - Duration::from_secs(1);
+        let expired = selection("token-1", expired_at);
+        let error = validate_restore_selection(&expired, "token-1", SystemTime::now()).unwrap_err();
+        assert!(error.contains("منقضی"));
+    }
+
+    #[test]
+    fn clearing_only_consumes_the_matching_token() {
+        let slot = Mutex::new(Some(selection("current", SystemTime::now())));
+        clear_restore_selection(&slot, "stale");
+        assert!(
+            slot.lock().unwrap().is_some(),
+            "a stale response must not clear a newer selection"
+        );
+
+        clear_restore_selection(&slot, "current");
+        assert!(slot.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn restore_guard_blocks_concurrent_restores_and_resets_on_drop() {
+        let slot = Mutex::new(false);
+        {
+            let _guard = begin_restore(&slot).expect("first restore starts");
+            assert!(begin_restore(&slot).is_err());
+        }
+        assert!(!*slot.lock().unwrap());
+        assert!(begin_restore(&slot).is_ok());
+    }
 }

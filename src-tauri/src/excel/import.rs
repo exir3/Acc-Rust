@@ -463,16 +463,19 @@ fn scoped_detail_code(
 /// Cover sheets and other unrelated tabs are skipped instead of making the
 /// import depend on the workbook's tab order.
 pub fn import_vouchers() -> Result<Option<BulkVoucherImport>, String> {
-    import_vouchers_with_progress(&mut |_, _| {}, &|| false)
+    import_vouchers_with_progress(None, &mut |_, _| {}, &|| false)
 }
 
 /// Same as [`import_vouchers`], but reports parsed rows and lets the caller
 /// abort a long parse. The import stays all-or-nothing; cancelling never
-/// publishes a partial workbook.
+/// publishes a partial workbook. `date_system` selects how text dates are read
+/// (`auto`, `jalali` or `gregorian`).
 pub fn import_vouchers_with_progress(
+    date_system: Option<&str>,
     on_progress: &mut dyn FnMut(usize, usize),
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<BulkVoucherImport>, String> {
+    let date_system = DateSystem::parse(date_system)?;
     let Some(path) = rfd::FileDialog::new()
         .set_title("ورود دسته‌جمعی اسناد از اکسل")
         .add_filter("Excel", &["xlsx", "xlsm", "xls", "xlsb", "ods"])
@@ -481,16 +484,17 @@ pub fn import_vouchers_with_progress(
         return Ok(None);
     };
 
-    parse_bulk_vouchers_with_progress(&path, on_progress, is_cancelled).map(Some)
+    parse_bulk_vouchers_with_progress(&path, date_system, on_progress, is_cancelled).map(Some)
 }
 
 #[cfg(test)]
 pub(crate) fn parse_bulk_vouchers(path: &Path) -> Result<BulkVoucherImport, String> {
-    parse_bulk_vouchers_with_progress(path, &mut |_, _| {}, &|| false)
+    parse_bulk_vouchers_with_progress(path, DateSystem::Auto, &mut |_, _| {}, &|| false)
 }
 
 pub(crate) fn parse_bulk_vouchers_with_progress(
     path: &Path,
+    date_system: DateSystem,
     on_progress: &mut dyn FnMut(usize, usize),
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<BulkVoucherImport, String> {
@@ -517,6 +521,7 @@ pub(crate) fn parse_bulk_vouchers_with_progress(
             path,
             &sheet_name,
             &range,
+            date_system,
             on_progress,
             is_cancelled,
         ) {
@@ -545,13 +550,21 @@ pub(crate) fn parse_bulk_voucher_sheet(
     sheet_name: &str,
     range: &calamine::Range<Data>,
 ) -> Result<BulkVoucherImport, String> {
-    parse_bulk_voucher_sheet_with_progress(path, sheet_name, range, &mut |_, _| {}, &|| false)
+    parse_bulk_voucher_sheet_with_progress(
+        path,
+        sheet_name,
+        range,
+        DateSystem::Auto,
+        &mut |_, _| {},
+        &|| false,
+    )
 }
 
 pub(crate) fn parse_bulk_voucher_sheet_with_progress(
     path: &Path,
     sheet_name: &str,
     range: &calamine::Range<Data>,
+    date_system: DateSystem,
     on_progress: &mut dyn FnMut(usize, usize),
     is_cancelled: &dyn Fn() -> bool,
 ) -> Result<BulkVoucherImport, String> {
@@ -573,6 +586,10 @@ pub(crate) fn parse_bulk_voucher_sheet_with_progress(
     let mut voucher_types = HashMap::<i64, Option<String>>::new();
     let mut voucher_descriptions = HashMap::<i64, Option<String>>::new();
     let mut last_voucher_number = None::<i64>;
+    // Automatic date detection may have to guess between Jalali and Gregorian;
+    // collect those rows so the preview can ask the operator to confirm.
+    let mut date_warnings = Vec::<String>::new();
+    let mut date_warning_count = 0usize;
 
     let first_excel_row = range.start().map(|(row, _)| row as usize).unwrap_or(0);
     let total_rows = range.height().saturating_sub(header_row + 1);
@@ -683,9 +700,21 @@ pub(crate) fn parse_bulk_voucher_sheet_with_progress(
                 )
             })?
         } else {
-            parse_bulk_voucher_date(&date_cell).map_err(|error| {
-                format!("تاریخ ردیف {} اکسل: {error}", db::to_fa_digits(excel_row))
-            })?
+            let parsed =
+                parse_bulk_voucher_date_with_system(&date_cell, date_system).map_err(|error| {
+                    format!("تاریخ ردیف {} اکسل: {error}", db::to_fa_digits(excel_row))
+                })?;
+            if parsed.ambiguous {
+                date_warning_count += 1;
+                if date_warnings.len() < 20 {
+                    date_warnings.push(format!(
+                        "ردیف {} اکسل: تاریخ «{}» در حالت تشخیص خودکار میلادی تفسیر شد؛ اگر شمسی است، نوع تاریخ فایل را در تنظیمات ورود انتخاب کنید.",
+                        db::to_fa_digits(excel_row),
+                        cell_text(&date_cell)
+                    ));
+                }
+            }
+            parsed.value
         };
 
         let general_code = parse_account_code_data_cell(
@@ -944,6 +973,8 @@ pub(crate) fn parse_bulk_voucher_sheet_with_progress(
             .unwrap_or("اکسل")
             .to_string(),
         sheet_name: sheet_name.to_string(),
+        date_warning_count,
+        date_warnings,
         vouchers: voucher_order
             .into_iter()
             .filter_map(|number| vouchers.remove(&number))

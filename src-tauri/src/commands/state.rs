@@ -30,6 +30,7 @@ pub(crate) fn notify_vouchers_changed(app: &AppHandle) {
 /// A backup file the user picked for restore. The command layer accepts only
 /// the opaque token, never a path from the renderer, and re-checks the file
 /// hash so a file cannot change between selection and restore.
+#[derive(Clone)]
 pub(crate) struct RestoreSelection {
     pub(crate) token: String,
     pub(crate) path: PathBuf,
@@ -65,6 +66,9 @@ pub struct AppState {
     pub(crate) report_files: Mutex<HashSet<PathBuf>>,
     /// Backup file chosen for restore, bound to its hash and a short token.
     pub(crate) restore_selection: Mutex<Option<RestoreSelection>>,
+    /// Set while a restore is running so two windows cannot replace the live
+    /// database at the same time. Cleared by a guard on every exit path.
+    pub(crate) restore_in_progress: Mutex<bool>,
 }
 
 pub(crate) fn report_meta(

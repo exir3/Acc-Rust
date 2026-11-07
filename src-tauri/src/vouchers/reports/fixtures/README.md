@@ -63,7 +63,11 @@ The values above were derived from the accounting identities of the dataset and
 reviewed against the report code. They are an **internal reference, not yet a
 formal accountant/auditor sign-off**. Before an official release, the
 responsible accountant should review the dataset and expected values and record
-approval in the release checklist. CI already enforces that no report change
+approval in `Docs/Accounting-Report-Signoff.md`. The release CI job runs
+`node scripts/check-report-signoff.mjs`; it fails unless that document says
+`Status: approved`, names the reviewer and date, and its `Fixture-SHA256`
+matches this directory's `report_reference.json`. Editing the fixture therefore
+invalidates the previous approval. CI already enforces that no report change
 passes without an intentional fixture update.
 
 ## Updating the fixture

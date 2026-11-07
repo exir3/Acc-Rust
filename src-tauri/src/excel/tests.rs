@@ -9,6 +9,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 #[cfg(test)]
+// The file is itself `tests.rs`; the inner module keeps the usual `mod tests`
+// layout so every test names the same way as elsewhere in the crate.
+#[allow(clippy::module_inception)]
 mod tests {
     use super::*;
 
@@ -515,6 +518,7 @@ mod tests {
             Path::new("cancel.xlsx"),
             "اسناد",
             &range,
+            DateSystem::Auto,
             &mut |_, _| {},
             &|| true,
         )
@@ -526,6 +530,7 @@ mod tests {
             Path::new("cancel.xlsx"),
             "اسناد",
             &range,
+            DateSystem::Auto,
             &mut |processed, total| last_progress = Some((processed, total)),
             &|| false,
         )
@@ -629,6 +634,42 @@ mod tests {
             "1403/01/01"
         );
         assert!(parse_bulk_voucher_date(&text("۱۴۰۴/۱۲/۳۰")).is_err());
+    }
+
+    #[test]
+    fn bulk_import_date_system_can_force_jalali_or_gregorian_and_flags_auto_ambiguity() {
+        let auto = parse_bulk_voucher_date_with_system(&text("2024-03-20"), DateSystem::Auto)
+            .expect("auto date");
+        assert_eq!(auto.value, "1403/01/01");
+        assert!(auto.ambiguous);
+
+        let jalali_style =
+            parse_bulk_voucher_date_with_system(&text("1405/01/05"), DateSystem::Auto)
+                .expect("auto jalali date");
+        assert_eq!(jalali_style.value, "1405/01/05");
+        assert!(!jalali_style.ambiguous);
+
+        let forced_jalali =
+            parse_bulk_voucher_date_with_system(&text("2024-03-20"), DateSystem::Jalali)
+                .expect("forced jalali date");
+        assert_eq!(forced_jalali.value, "2024/03/20");
+        assert!(!forced_jalali.ambiguous);
+
+        let forced_gregorian =
+            parse_bulk_voucher_date_with_system(&text("2024-03-20"), DateSystem::Gregorian)
+                .expect("forced gregorian date");
+        assert_eq!(forced_gregorian.value, "1403/01/01");
+
+        assert_eq!(DateSystem::parse(None).unwrap(), DateSystem::Auto);
+        assert_eq!(
+            DateSystem::parse(Some("jalali")).unwrap(),
+            DateSystem::Jalali
+        );
+        assert_eq!(
+            DateSystem::parse(Some("gregorian")).unwrap(),
+            DateSystem::Gregorian
+        );
+        assert!(DateSystem::parse(Some(" lunar ")).is_err());
     }
 
     #[test]
@@ -850,6 +891,96 @@ mod tests {
         let database = crate::db::memory_database();
         assert_eq!(database.import_vouchers(import, false).unwrap(), 5282);
         assert_eq!(database.get_voucher(1).unwrap().unwrap().lines.len(), 598);
+    }
+
+    fn write_bulk_import_workbook(path: &Path) {
+        let mut workbook = rust_xlsxwriter::Workbook::new();
+        let sheet = workbook.add_worksheet();
+        let headers = [
+            "شماره سند",
+            "تاریخ",
+            "نوع سند",
+            "شرح سند",
+            "کد گروه",
+            "کد کل",
+            "عنوان کل",
+            "ماهیت کل",
+            "کد معین",
+            "عنوان معین",
+            "ماهیت معین",
+            "بدهکار",
+            "بستانکار",
+        ];
+        for (column, header) in headers.iter().enumerate() {
+            sheet
+                .write_string(0, column as u16, *header)
+                .expect("header");
+        }
+        let rows = [
+            [
+                "1",
+                "1405/01/10",
+                "",
+                "آزمون",
+                "1",
+                "95",
+                "کل آزمون",
+                "بدهکار",
+                "9501",
+                "معین آزمون",
+                "بدهکار",
+                "1000",
+                "0",
+            ],
+            [
+                "1",
+                "1405/01/10",
+                "",
+                "آزمون",
+                "7",
+                "45",
+                "کل درآمد آزمون",
+                "بستانکار",
+                "4501",
+                "معین درآمد آزمون",
+                "بستانکار",
+                "0",
+                "1000",
+            ],
+        ];
+        for (index, row) in rows.iter().enumerate() {
+            for (column, value) in row.iter().enumerate() {
+                sheet
+                    .write_string(index as u32 + 1, column as u16, *value)
+                    .expect("cell");
+            }
+        }
+        workbook.save(path).expect("save workbook");
+    }
+
+    #[test]
+    fn real_file_database_imports_a_generated_bulk_workbook() {
+        let directory = crate::db::test_temp_dir("excel-integration");
+        let database_path = directory.join(crate::db::DB_FILE_NAME);
+        let workbook_path = directory.join("bulk.xlsx");
+        let db = crate::db::file_database(&database_path);
+        write_bulk_import_workbook(&workbook_path);
+
+        let import = parse_bulk_vouchers(&workbook_path).expect("bulk workbook should parse");
+        assert_eq!(import.vouchers.len(), 1);
+        assert_eq!(import.vouchers[0].lines.len(), 2);
+        assert_eq!(db.import_vouchers(import, false).unwrap(), 1);
+
+        let voucher = db.get_voucher(1).unwrap().expect("imported voucher");
+        assert_eq!(voucher.lines.len(), 2);
+        assert_eq!(voucher.total_debit, 1_000);
+        assert_eq!(voucher.total_credit, 1_000);
+        let accounts = db.list_accounts().unwrap().accounts;
+        assert!(accounts.iter().any(|account| account.code == "9501"));
+        assert!(accounts.iter().any(|account| account.code == "4501"));
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     fn write_account_import_workbook(path: &Path) {

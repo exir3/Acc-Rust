@@ -110,6 +110,13 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
         .map_err(|e| format!("ساخت پوشه پایگاه داده ناموفق بود: {e}"))?;
 
     let path = data_dir.join(DB_FILE_NAME);
+    // A crash can leave an unencrypted portable-backup temp behind. Remove
+    // stale leftovers before the database is opened; failure here is only
+    // logged because a leftover file must not stop the application from
+    // starting.
+    if let Err(error) = super::cleanup_stale_plaintext_temps(&path) {
+        eprintln!("[hesabdari] stale plaintext temp cleanup failed: {error}");
+    }
     if cfg!(debug_assertions) {
         // The smoke test only sees the child process; make the effective paths
         // visible before the first fallible database step.

@@ -4,6 +4,9 @@ use super::*;
 use crate::report::layout::portable_base_style;
 use crate::vouchers::{BalanceSheetReport, TrialBalanceReport, Voucher};
 
+// The file is itself `tests.rs`; the inner module keeps the usual `mod tests`
+// layout so every test names the same way as elsewhere in the crate.
+#[allow(clippy::module_inception)]
 mod tests {
     use super::*;
 

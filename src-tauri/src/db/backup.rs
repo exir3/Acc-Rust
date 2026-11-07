@@ -318,17 +318,16 @@ impl Database {
     pub fn backup_encrypted_to(&self, destination: &Path, password: &str) -> Result<(), String> {
         super::portable::validate_portable_password(password)?;
         let current_path = PathBuf::from(self.path_string());
-        let plaintext = unique_sibling_path(&current_path, "portable-backup-tmp");
-        let result = self.backup_to(&plaintext).and_then(|()| {
+        let plaintext =
+            PlaintextTempFile::new(unique_sibling_path(&current_path, "portable-backup-tmp"));
+        self.backup_to(plaintext.path()).and_then(|()| {
             super::portable::encrypt_backup_file(
-                &plaintext,
+                plaintext.path(),
                 destination,
                 password,
                 CURRENT_SCHEMA_VERSION,
             )
-        });
-        let _ = std::fs::remove_file(&plaintext);
-        result
+        })
     }
 
     /// Decrypts a portable backup into a short-lived file and then runs the
@@ -340,11 +339,10 @@ impl Database {
         password: &str,
     ) -> Result<PathBuf, String> {
         let current_path = PathBuf::from(self.path_string());
-        let plaintext = unique_sibling_path(&current_path, "portable-restore-tmp");
-        let result = super::portable::decrypt_backup_file(source_path, &plaintext, password)
-            .and_then(|()| self.restore_from_internal(&plaintext, source_path));
-        let _ = std::fs::remove_file(&plaintext);
-        result
+        let plaintext =
+            PlaintextTempFile::new(unique_sibling_path(&current_path, "portable-restore-tmp"));
+        super::portable::decrypt_backup_file(source_path, plaintext.path(), password)
+            .and_then(|()| self.restore_from_internal(plaintext.path(), source_path))
     }
 
     fn restore_from_internal(
@@ -913,6 +911,110 @@ pub(crate) fn unique_sibling_path(path: &Path, suffix: &str) -> PathBuf {
         "{file_name}.{suffix}-{}-{stamp}",
         std::process::id()
     ))
+}
+
+/// Creates a file that only the current user can read. Portable backup code
+/// writes plaintext database copies to such files before encrypting them, so a
+/// world-readable temporary file would defeat the point of the encryption.
+pub(crate) fn create_private_file(path: &Path) -> Result<std::fs::File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|error| format!("ساخت فایل موقت خصوصی ناموفق بود: {error}"))
+}
+
+/// Removes a temporary file on every exit path, including early returns and
+/// panics. Plaintext database copies must never outlive the operation that
+/// needed them.
+pub(crate) struct PlaintextTempFile {
+    path: PathBuf,
+}
+
+impl PlaintextTempFile {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for PlaintextTempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Temporary file suffixes that may contain unencrypted database contents.
+const PLAINTEXT_TEMP_MARKERS: [&str; 4] = [
+    ".portable-backup-tmp-",
+    ".portable-restore-tmp-",
+    ".portable-tmp-",
+    ".portable-plain-tmp-",
+];
+
+/// A crashed process can leave a plaintext portable-backup temporary file
+/// behind because `Drop` does not run. Delete such leftovers at startup, but
+/// only after an hour so a second instance's in-flight temp is never touched.
+const STALE_PLAINTEXT_TEMP_AGE: Duration = Duration::from_secs(60 * 60);
+
+pub(crate) fn cleanup_stale_plaintext_temps(database_path: &Path) -> Result<usize, String> {
+    let directory = match database_path.parent() {
+        Some(directory) => directory,
+        None => return Ok(0),
+    };
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(format!(
+                "خواندن پوشه داده برای پاک‌سازی فایل‌های موقت ناموفق بود: {error}"
+            ))
+        }
+    };
+    let now = SystemTime::now();
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("خواندن فایل موقت ناموفق بود: {error}"))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("تعیین نوع فایل موقت ناموفق بود: {error}"))?
+            .is_file()
+        {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !PLAINTEXT_TEMP_MARKERS
+            .iter()
+            .any(|marker| name.contains(marker))
+        {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(UNIX_EPOCH);
+        if now.duration_since(modified).unwrap_or_default() < STALE_PLAINTEXT_TEMP_AGE {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "حذف فایل موقت حاوی دادهٔ رمزنگاری‌نشده ناموفق بود: {error}"
+                ))
+            }
+        }
+    }
+    Ok(removed)
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {

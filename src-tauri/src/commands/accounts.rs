@@ -47,6 +47,9 @@ pub(crate) fn create_account_group(
     Ok(group)
 }
 
+// A Tauri command receives one argument per JS field, so this signature is
+// fixed by the IPC contract rather than by internal style.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(async)]
 pub(crate) fn update_account_group(
     id: i64,
