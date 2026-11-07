@@ -6,6 +6,7 @@ use crate::vouchers::validation::{
     check_range, checked_add, checked_neg, checked_sub, checked_sum, normalize_filter_date,
 };
 use rusqlite::params;
+use std::collections::HashMap;
 
 struct TrialAccountRaw {
     code: String,
@@ -176,7 +177,16 @@ impl Database {
         let scope_sql = scope.sql();
 
         self.with_conn(|conn| {
-            // Aggregate in SQLite so only one row per account crosses into Rust.
+            // Step 1: aggregate the voucher lines per effective account in
+            // SQLite, with NO join to `accounts`.
+            //
+            // The previous version put this aggregation in a CTE and then
+            // LEFT JOINed `accounts` to it. SQLite does not index a CTE, so
+            // every account re-scanned the whole aggregated result
+            // (EXPLAIN QUERY PLAN: `SCAN x LEFT-JOIN`), which made the report
+            // quadratic in the number of accounts. Here only one row per
+            // account that has activity comes back, and the two result sets
+            // are combined in Rust with a HashMap lookup (linear).
             //
             // Only lines that belong to the opening balance or to the requested
             // period are read at all; the date range therefore narrows the scan
@@ -186,60 +196,76 @@ impl Database {
             // and with empty dates they were still counted as period activity.
             //
             // Parent accounts are rolled up from these raw amounts below.
-            let mut stmt = conn
-                .prepare(&format!(
-                    "WITH line_amounts AS (
-                         SELECT COALESCE(NULLIF(l.detail1_code, ''), l.account_code) AS account_code,
+            let mut amounts: HashMap<String, (i64, i64, i64, i64)> = HashMap::new();
+            {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT COALESCE(NULLIF(l.detail1_code, ''), l.account_code) AS code,
                                 COALESCE(SUM(CASE WHEN ?1 <> '' AND v.date < ?1
-                                                  THEN l.debit END), 0) AS opening_debit,
+                                                  THEN l.debit END), 0),
                                 COALESCE(SUM(CASE WHEN ?1 <> '' AND v.date < ?1
-                                                  THEN l.credit END), 0) AS opening_credit,
+                                                  THEN l.credit END), 0),
                                 COALESCE(SUM(CASE WHEN (?1 = '' OR v.date >= ?1)
                                                    AND (?2 = '' OR v.date <= ?2)
-                                                  THEN l.debit END), 0) AS period_debit,
+                                                  THEN l.debit END), 0),
                                 COALESCE(SUM(CASE WHEN (?1 = '' OR v.date >= ?1)
                                                    AND (?2 = '' OR v.date <= ?2)
-                                                  THEN l.credit END), 0) AS period_credit
+                                                  THEN l.credit END), 0)
                            FROM voucher_lines l
                            JOIN vouchers v ON v.id = l.voucher_id
                           WHERE {scope_sql}
                             AND ((?1 <> '' AND v.date < ?1)
                                  OR ((?1 = '' OR v.date >= ?1)
                                      AND (?2 = '' OR v.date <= ?2)))
-                          GROUP BY COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
-                     )
-                     SELECT a.code, a.name, g.name, a.level, COALESCE(a.parent_code, ''),
-                            COALESCE(x.opening_debit, 0),
-                            COALESCE(x.opening_credit, 0),
-                            COALESCE(x.period_debit, 0),
-                            COALESCE(x.period_credit, 0)
+                          GROUP BY 1"
+                    ))
+                    .map_err(db::db_error)?;
+                let rows = stmt
+                    .query_map(params![from, to], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            (
+                                row.get::<_, i64>(1)?,
+                                row.get::<_, i64>(2)?,
+                                row.get::<_, i64>(3)?,
+                                row.get::<_, i64>(4)?,
+                            ),
+                        ))
+                    })
+                    .map_err(db::db_error)?;
+                for row in rows {
+                    let (code, sums) = row.map_err(db::db_error)?;
+                    amounts.insert(code, sums);
+                }
+            }
+
+            // Step 2: the chart of accounts itself (a plain, cheap read).
+            // Accounts without activity get zero amounts; lines that point to
+            // a code missing from `accounts` are ignored, as before.
+            let mut stmt = conn
+                .prepare(
+                    "SELECT a.code, a.name, g.name, a.level, COALESCE(a.parent_code, '')
                        FROM accounts a
                        JOIN account_groups g ON g.code = a.group_code
-                       LEFT JOIN line_amounts x ON x.account_code = a.code
-                      ORDER BY a.code"
-                ))
+                      ORDER BY a.code",
+                )
                 .map_err(db::db_error)?;
-
             let raw = stmt
-                .query_map(params![from, to], |row| {
+                .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
                         row.get::<_, String>(4)?,
-                        row.get::<_, i64>(5)?,
-                        row.get::<_, i64>(6)?,
-                        row.get::<_, i64>(7)?,
-                        row.get::<_, i64>(8)?,
                     ))
                 })
                 .map_err(db::db_error)?;
 
-            let mut accounts = Vec::new();
+            let mut accounts = Vec::with_capacity(amounts.len());
             for row in raw {
-                let (code, name, group_name, level, parent_code, od, oc, pd, pc) =
-                    row.map_err(db::db_error)?;
+                let (code, name, group_name, level, parent_code) = row.map_err(db::db_error)?;
+                let (od, oc, pd, pc) = amounts.get(&code).copied().unwrap_or((0, 0, 0, 0));
                 accounts.push(TrialAccountRaw {
                     code,
                     name,

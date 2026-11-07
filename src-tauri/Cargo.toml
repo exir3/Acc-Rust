@@ -36,3 +36,10 @@ lto = true
 strip = true
 panic = "abort"
 opt-level = 3
+
+# Development builds (`run.bat` without arguments) compile dependencies, and
+# with them the bundled C source of SQLite, with optimisation. Without this a
+# debug build runs SQL about 2.5x slower than release, which made large
+# reports look hung. Your own crate still builds fast in debug.
+[profile.dev.package."*"]
+opt-level = 3

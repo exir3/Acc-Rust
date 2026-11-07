@@ -62,6 +62,10 @@ async function navigate(page, { force = false } = {}) {
     bindPageCommon(root);
     def.bind?.(root, data);
     setStatus(`صفحه «${title}» آماده است.`, 'ok');
+    // Callers that report success to the user (for example the trial balance
+    // «generate» button) must wait for this: it is true only after the data
+    // really loaded and rendered, never when the load failed or went stale.
+    return true;
   } catch (error) {
     if (seq !== navSeq || state.page !== page) return;
     root.innerHTML = `<div class="card">

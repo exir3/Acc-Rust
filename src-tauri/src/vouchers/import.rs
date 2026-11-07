@@ -970,6 +970,17 @@ impl Database {
             drop(insert_line);
             drop(insert_voucher);
             tx.commit().map_err(db::db_error)?;
+            // A bulk load changes the table sizes by orders of magnitude, so
+            // refresh SQLite's planner statistics once. It is a best-effort
+            // optimisation: the import is already committed, and a failure
+            // here must never turn a successful import into an error. The
+            // analysis limit keeps it to a fraction of a second on big books.
+            let _ = conn.execute_batch(
+                "PRAGMA analysis_limit = 2000;
+                 ANALYZE voucher_lines;
+                 ANALYZE vouchers;
+                 PRAGMA analysis_limit = 0;",
+            );
             Ok(imported_count)
         })
     }

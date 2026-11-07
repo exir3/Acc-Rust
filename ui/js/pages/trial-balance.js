@@ -778,13 +778,15 @@ function trialClearFilter() {
   navigate('trial', { force: true });
 }
 
-function trialGenerateReport() {
+async function trialGenerateReport() {
   if (trialState.filterOpen) {
     trialApplyFilter();
     return;
   }
-  toast('گزارش تراز آزمایشی تولید شد.', 'ok');
-  navigate('trial', { force: true });
+  // The message must follow the load: a slow or failed report used to say
+  // «generated» immediately and then show an error (or nothing) later.
+  const loaded = await navigate('trial', { force: true });
+  if (loaded) toast('گزارش تراز آزمایشی تولید شد.', 'ok');
 }
 
 function trialRefreshReport() {
@@ -808,7 +810,7 @@ async function trialCloseWindow() {
 function trialRunAction(action) {
   switch (action) {
     case 'refresh': trialRefreshReport(); break;
-    case 'generate': trialGenerateReport(); break;
+    case 'generate': void trialGenerateReport(); break;
     case 'filter': trialSetFilterPanel(!trialState.filterOpen); break;
     case 'print': trialPrintReport(); break;
     case 'close': void trialCloseWindow(); break;
@@ -843,7 +845,7 @@ function trialHandleKeydown(event) {
     case 'PageDown':
       if (!isInput) {
         event.preventDefault();
-        trialGenerateReport();
+        void trialGenerateReport();
       }
       break;
     case 'Insert':

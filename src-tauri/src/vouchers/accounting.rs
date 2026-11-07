@@ -2,8 +2,8 @@
 
 use crate::db::{self};
 use crate::vouchers::model::{ReportScope, CLOSING_FINAL, VOUCHER_TYPES};
-use crate::vouchers::validation::checked_add;
 use rusqlite::{params, Connection};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AccountActivity {
@@ -41,85 +41,104 @@ pub(crate) fn account_activities(
     };
     let scope_sql = scope.sql();
 
+    // Step 1: totals per effective account, grouped in SQLite.
+    //
+    // The old query LEFT JOINed `accounts` to a nested join of every voucher
+    // line. SQLite materialised that nested join and re-scanned it for each
+    // account (cost ~ accounts x lines), and every line crossed into Rust.
+    // Now one aggregated row per active account comes back and the chart of
+    // accounts is combined with it through a HashMap. The filters are the
+    // same as before, only moved from the join condition to WHERE (the join
+    // was an inner join between lines and vouchers, so the result is equal).
+    let mut totals: HashMap<String, (i64, i64)> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT COALESCE(NULLIF(l.detail1_code, ''), l.account_code) AS code,
+                        COALESCE(SUM(l.debit), 0),
+                        COALESCE(SUM(l.credit), 0)
+                   FROM voucher_lines l
+                   JOIN vouchers v ON v.id = l.voucher_id
+                  WHERE (?1 = '' OR v.date >= ?1)
+                    AND (?2 = '' OR v.date <= ?2)
+                    AND {scope_sql}
+                    AND v.type <> ?3
+                    AND v.type <> ?4
+                    AND NOT (
+                          v.type = ?5
+                          AND NOT EXISTS (
+                              SELECT 1
+                                FROM vouchers o
+                               WHERE o.type = ?6
+                                 AND {scope_sql}
+                                 AND (?2 = '' OR o.date <= ?2)
+                                 AND (o.date > v.date
+                                      OR (o.date = v.date AND o.id > v.id))
+                          )
+                    )
+                  GROUP BY 1"
+            ))
+            .map_err(db::db_error)?;
+        let rows = stmt
+            .query_map(
+                params![
+                    from_value,
+                    to_value,
+                    skip_a,
+                    skip_b,
+                    CLOSING_FINAL,
+                    VOUCHER_TYPES[1]
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .map_err(db::db_error)?;
+        for row in rows {
+            let (code, debit, credit) = row.map_err(db::db_error)?;
+            totals.insert(code, (debit, credit));
+        }
+    }
+
+    // Step 2: every account of the chart (accounts without movement stay at
+    // zero, exactly like the old LEFT JOIN), in code order.
     let mut stmt = conn
-        .prepare(&format!(
-            "SELECT a.code, a.name, g.code, g.type, g.default_section, l.debit, l.credit
+        .prepare(
+            "SELECT a.code, a.name, g.code, g.type, g.default_section
                FROM accounts a
                JOIN account_groups g ON g.code = a.group_code
-               LEFT JOIN (
-                    voucher_lines l
-                    JOIN vouchers v ON v.id = l.voucher_id
-                     AND (?1 = '' OR v.date >= ?1)
-                     AND (?2 = '' OR v.date <= ?2)
-                     AND {scope_sql}
-                     AND v.type <> ?3
-                     AND v.type <> ?4
-                     AND NOT (
-                           v.type = ?5
-                           AND NOT EXISTS (
-                               SELECT 1
-                                 FROM vouchers o
-                                WHERE o.type = ?6
-                                  AND {scope_sql}
-                                  AND (?2 = '' OR o.date <= ?2)
-                                  AND (o.date > v.date
-                                       OR (o.date = v.date AND o.id > v.id))
-                           )
-                     )
-               ) ON COALESCE(NULLIF(l.detail1_code, ''), l.account_code) = a.code
-              ORDER BY a.code"
-        ))
-        .map_err(db::db_error)?;
-
-    let raw = stmt
-        .query_map(
-            params![
-                from_value,
-                to_value,
-                skip_a,
-                skip_b,
-                CLOSING_FINAL,
-                VOUCHER_TYPES[1]
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                ))
-            },
+              ORDER BY a.code",
         )
         .map_err(db::db_error)?;
+    let raw = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(db::db_error)?;
 
-    let mut activities: Vec<AccountActivity> = Vec::new();
+    let mut activities: Vec<AccountActivity> = Vec::with_capacity(totals.len());
     for row in raw {
-        let (code, name, group_code, group_type, default_section, debit, credit) =
-            row.map_err(db::db_error)?;
-        if let Some(last) = activities
-            .last_mut()
-            .filter(|item| item.account_code.as_str() == code.as_str())
-        {
-            if let Some(debit) = debit {
-                last.debit = checked_add(last.debit, debit, "گردش بدهکار حساب")?;
-            }
-            if let Some(credit) = credit {
-                last.credit = checked_add(last.credit, credit, "گردش بستانکار حساب")?;
-            }
-        } else {
-            activities.push(AccountActivity {
-                account_code: code,
-                account_name: name,
-                group_code,
-                group_type,
-                default_section,
-                debit: debit.unwrap_or(0),
-                credit: credit.unwrap_or(0),
-            });
-        }
+        let (code, name, group_code, group_type, default_section) = row.map_err(db::db_error)?;
+        let (debit, credit) = totals.get(&code).copied().unwrap_or((0, 0));
+        activities.push(AccountActivity {
+            account_code: code,
+            account_name: name,
+            group_code,
+            group_type,
+            default_section,
+            debit,
+            credit,
+        });
     }
     Ok(activities)
 }

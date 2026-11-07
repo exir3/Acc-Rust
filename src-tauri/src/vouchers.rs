@@ -19,6 +19,8 @@ mod accounting;
 mod bulk_delete;
 mod import;
 mod model;
+#[cfg(test)]
+mod perf_check;
 mod query;
 mod reorganization;
 mod reports;
