@@ -644,3 +644,174 @@ pub struct BalanceSheetReport {
     pub balanced: bool,
     pub integrity: IntegrityReport,
 }
+
+/* ── Supplementary financial statements (Phase 7 / WebApp reference) ─── */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EquityChangesRow {
+    pub fs_line: String,
+    pub title: String,
+    pub kind: String,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub opening: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub change: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub closing: i64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<AmountRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EquityChangesTotals {
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub opening: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub change: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub closing: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub net_income: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EquityChangesReport {
+    pub statement: String,
+    pub to_date: String,
+    pub rows: Vec<EquityChangesRow>,
+    pub totals: EquityChangesTotals,
+    pub integrity: IntegrityReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CogsRow {
+    pub kind: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub amount: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CogsTotals {
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub costs: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub opening_inventory: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub closing_inventory: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub cogs: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CogsReport {
+    pub statement: String,
+    pub from_date: String,
+    pub to_date: String,
+    pub rows: Vec<CogsRow>,
+    pub totals: CogsTotals,
+    pub detailed: bool,
+    /// Explicit data limitation: the Rust build has no production/inventory
+    /// module, so this statement only decomposes the recorded `IS.COGS`
+    /// contribution and shows the inventory change as supplementary data.
+    pub limitation: String,
+    pub integrity: IntegrityReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppropriationRow {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fs_line: Option<String>,
+    pub label: String,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub amount: i64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<AmountRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppropriationTotals {
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub net: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub appropriated: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub retained: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppropriationReport {
+    pub statement: String,
+    pub to_date: String,
+    pub rows: Vec<AppropriationRow>,
+    pub totals: AppropriationTotals,
+    pub integrity: IntegrityReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashFlowLine {
+    pub label: String,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub amount: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashFlowSection {
+    pub key: String,
+    pub title: String,
+    pub lines: Vec<CashFlowLine>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub total: i64,
+}
+
+/// A voucher with a cash movement whose non-cash counterparts do not identify
+/// one reliable cash-flow activity. It is reported instead of guessing a
+/// section, so the statement never invents a classification.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashFlowUnresolvedVoucher {
+    pub voucher_id: i64,
+    pub voucher_number: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub cash_movement: i64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashFlowReport {
+    pub statement: String,
+    pub to_date: String,
+    pub sections: Vec<CashFlowSection>,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub opening_cash: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub closing_cash: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub net_change: i64,
+    #[serde(serialize_with = "serialize_exact_amount")]
+    pub variance: i64,
+    pub unresolved_vouchers: Vec<CashFlowUnresolvedVoucher>,
+    /// True only when every cash voucher was classified and the section total
+    /// matches the actual cash change.
+    pub classification_complete: bool,
+    pub integrity: IntegrityReport,
+}

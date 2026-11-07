@@ -288,8 +288,9 @@ pub(crate) fn run_integrity_checks(
         );
     }
 
-    // 4) Invalid contra account: missing/self target, different line, or a
-    // target that is itself a contra account.
+    // 4) Invalid contra account: own nature/kind incompatible with the line,
+    // missing/self target, different line, or a target that is itself a contra
+    // account.
     let mut contra_problems: Vec<String> = Vec::new();
     for account in &accounts {
         if account.contra_of.is_empty() {
@@ -299,6 +300,13 @@ pub(crate) fn run_integrity_checks(
             contra_problems.push(account.code.clone());
             continue;
         };
+        if !is_fs_line_code(&own.fs_line)
+            || !classification::is_contra_nature(&account.nature, &own.fs_line)
+            || !classification::contra_kind_matches_fs_line(&account.contra_kind, &own.fs_line)
+        {
+            contra_problems.push(account.code.clone());
+            continue;
+        }
         let Some(target) = by_code.get(&account.contra_of) else {
             contra_problems.push(account.code.clone());
             continue;
@@ -309,8 +317,8 @@ pub(crate) fn run_integrity_checks(
         }
         let target_effective = classification::resolve_account(target, &by_code);
         if target_effective.fs_line != own.fs_line
-            || !is_fs_line_code(&own.fs_line)
             || !target.contra_of.is_empty()
+            || classification::is_contra_nature(&target.nature, &target_effective.fs_line)
         {
             contra_problems.push(account.code.clone());
         }
@@ -321,7 +329,7 @@ pub(crate) fn run_integrity_checks(
             "invalid_contra",
             INTEGRITY_ERROR,
             format!(
-                "{} حساب کاهنده مقصد معتبر (هم‌سرفصل و غیرکاهنده) ندارد.",
+                "{} حساب کاهنده ماهیت/نوع سازگار با سرفصل یا مقصد معتبر (هم‌سرفصل و غیرکاهنده) ندارد.",
                 db::to_fa_digits(contra_problems.len() as i64)
             ),
             Some(contra_problems.len() as i64),
@@ -347,7 +355,7 @@ pub(crate) fn run_integrity_checks(
         issue(
             &mut issues,
             "temporary_opening_balance",
-            INTEGRITY_WARNING,
+            INTEGRITY_ERROR,
             format!(
                 "{} حساب موقت در سند افتتاحیه مانده دارد (حساب‌های سود و زیانی باید در ابتدای دوره صفر باشند).",
                 db::to_fa_digits(temporary_opening.len() as i64)

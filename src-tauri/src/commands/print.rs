@@ -5,12 +5,25 @@ use tauri::{AppHandle, State, WebviewWindow};
 use crate::commands::state::{lock, report_meta, require_preview_window, require_window, AppState};
 use crate::commands::windows::show_preview_window;
 use crate::report;
-use crate::vouchers::ReportScope;
+use crate::vouchers::{IntegrityReport, ReportScope};
 
 /// Official is the safe default for printed statements; temporary vouchers are
 /// included only when the caller explicitly asks for a working report.
 fn report_scope(scope: Option<String>) -> Result<ReportScope, String> {
     ReportScope::parse(scope.as_deref().unwrap_or("official"))
+}
+
+/// An official statement with integrity errors is not a printable final
+/// document. Working/temporary previews stay available so the user can review
+/// the same figures with the full health panel before fixing them.
+fn ensure_printable(scope: ReportScope, integrity: &IntegrityReport) -> Result<(), String> {
+    if scope == ReportScope::Official && !integrity.ok {
+        return Err(
+            "گزارش رسمی به دلیل وجود خطای سلامت حسابداری قابل چاپ نیست؛ ابتدا خطاهای Integrity را برطرف کنید یا گزارش را در حالت کاری تهیه کنید."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /* ── Print preview ──────────────────────────────────────────── */
@@ -105,9 +118,11 @@ pub(crate) fn open_income_statement_preview(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher"])?;
+    let scope = report_scope(scope)?;
     let report = state
         .database
-        .get_income_statement_scoped(&from, &to, report_scope(scope)?)?;
+        .get_income_statement_scoped(&from, &to, scope)?;
+    ensure_printable(scope, &report.integrity)?;
     let meta = report_meta(&state, &from, &to)?;
     show_preview_window(&app, report::income_statement_print_doc(&report, &meta))
 }
@@ -121,12 +136,79 @@ pub(crate) fn open_balance_sheet_preview(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     require_window(&window, &["main", "voucher"])?;
-    let report = state
-        .database
-        .get_balance_sheet_scoped(&as_of, report_scope(scope)?)?;
+    let scope = report_scope(scope)?;
+    let report = state.database.get_balance_sheet_scoped(&as_of, scope)?;
+    ensure_printable(scope, &report.integrity)?;
     let meta = report_meta(&state, &as_of, &as_of)?;
     let document = report::balance_sheet_print_doc(&report, &meta)?;
     show_preview_window(&app, document)
+}
+
+#[tauri::command(async)]
+pub(crate) fn open_equity_changes_preview(
+    as_of: String,
+    scope: Option<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
+    let scope = report_scope(scope)?;
+    let report = state.database.get_equity_changes_scoped(&as_of, scope)?;
+    ensure_printable(scope, &report.integrity)?;
+    let meta = report_meta(&state, &as_of, &as_of)?;
+    show_preview_window(&app, report::equity_changes_print_doc(&report, &meta))
+}
+
+#[tauri::command(async)]
+pub(crate) fn open_cogs_preview(
+    from: String,
+    to: String,
+    scope: Option<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
+    let scope = report_scope(scope)?;
+    let report = state.database.get_cogs_scoped(&from, &to, scope)?;
+    ensure_printable(scope, &report.integrity)?;
+    let meta = report_meta(&state, &report.from_date, &report.to_date)?;
+    show_preview_window(&app, report::cogs_print_doc(&report, &meta))
+}
+
+#[tauri::command(async)]
+pub(crate) fn open_profit_appropriation_preview(
+    as_of: String,
+    scope: Option<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
+    let scope = report_scope(scope)?;
+    let report = state
+        .database
+        .get_profit_appropriation_scoped(&as_of, scope)?;
+    ensure_printable(scope, &report.integrity)?;
+    let meta = report_meta(&state, &as_of, &as_of)?;
+    show_preview_window(&app, report::appropriation_print_doc(&report, &meta))
+}
+
+#[tauri::command(async)]
+pub(crate) fn open_cash_flow_preview(
+    as_of: String,
+    scope: Option<String>,
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    require_window(&window, &["main", "voucher"])?;
+    let scope = report_scope(scope)?;
+    let report = state.database.get_cash_flow_scoped(&as_of, scope)?;
+    ensure_printable(scope, &report.integrity)?;
+    let meta = report_meta(&state, &as_of, &as_of)?;
+    show_preview_window(&app, report::cash_flow_print_doc(&report, &meta))
 }
 
 #[tauri::command(async)]

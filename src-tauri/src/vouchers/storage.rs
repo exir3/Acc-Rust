@@ -575,7 +575,9 @@ impl Database {
             let tx = conn.transaction().map_err(db::db_error)?;
             let current = tx
                 .query_row(
-                    "SELECT v.updated_at, v.is_temporary, COALESCE(f.status, '')
+                    "SELECT v.updated_at, v.is_temporary, COALESCE(f.status, ''),
+                            v.date, COALESCE(f.start_date, ''), COALESCE(f.end_date, ''),
+                            COALESCE(f.id, 0)
                        FROM vouchers v
                        LEFT JOIN fiscal_years f ON f.id = v.fiscal_year_id
                       WHERE v.id = ?1",
@@ -585,6 +587,10 @@ impl Database {
                             row.get::<_, String>(0)?,
                             row.get::<_, i64>(1)? != 0,
                             row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, i64>(6)?,
                         ))
                     },
                 )
@@ -592,6 +598,11 @@ impl Database {
                 .map_err(db::db_error)?
                 .ok_or_else(|| "سند حسابداری یافت نشد.".to_string())?;
 
+            if current.6 == 0 {
+                return Err(
+                    "سال مالی سند مشخص نیست؛ پیش از دائمی‌سازی، دوره سند را اصلاح کنید.".to_string(),
+                );
+            }
             if !current.1 {
                 return Err("این سند قبلاً دائمی شده است.".to_string());
             }
@@ -600,9 +611,61 @@ impl Database {
                     "سند در سال مالی بسته یا نهایی قرار دارد و قابل تغییر نیست.".to_string()
                 );
             }
+            if !current.4.is_empty() && (current.3 < current.4 || current.3 > current.5) {
+                return Err("تاریخ سند خارج از بازه سال مالی ثبت‌شده است.".to_string());
+            }
             if current.0 != expected {
                 return Err("سند پس از باز شدن تغییر کرده است؛ دوباره بارگذاری کنید.".to_string());
             }
+
+            // P2-06: Thoroughly re-validate the persisted voucher before permanent finalization.
+            let voucher = fetch_voucher_by_id(&tx, id)?;
+            if voucher.lines.len() < 2 {
+                return Err("سند باید حداقل دو ردیف داشته باشد.".to_string());
+            }
+            let mut total_debit = 0i64;
+            let mut total_credit = 0i64;
+            for line in &voucher.lines {
+                if line.debit < 0 || line.credit < 0 {
+                    return Err("مبلغ بدهکار یا بستانکار نمی‌تواند منفی باشد.".to_string());
+                }
+                if line.debit > 0 && line.credit > 0 {
+                    return Err("یک ردیف نمی‌تواند هم‌زمان بدهکار و بستانکار باشد.".to_string());
+                }
+                if line.debit == 0 && line.credit == 0 {
+                    return Err("مبلغ ردیف سند نمی‌تواند صفر باشد.".to_string());
+                }
+                total_debit = total_debit
+                    .checked_add(line.debit)
+                    .ok_or_else(|| "جمع مبالغ سند بیش از حد مجاز است.".to_string())?;
+                total_credit = total_credit
+                    .checked_add(line.credit)
+                    .ok_or_else(|| "جمع مبالغ سند بیش از حد مجاز است.".to_string())?;
+            }
+            if total_debit == 0 {
+                return Err("مبلغ سند باید بزرگ‌تر از صفر باشد.".to_string());
+            }
+            if total_debit != total_credit {
+                return Err(format!(
+                    "سند تراز نیست: جمع بدهکار {} و جمع بستانکار {} است.",
+                    db::to_fa_digits(format_amount(total_debit)),
+                    db::to_fa_digits(format_amount(total_credit))
+                ));
+            }
+            let line_inputs: Vec<VoucherLineInput> = voucher
+                .lines
+                .iter()
+                .map(|l| VoucherLineInput {
+                    id: Some(l.id),
+                    account_code: l.account_code.clone(),
+                    detail1_code: l.detail1_code.clone(),
+                    description: l.description.clone(),
+                    debit: l.debit,
+                    credit: l.credit,
+                })
+                .collect();
+            validate_voucher_line_accounts(&tx, Some(id), &line_inputs)?;
+            assert_voucher_type_matches_lines(&tx, &voucher.voucher_type, &line_inputs)?;
 
             let before_snapshot = voucher_snapshot(&tx, id)?;
             let affected = tx

@@ -114,3 +114,56 @@ pub(crate) fn get_balance_sheet(
         .database
         .get_balance_sheet_scoped(&as_of, report_scope(scope)?)
 }
+
+#[tauri::command(async)]
+pub(crate) fn get_equity_changes_statement(
+    as_of: String,
+    scope: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<vouchers::EquityChangesReport, String> {
+    require_window(&window, &["main", "voucher-list", "trial-balance"])?;
+    state
+        .database
+        .get_equity_changes_scoped(&as_of, report_scope(scope)?)
+}
+
+#[tauri::command(async)]
+pub(crate) fn get_cogs_statement(
+    from: String,
+    to: String,
+    scope: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<vouchers::CogsReport, String> {
+    require_window(&window, &["main", "voucher-list", "trial-balance"])?;
+    state
+        .database
+        .get_cogs_scoped(&from, &to, report_scope(scope)?)
+}
+
+#[tauri::command(async)]
+pub(crate) fn get_profit_appropriation_statement(
+    as_of: String,
+    scope: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<vouchers::AppropriationReport, String> {
+    require_window(&window, &["main", "voucher-list", "trial-balance"])?;
+    state
+        .database
+        .get_profit_appropriation_scoped(&as_of, report_scope(scope)?)
+}
+
+#[tauri::command(async)]
+pub(crate) fn get_cash_flow_statement(
+    as_of: String,
+    scope: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<vouchers::CashFlowReport, String> {
+    require_window(&window, &["main", "voucher-list", "trial-balance"])?;
+    state
+        .database
+        .get_cash_flow_scoped(&as_of, report_scope(scope)?)
+}

@@ -6,4 +6,5 @@ mod journal;
 mod ledger;
 #[cfg(test)]
 mod reference_tests;
+mod supplementary_statements;
 mod trial_balance;

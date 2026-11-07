@@ -44,6 +44,7 @@ pub(crate) fn account_activities(
 ) -> Result<Vec<AccountActivity>, String> {
     let skip_a = skip_types.first().copied().unwrap_or("");
     let skip_b = skip_types.get(1).copied().unwrap_or(skip_a);
+    let skip_c = skip_types.get(2).copied().unwrap_or("");
     let (from_value, to_value) = if cumulative {
         ("".to_string(), to.to_string())
     } else {
@@ -78,6 +79,7 @@ pub(crate) fn account_activities(
                     AND {scope_sql}
                     AND v.type <> ?3
                     AND v.type <> ?4
+                    AND v.type <> ?7
                     AND NOT (
                           v.type = ?5
                           AND NOT EXISTS (
@@ -101,7 +103,8 @@ pub(crate) fn account_activities(
                     skip_a,
                     skip_b,
                     CLOSING_FINAL,
-                    VOUCHER_TYPES[1]
+                    VOUCHER_TYPES[1],
+                    skip_c
                 ],
                 |row| {
                     Ok((
@@ -120,6 +123,17 @@ pub(crate) fn account_activities(
 
     // Step 2: every account of the chart (accounts without movement stay at
     // zero, exactly like the old LEFT JOIN), in code order.
+    activities_from_totals(conn, &totals)
+}
+
+/// Turns raw debit/credit totals per effective account code into classified
+/// statement activities. Every account of the chart is returned, so callers
+/// see zero lines too. Supplementary statements use this for their opening
+/// snapshot and period movements; `account_activities` uses it for date ranges.
+pub(crate) fn activities_from_totals(
+    conn: &Connection,
+    totals: &HashMap<String, (i64, i64)>,
+) -> Result<Vec<AccountActivity>, String> {
     let rows = classification::load_account_classifications(conn)?;
     let classification_map: HashMap<String, AccountClassificationRow> = rows
         .iter()

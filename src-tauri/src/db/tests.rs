@@ -334,6 +334,53 @@ mod tests {
             .create_accounts_atomic(vec![nested])
             .unwrap_err()
             .contains("غیرکاهنده"));
+
+        // Contra account with same nature as normal side (debtor for BS.CA.CASH) is rejected.
+        let same_nature = NewAccount::new(
+            "110908",
+            "کاهنده با ماهیت عادی",
+            2,
+            "1",
+            "debtor",
+            "1109",
+            true,
+        )
+        .with_fs_line("BS.CA.CASH")
+        .with_classification("1109", "other", "", false, "");
+        let error = db.create_accounts_atomic(vec![same_nature]).unwrap_err();
+        assert!(error.contains("ماهیتی مخالف سمت عادی"), "{error}");
+
+        // Contra account with dual nature is rejected.
+        let dual_nature = NewAccount::new(
+            "110909",
+            "کاهنده با ماهیت دوگانه",
+            2,
+            "1",
+            "dual",
+            "1109",
+            true,
+        )
+        .with_fs_line("BS.CA.CASH")
+        .with_classification("1109", "other", "", false, "");
+        let error = db.create_accounts_atomic(vec![dual_nature]).unwrap_err();
+        assert!(error.contains("ماهیت دوگانه"), "{error}");
+
+        // Contra account with incompatible contra_kind is rejected.
+        let mismatched_kind = NewAccount::new(
+            "110910",
+            "نوع کاهنده ناسازگار",
+            2,
+            "1",
+            "creditor",
+            "1109",
+            true,
+        )
+        .with_fs_line("BS.CA.CASH")
+        .with_classification("1109", "sales_return", "", false, "");
+        let error = db
+            .create_accounts_atomic(vec![mismatched_kind])
+            .unwrap_err();
+        assert!(error.contains("سازگار نیست"), "{error}");
     }
 
     #[test]

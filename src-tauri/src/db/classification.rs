@@ -347,12 +347,40 @@ pub(crate) const CONTRA_KINDS: [&str; 6] = [
     "other",
 ];
 
+/// Statement lines each contra kind may offset. `other` accepts any classified
+/// line. Keeping this table beside `CONTRA_KINDS` means the write path, the
+/// integrity checks and the API catalog cannot drift apart.
+pub(crate) const CONTRA_KIND_FS_LINES: [(&str, &[&str]); 6] = [
+    ("accumulated_depreciation", &["BS.NCA.PPE"]),
+    ("allowance_receivable", &["BS.CA.REC", "BS.NCA.LTR"]),
+    ("sales_return", &["IS.REV"]),
+    ("purchase_return", &["IS.COGS", "BS.CA.INV"]),
+    ("overhead_applied", &["IS.COGS", "BS.CA.INV"]),
+    ("other", &[]),
+];
+
 pub(crate) fn validate_contra_kind(value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() || CONTRA_KINDS.contains(&value) {
         return Ok(value.to_string());
     }
     Err(format!("نوع حساب کاهنده نامعتبر است: «{value}»."))
+}
+
+/// Whether a contra kind is meaningful for the account's statement line.
+/// `other` is the explicit escape hatch for less common contra items; every
+/// named kind is tied to the lines it can offset.
+pub(crate) fn contra_kind_matches_fs_line(kind: &str, fs_line: &str) -> bool {
+    if !is_fs_line_code(fs_line) {
+        return false;
+    }
+    if kind == "other" {
+        return true;
+    }
+    CONTRA_KIND_FS_LINES
+        .iter()
+        .find(|(candidate, _)| *candidate == kind)
+        .is_some_and(|(_, lines)| lines.contains(&fs_line))
 }
 
 /// True when an account's nature is opposite to the normal side of its
@@ -405,10 +433,12 @@ pub(crate) fn group_type_matches_fs_line(group_type: &str, fs_line: &str) -> boo
     allowed.contains(&section)
 }
 
-/// Validates a contra reference against the persisted chart: the target must
-/// exist, must not be the account itself, must resolve to the same effective
-/// line, and must not itself be a contra account. The account's own line must
-/// already be classified.
+/// Validates a contra reference against the persisted chart: the account's own
+/// nature must oppose its line's normal side (so `dual` is refused), its
+/// `contra_kind` must be meaningful for that line, and the target must exist,
+/// must not be the account itself, must resolve to the same effective line, and
+/// must not itself be a contra account. The account's own line must already be
+/// classified.
 pub(crate) fn validate_contra_target(
     conn: &Connection,
     code: &str,
@@ -431,6 +461,17 @@ pub(crate) fn validate_contra_target(
         return Err(
             "پیش از تعیین حساب کاهنده، ابتدا سرفصل صورت مالی این حساب را مشخص کنید.".to_string(),
         );
+    }
+    // A contra account must move against its line's normal side. This also
+    // rejects `dual`: a dual-nature account cannot prove which way it offsets.
+    if !is_contra_nature(&own.nature, &own_effective.fs_line) {
+        return Err(
+            "حساب کاهنده باید ماهیتی مخالف سمت عادی سرفصل خود داشته باشد؛ ماهیت دوگانه برای این نقش مجاز نیست."
+                .to_string(),
+        );
+    }
+    if !contra_kind_matches_fs_line(&own.contra_kind, &own_effective.fs_line) {
+        return Err("نوع کاهنده انتخاب‌شده با سرفصل صورت مالی این حساب سازگار نیست.".to_string());
     }
 
     let Some(target) = by_code.get(contra_of) else {

@@ -15,7 +15,7 @@ use crate::db::Database;
 use crate::vouchers::accounting::account_activities;
 use crate::vouchers::model::{
     AmountRow, BalanceSheetReport, IncomeStatementReport, IntegrityReport, ReportScope,
-    CLOSING_FINAL, CLOSING_TEMPORARY,
+    CLOSING_FINAL, CLOSING_TEMPORARY, VOUCHER_TYPES,
 };
 use crate::vouchers::validation::{
     check_range, checked_add, checked_neg, checked_sub, checked_sum, normalize_date,
@@ -46,12 +46,14 @@ impl Database {
         self.with_conn(|conn| {
             // Closing vouchers move income and expenses to equity; leaving
             // them in would show every closed period as having no activity.
+            // Opening vouchers are also excluded: their income/expense lines
+            // are invalid legacy data and must never become period profit.
             let activities = account_activities(
                 conn,
                 &from,
                 &to,
                 false,
-                &[CLOSING_TEMPORARY, CLOSING_FINAL],
+                &[CLOSING_TEMPORARY, CLOSING_FINAL, VOUCHER_TYPES[1]],
                 scope,
             )?;
             let mut report = build_income_statement(from, to, activities)?;
@@ -97,7 +99,7 @@ fn row(activity: &crate::vouchers::accounting::AccountActivity, amount: i64) -> 
     }
 }
 
-fn build_income_statement(
+pub(crate) fn build_income_statement(
     from: String,
     to: String,
     activities: Vec<crate::vouchers::accounting::AccountActivity>,

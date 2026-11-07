@@ -1694,6 +1694,71 @@ fn permanent_vouchers_are_immutable_but_can_be_copied_from() {
 }
 
 #[test]
+fn finalizing_an_invalid_persisted_voucher_is_rejected() {
+    let db = db::memory_database();
+    let saved = db.save_voucher(cash_sale("1405/01/10", 300_000)).unwrap();
+    assert!(saved.is_temporary);
+
+    // Tamper with the persisted line directly in SQLite so it becomes unbalanced
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE voucher_lines SET credit = 999999 WHERE voucher_id = ?1 AND credit > 0",
+            rusqlite::params![saved.id],
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+
+    let error = db
+        .set_voucher_permanent(saved.id, Some(&saved.updated_at))
+        .unwrap_err();
+    assert!(error.contains("تراز نیست"), "{error}");
+}
+
+#[test]
+fn finalizing_a_voucher_outside_its_fiscal_year_is_rejected() {
+    let db = db::memory_database();
+    let saved = db.save_voucher(cash_sale("1405/01/10", 300_000)).unwrap();
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE vouchers SET date = '1404/12/30' WHERE id = ?1",
+            rusqlite::params![saved.id],
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+
+    let error = db
+        .set_voucher_permanent(saved.id, Some(&saved.updated_at))
+        .unwrap_err();
+    assert!(error.contains("خارج از بازه سال مالی"), "{error}");
+}
+
+#[test]
+fn finalizing_a_voucher_without_a_fiscal_year_is_rejected() {
+    let db = db::memory_database();
+    let saved = db.save_voucher(cash_sale("1405/01/10", 300_000)).unwrap();
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE vouchers SET fiscal_year_id = NULL WHERE id = ?1",
+            rusqlite::params![saved.id],
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+
+    let error = db
+        .set_voucher_permanent(saved.id, Some(&saved.updated_at))
+        .unwrap_err();
+    assert!(error.contains("سال مالی سند مشخص نیست"), "{error}");
+}
+
+#[test]
 fn bulk_delete_skips_permanent_vouchers() {
     let db = db::memory_database();
     let temporary = db.save_voucher(cash_sale("1405/01/05", 100_000)).unwrap();
@@ -2301,6 +2366,56 @@ fn formats_amounts_with_grouping() {
     assert_eq!(format_amount(1_234_567), "1,234,567");
     assert_eq!(format_amount(-1_500), "-1,500");
     assert_eq!(format_amount(i64::MIN), "-9,223,372,036,854,775,808");
+}
+
+#[test]
+fn opening_voucher_lines_do_not_enter_income_statement_period_profit() {
+    let db = db::memory_database();
+    // Insert an opening voucher containing an income account directly into the database
+    // (bypassing normal form validation, representing legacy or migrated corrupt data)
+    db.with_conn(|conn| {
+        let cash_id: i64 = conn
+            .query_row("SELECT id FROM accounts WHERE code = '1101'", [], |r| r.get(0))
+            .unwrap();
+        let rev_id: i64 = conn
+            .query_row("SELECT id FROM accounts WHERE code = '4101'", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO vouchers (number, date, type, description, is_temporary, created_at, updated_at)
+             VALUES (1, '1405/01/01', ?1, 'سند افتتاحیه با مانده موقت', 1, '1405/01/01', '1405/01/01')",
+            rusqlite::params![VOUCHER_TYPES[1]],
+        )
+        .unwrap();
+        let voucher_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO voucher_lines (voucher_id, row_no, account_id, account_code, description, debit, credit)
+             VALUES (?1, 1, ?2, '1101', 'نقد', 500, 0),
+                    (?1, 2, ?3, '4101', 'فروش کالا', 0, 500)",
+            rusqlite::params![voucher_id, cash_id, rev_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE vouchers SET is_temporary = 0 WHERE id = ?1",
+            rusqlite::params![voucher_id],
+        )
+        .unwrap();
+        Ok(())
+    })
+    .unwrap();
+
+    let income = db.get_income_statement("1405/01/01", "1405/12/29").unwrap();
+    // Opening voucher revenues must NOT be counted into period revenue or net profit!
+    assert_eq!(income.revenue_total, 0);
+    assert_eq!(income.net_profit, 0);
+    // And integrity check must flag the temporary account in opening voucher as an ERROR
+    assert!(!income.integrity.ok);
+    let temporary_issue = income
+        .integrity
+        .issues
+        .iter()
+        .find(|i| i.code == "temporary_opening_balance");
+    assert!(temporary_issue.is_some());
+    assert_eq!(temporary_issue.unwrap().severity, "error");
 }
 #[test]
 fn closing_vouchers_do_not_hide_income_statement_figures() {
@@ -3019,4 +3134,375 @@ fn audit_history_records_voucher_and_definition_changes() {
         .entries
         .iter()
         .any(|entry| entry.entity_type == "fiscal_year"));
+}
+
+#[test]
+fn equity_changes_statement_calculates_opening_period_profit_and_closing_totals() {
+    let db = db::memory_database();
+    // 1. Opening voucher with capital 3101 (BS.EQ.CAP)
+    let mut opening = voucher(
+        "1405/01/01",
+        vec![line("1101", 1_000_000, 0), line("3101", 0, 1_000_000)],
+    );
+    opening.voucher_type = VOUCHER_TYPES[1].to_string();
+    db.save_voucher(opening).unwrap();
+
+    // 2. Normal sale voucher for period profit
+    db.save_voucher(cash_sale("1405/02/10", 200_000)).unwrap();
+
+    let report = db.get_equity_changes("1405/12/29").unwrap();
+    assert_eq!(report.statement, "equity_changes");
+    assert_eq!(report.totals.opening, 1_000_000);
+    assert_eq!(report.totals.net_income, 200_000);
+    assert_eq!(report.totals.closing, 1_200_000);
+    assert_eq!(report.totals.change, 200_000);
+
+    let cap_row = report
+        .rows
+        .iter()
+        .find(|r| r.fs_line == "BS.EQ.CAP")
+        .unwrap();
+    assert_eq!(cap_row.opening, 1_000_000);
+    assert_eq!(cap_row.closing, 1_000_000);
+    assert_eq!(cap_row.change, 0);
+
+    let profit_row = report
+        .rows
+        .iter()
+        .find(|r| r.fs_line == "BS.EQ.PROFIT")
+        .unwrap();
+    assert_eq!(profit_row.opening, 0);
+    assert_eq!(profit_row.closing, 200_000);
+    assert_eq!(profit_row.change, 200_000);
+}
+
+#[test]
+fn cogs_statement_calculates_costs_and_inventory_changes() {
+    let db = db::memory_database();
+    // 1. Opening inventory (1301 on BS.CA.INV)
+    let mut opening = voucher(
+        "1405/01/01",
+        vec![line("1301", 500_000, 0), line("3101", 0, 500_000)],
+    );
+    opening.voucher_type = VOUCHER_TYPES[1].to_string();
+    db.save_voucher(opening).unwrap();
+
+    // 2. COGS activity during period (5101 on IS.COGS)
+    db.save_voucher(voucher(
+        "1405/03/15",
+        vec![line("5101", 150_000, 0), line("1301", 0, 150_000)],
+    ))
+    .unwrap();
+
+    let report = db.get_cogs("1405/01/01", "1405/12/29").unwrap();
+    assert_eq!(report.statement, "cogs");
+    assert_eq!(report.totals.costs, 150_000);
+    assert_eq!(report.totals.cogs, 150_000);
+    assert_eq!(report.totals.opening_inventory, 500_000);
+    assert_eq!(report.totals.closing_inventory, 350_000);
+}
+
+#[test]
+fn profit_appropriation_recognizes_transfers_from_retained_earnings() {
+    let db = db::memory_database();
+    // Create legal reserve account 3103 with BS.EQ.LEG
+    db.create_accounts_atomic(vec![crate::db::NewAccount::new(
+        "3103",
+        "اندوخته قانونی",
+        1,
+        "3",
+        "creditor",
+        "",
+        true,
+    )
+    .with_fs_line("BS.EQ.LEG")])
+        .unwrap();
+
+    // 1. Period profit of 100,000
+    db.save_voucher(cash_sale("1405/01/10", 100_000)).unwrap();
+
+    // 2. Normal voucher transferring from 9802 (سود انباشته) to 3103 (اندوخته قانونی)
+    db.save_voucher(voucher(
+        "1405/05/20",
+        vec![line("9802", 10_000, 0), line("3103", 0, 10_000)],
+    ))
+    .unwrap();
+
+    let report = db.get_profit_appropriation("1405/12/29").unwrap();
+    assert_eq!(report.statement, "profit_appropriation");
+    assert_eq!(report.totals.net, 100_000);
+    assert_eq!(report.totals.appropriated, 10_000);
+    assert_eq!(report.totals.retained, 90_000);
+}
+
+#[test]
+fn cash_flow_statement_tracks_operating_investing_financing() {
+    let db = db::memory_database();
+    // Opening voucher with cash 400,000 and capital 400,000
+    let mut opening = voucher(
+        "1405/01/01",
+        vec![line("1101", 400_000, 0), line("3101", 0, 400_000)],
+    );
+    opening.voucher_type = VOUCHER_TYPES[1].to_string();
+    db.save_voucher(opening).unwrap();
+
+    // Sale of 100,000
+    db.save_voucher(cash_sale("1405/02/10", 100_000)).unwrap();
+
+    let report = db.get_cash_flow("1405/12/29").unwrap();
+    assert_eq!(report.statement, "cash_flow");
+    assert_eq!(report.opening_cash, 400_000);
+    assert_eq!(report.closing_cash, 500_000);
+    assert_eq!(report.net_change, 100_000);
+    assert_eq!(report.sections.len(), 3);
+}
+
+#[test]
+fn supplementary_statements_use_only_the_latest_opening_voucher() {
+    let db = db::memory_database();
+    // A prior-year opening still exists on the books. Summing every opening
+    // would double-count the carried-forward capital and cash.
+    let mut prior = voucher(
+        "1404/12/29",
+        vec![line("1101", 400_000, 0), line("3101", 0, 400_000)],
+    );
+    prior.voucher_type = VOUCHER_TYPES[1].to_string();
+    db.save_voucher(prior).unwrap();
+
+    let mut current = voucher(
+        "1405/01/01",
+        vec![line("1101", 500_000, 0), line("3101", 0, 500_000)],
+    );
+    current.voucher_type = VOUCHER_TYPES[1].to_string();
+    db.save_voucher(current).unwrap();
+
+    db.save_voucher(cash_sale("1405/02/10", 100_000)).unwrap();
+
+    let equity = db.get_equity_changes("1405/12/29").unwrap();
+    assert_eq!(equity.totals.opening, 500_000);
+    assert_eq!(equity.totals.net_income, 100_000);
+    assert_eq!(equity.totals.closing, 600_000);
+
+    let cash = db.get_cash_flow("1405/12/29").unwrap();
+    assert_eq!(cash.opening_cash, 500_000);
+    assert_eq!(cash.closing_cash, 600_000);
+    assert_eq!(cash.net_change, 100_000);
+    assert!(cash.classification_complete);
+}
+
+#[test]
+fn cogs_statement_uses_classified_inventory_and_contra_accounts() {
+    let db = db::memory_database();
+    // A detail account inherits BS.CA.INV from 1301, and a contra account
+    // offsets the same line. Reading raw codes would miss both behaviours.
+    db.create_accounts_atomic(vec![
+        crate::db::NewAccount::new(
+            "130101001",
+            "موجودی کالای الف",
+            3,
+            "1",
+            "debtor",
+            "130101",
+            true,
+        ),
+        crate::db::NewAccount::new(
+            "130109",
+            "ذخیرهٔ کاهش موجودی",
+            2,
+            "1",
+            "creditor",
+            "1301",
+            true,
+        )
+        .with_classification("1301", "purchase_return", "", false, ""),
+    ])
+    .unwrap();
+
+    // A stale prior-year opening must not be added to the current snapshot.
+    let mut prior = voucher(
+        "1404/12/29",
+        vec![line("1301", 900_000, 0), line("3101", 0, 900_000)],
+    );
+    prior.voucher_type = VOUCHER_TYPES[1].to_string();
+    db.save_voucher(prior).unwrap();
+
+    let mut opening = voucher(
+        "1405/01/01",
+        vec![
+            line("130101001", 500_000, 0),
+            line("130109", 0, 20_000),
+            line("3101", 0, 480_000),
+        ],
+    );
+    opening.voucher_type = VOUCHER_TYPES[1].to_string();
+    db.save_voucher(opening).unwrap();
+
+    db.save_voucher(voucher(
+        "1405/03/15",
+        vec![line("5101", 150_000, 0), line("130101001", 0, 150_000)],
+    ))
+    .unwrap();
+
+    let report = db.get_cogs("1404/01/01", "1405/12/29").unwrap();
+    assert_eq!(report.from_date, "1405/01/01");
+    assert_eq!(report.totals.opening_inventory, 480_000);
+    assert_eq!(report.totals.closing_inventory, 330_000);
+    assert_eq!(report.totals.costs, 150_000);
+    assert_eq!(report.totals.cogs, 150_000);
+
+    // A report that starts inside the period still opens from the classified
+    // snapshot plus the movements before its own start date.
+    let mid_period = db.get_cogs("1405/06/01", "1405/12/29").unwrap();
+    assert_eq!(mid_period.totals.opening_inventory, 330_000);
+    assert_eq!(mid_period.totals.closing_inventory, 330_000);
+    assert_eq!(mid_period.totals.costs, 0);
+}
+
+#[test]
+fn appropriation_statement_excludes_non_independent_destinations() {
+    let db = db::memory_database();
+    db.create_accounts_atomic(vec![crate::db::NewAccount::new(
+        "3103",
+        "اندوخته قانونی",
+        1,
+        "3",
+        "creditor",
+        "",
+        true,
+    )
+    .with_fs_line("BS.EQ.LEG")])
+        .unwrap();
+
+    db.save_voucher(cash_sale("1405/01/10", 100_000)).unwrap();
+
+    // An independent transfer from retained earnings is an appropriation.
+    db.save_voucher(voucher(
+        "1405/05/20",
+        vec![line("9802", 10_000, 0), line("3103", 0, 10_000)],
+    ))
+    .unwrap();
+
+    // A compound voucher that also credits cash is not an independent
+    // transfer and must not be counted as an appropriation.
+    db.save_voucher(voucher(
+        "1405/06/01",
+        vec![
+            line("9802", 5_000, 0),
+            line("3103", 0, 4_000),
+            line("1101", 0, 1_000),
+        ],
+    ))
+    .unwrap();
+
+    // A destination-only movement (for example using a reserve) is not a new
+    // appropriation either.
+    db.save_voucher(voucher(
+        "1405/07/01",
+        vec![line("3103", 2_000, 0), line("1101", 0, 2_000)],
+    ))
+    .unwrap();
+
+    let report = db.get_profit_appropriation("1405/12/29").unwrap();
+    assert_eq!(report.totals.appropriated, 10_000);
+    assert_eq!(report.totals.retained, 90_000);
+    let warning = report
+        .integrity
+        .issues
+        .iter()
+        .find(|issue| issue.code == "appropriation_movements")
+        .expect("excluded appropriation warning");
+    assert_eq!(warning.count, Some(2));
+}
+
+#[test]
+fn cash_flow_statement_classifies_investing_and_financing_from_cash_vouchers() {
+    let db = db::memory_database();
+    db.create_accounts_atomic(vec![
+        crate::db::NewAccount::new("2102", "دارایی‌های ثابت مشهود", 1, "2", "debtor", "", true)
+            .with_fs_line("BS.NCA.PPE"),
+        crate::db::NewAccount::new("2501", "تسهیلات مالی بلندمدت", 1, "5", "creditor", "", true)
+            .with_fs_line("BS.NCL.FIN"),
+    ])
+    .unwrap();
+
+    let mut opening = voucher(
+        "1405/01/01",
+        vec![line("1101", 500_000, 0), line("3101", 0, 500_000)],
+    );
+    opening.voucher_type = VOUCHER_TYPES[1].to_string();
+    db.save_voucher(opening).unwrap();
+
+    // Equipment purchase: cash out, investing.
+    db.save_voucher(voucher(
+        "1405/02/01",
+        vec![line("2102", 200_000, 0), line("1101", 0, 200_000)],
+    ))
+    .unwrap();
+
+    // Long-term loan: cash in, financing.
+    db.save_voucher(voucher(
+        "1405/03/01",
+        vec![line("1101", 300_000, 0), line("2501", 0, 300_000)],
+    ))
+    .unwrap();
+
+    // Operating sale.
+    db.save_voucher(cash_sale("1405/04/01", 100_000)).unwrap();
+
+    let report = db.get_cash_flow("1405/12/29").unwrap();
+    assert_eq!(report.opening_cash, 500_000);
+    assert_eq!(report.closing_cash, 700_000);
+    assert_eq!(report.net_change, 200_000);
+    assert_eq!(report.variance, 0);
+    assert!(report.classification_complete);
+
+    let operating = &report.sections[0];
+    assert_eq!(operating.key, "operating");
+    assert_eq!(operating.total, 100_000);
+    assert_eq!(operating.lines.len(), 1);
+    assert_eq!(operating.lines[0].amount, 100_000);
+
+    let investing = &report.sections[1];
+    assert_eq!(investing.total, -200_000);
+    assert_eq!(investing.lines.len(), 1);
+
+    let financing = &report.sections[2];
+    assert_eq!(financing.total, 300_000);
+    assert_eq!(financing.lines.len(), 1);
+}
+
+#[test]
+fn cash_flow_statement_reports_unresolved_cash_vouchers() {
+    let db = db::memory_database();
+    db.create_accounts_atomic(vec![crate::db::NewAccount::new(
+        "1999",
+        "حساب انتظامی آزمایشی",
+        1,
+        "1",
+        "debtor",
+        "",
+        true,
+    )
+    .with_fs_line("MEMO")])
+        .unwrap();
+
+    // The cash counterpart is a memorandum account, so no cash-flow activity
+    // can be assigned without guessing.
+    db.save_voucher(voucher(
+        "1405/02/10",
+        vec![line("1101", 100_000, 0), line("1999", 0, 100_000)],
+    ))
+    .unwrap();
+
+    let report = db.get_cash_flow("1405/12/29").unwrap();
+    assert_eq!(report.net_change, 100_000);
+    assert_eq!(report.variance, 100_000);
+    assert!(!report.classification_complete);
+    assert_eq!(report.unresolved_vouchers.len(), 1);
+    assert_eq!(report.unresolved_vouchers[0].cash_movement, 100_000);
+    assert!(report
+        .integrity
+        .issues
+        .iter()
+        .any(|issue| issue.code == "cash_flow_classification" && issue.severity == "error"));
 }

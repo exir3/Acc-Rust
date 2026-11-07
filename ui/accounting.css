@@ -404,6 +404,17 @@ body.is-voucher-list-popup .page-scroll {
   color: #7a4a00;
 }
 
+.data-table tr.row-highlight td {
+  background: #eef4fd;
+  font-weight: 600;
+}
+
+.data-table tr.row-total td {
+  background: #e8f0fb;
+  border-top: 2px solid #9fb7d6;
+  font-weight: 700;
+}
+
 .integrity-panel {
   margin-top: 12px;
   padding: 10px 12px;

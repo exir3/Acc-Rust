@@ -55,6 +55,11 @@ html, body { margin: 0; padding: 0; background: #fff; }
 .rpt-note { color: #7c8ba4; font-size: 10.5px; margin-top: 6px; }
 .rpt-table tr.rpt-unclassified td { background: #fff8e6; color: #7a4a00; }
 .rpt-table tr.rpt-unclassified-head td { background: #fdf1d8; color: #7a4a00; font-weight: 700; }
+.rpt-table tr.rpt-profit-row td { background: #eef4fd; font-weight: 700; }
+.rpt-table tr.rpt-supplementary td { background: #f7faff; color: #4d5d77; font-style: italic; }
+.rpt-table tr.rpt-total-row td { background: #e8f0fb; font-weight: 700; border-color: #9fb7d6; }
+.rpt-table tr.rpt-retained-row td { background: #e8f1ff; color: #123a6b; font-weight: 700; }
+.rpt-table tr.rpt-account-row td { background: #fbfcfe; color: #4d5d77; font-size: 10.5px; }
 .rpt-health { margin-top: 12px; border: 1px solid #d7e2f0; border-right: 4px solid #1f5fd0; padding: 6px 8px; font-size: 11px; }
 .rpt-health[data-ok="true"] { border-right-color: #0d7f7a; background: #f0fbf9; color: #0d5f5a; }
 .rpt-health[data-ok="false"] { border-right-color: #b42318; background: #fff5f5; color: #5c1a15; }
