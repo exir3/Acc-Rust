@@ -58,12 +58,15 @@ impl ReportScope {
         }
     }
 
-    /// SQL predicate for the `vouchers` alias `v`.
-    pub(crate) fn sql(self) -> &'static str {
+    /// SQL predicate for a `vouchers` table joined under `alias`. Callers must
+    /// pass the same alias the predicate is placed next to; putting a predicate
+    /// for `v` inside a subquery that aliases the table differently would make
+    /// it silently refer to the outer row instead of the subquery's.
+    pub(crate) fn sql(self, alias: &str) -> String {
         match self {
-            Self::Official => "v.is_temporary = 0",
-            Self::Working => "1 = 1",
-            Self::Temporary => "v.is_temporary = 1",
+            Self::Official => format!("{alias}.is_temporary = 0"),
+            Self::Working => "1 = 1".to_string(),
+            Self::Temporary => format!("{alias}.is_temporary = 1"),
         }
     }
 }

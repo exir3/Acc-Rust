@@ -59,7 +59,7 @@ impl Database {
         let to = normalize_filter_date(to, "تاریخ پایان")?;
         check_range(&from, &to)?;
         let page = page_window(offset, limit)?;
-        let scope_sql = scope.sql();
+        let scope_sql = scope.sql("v");
 
         self.with_conn(|conn| {
             let (account_name, group_name) = conn

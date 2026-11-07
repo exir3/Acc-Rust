@@ -237,9 +237,19 @@
 
             <div class="vf-meta-spacer"></div>
 
-            <div class="vf-doc-status" id="vfDocStatus" data-tone="info" role="status" aria-live="polite">
-              <span class="vf-doc-status-dot" aria-hidden="true"></span>
+            <div class="vf-visually-hidden" id="vfDocStatus" data-tone="info" role="status" aria-live="polite">
               <span id="vfDocStatusText">در حال بارگذاری…</span>
+            </div>
+
+            <div class="vf-lock-btns" role="group" aria-label="وضعیت سند">
+              <button type="button" class="vf-lock-btn" id="vfChangesBtn" title="سند موقت بماند و پس از ذخیره قابل ویرایش باشد">
+                <svg class="ico vf-ic-amber" aria-hidden="true"><use href="#i-edit" /></svg>
+                <span>تغییرات سند</span>
+              </button>
+              <button type="button" class="vf-lock-btn" id="vfPermanentBtn" title="پس از ذخیره، سند غیرقابل‌ویرایش و غیرقابل‌حذف می‌شود">
+                <svg class="ico vf-ic-green" aria-hidden="true"><use href="#i-lock" /></svg>
+                <span>سند دائمی</span>
+              </button>
             </div>
           </div>
         </div>
@@ -261,16 +271,6 @@
               <svg class="ico vf-ic-green"><use href="#i-save" /></svg>
               <span>ذخیره F2</span>
             </button>
-            <div class="vf-lock-btns" role="group" aria-label="وضعیت سند">
-              <button type="button" class="vf-lock-btn" id="vfPermanentBtn" title="پس از ذخیره، سند غیرقابل‌ویرایش و غیرقابل‌حذف می‌شود">
-                <svg class="ico vf-ic-green" aria-hidden="true"><use href="#i-lock" /></svg>
-                <span>سند دائمی</span>
-              </button>
-              <button type="button" class="vf-lock-btn" id="vfChangesBtn" title="سند موقت بماند و پس از ذخیره قابل ویرایش باشد">
-                <svg class="ico vf-ic-amber" aria-hidden="true"><use href="#i-edit" /></svg>
-                <span>تغییرات سند</span>
-              </button>
-            </div>
             <button type="button" class="vf-tool" data-action="transfer-document" title="انتقال سند جاری به شماره سند دیگر">
               <svg class="ico vf-ic-amber"><use href="#i-swap" /></svg>
               <span>انتقال سند</span>

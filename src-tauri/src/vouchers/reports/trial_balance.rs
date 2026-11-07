@@ -174,7 +174,7 @@ impl Database {
         let code_from = normalize_code_filter(account_from);
         let code_to = normalize_code_filter(account_to);
         let has_code_range = !code_from.is_empty() || !code_to.is_empty();
-        let scope_sql = scope.sql();
+        let scope_sql = scope.sql("v");
 
         self.with_conn(|conn| {
             // Step 1: aggregate the voucher lines per effective account in

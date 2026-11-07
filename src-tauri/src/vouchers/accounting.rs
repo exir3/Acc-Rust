@@ -39,7 +39,11 @@ pub(crate) fn account_activities(
     } else {
         (from.to_string(), to.to_string())
     };
-    let scope_sql = scope.sql();
+    let scope_sql = scope.sql("v");
+    // The opening-voucher subquery aliases the table as `o`. It needs its own
+    // predicate; reusing `scope_sql` there would bind to the outer closing
+    // voucher and let an out-of-scope opening cancel the final closing.
+    let opening_scope_sql = scope.sql("o");
 
     // Step 1: totals per effective account, grouped in SQLite.
     //
@@ -70,7 +74,7 @@ pub(crate) fn account_activities(
                               SELECT 1
                                 FROM vouchers o
                                WHERE o.type = ?6
-                                 AND {scope_sql}
+                                 AND {opening_scope_sql}
                                  AND (?2 = '' OR o.date <= ?2)
                                  AND (o.date > v.date
                                       OR (o.date = v.date AND o.id > v.id))

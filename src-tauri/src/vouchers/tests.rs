@@ -2387,6 +2387,88 @@ fn opening_voucher_cancels_the_previous_final_closing() {
 }
 
 #[test]
+fn temporary_opening_does_not_cancel_the_final_closing_in_official_scope() {
+    let db = db::memory_database();
+    let sale = db.save_voucher(cash_sale("1405/01/10", 1_000_000)).unwrap();
+    db.set_voucher_permanent(sale.id, Some(&sale.updated_at))
+        .unwrap();
+
+    let mut closing = voucher(
+        "1405/12/29",
+        vec![line("410101", 1_000_000, 0), line("310101", 0, 1_000_000)],
+    );
+    closing.voucher_type = CLOSING_TEMPORARY.to_string();
+    let closing = db.save_voucher(closing).unwrap();
+    db.set_voucher_permanent(closing.id, Some(&closing.updated_at))
+        .unwrap();
+
+    let mut final_closing = voucher(
+        "1405/12/29",
+        vec![line("310101", 1_000_000, 0), line("110101", 0, 1_000_000)],
+    );
+    final_closing.voucher_type = CLOSING_FINAL.to_string();
+    let final_closing = db.save_voucher(final_closing).unwrap();
+    db.set_voucher_permanent(final_closing.id, Some(&final_closing.updated_at))
+        .unwrap();
+
+    // A temporary opening voucher is not part of official reports, so it must
+    // not count as the opening that lets the final closing voucher through.
+    let mut opening = voucher(
+        "1406/01/01",
+        vec![line("110101", 1_000_000, 0), line("310101", 0, 1_000_000)],
+    );
+    opening.voucher_type = "سند حسابداری افتتاحیه".to_string();
+    db.save_voucher(opening).unwrap();
+
+    let official = db
+        .get_balance_sheet_scoped("1406/06/01", ReportScope::Official)
+        .unwrap();
+    assert_eq!(official.assets_total, 1_000_000);
+    assert_eq!(official.equity_total, 1_000_000);
+    assert!(official.balanced);
+
+    // The working scope sees the opening, so the closing and opening pair is
+    // included and cancels out instead of zeroing the balances.
+    let working = db
+        .get_balance_sheet_scoped("1406/06/01", ReportScope::Working)
+        .unwrap();
+    assert_eq!(working.assets_total, 1_000_000);
+    assert_eq!(working.equity_total, 1_000_000);
+    assert!(working.balanced);
+}
+
+#[test]
+fn permanent_opening_does_not_cancel_a_temporary_final_closing_in_temporary_scope() {
+    let db = db::memory_database();
+    db.save_voucher(cash_sale("1405/01/10", 1_000_000)).unwrap();
+
+    let mut final_closing = voucher(
+        "1405/12/29",
+        vec![line("310101", 1_000_000, 0), line("110101", 0, 1_000_000)],
+    );
+    final_closing.voucher_type = CLOSING_FINAL.to_string();
+    db.save_voucher(final_closing).unwrap();
+
+    // A permanent opening voucher is outside the temporary scope, so the
+    // temporary final closing stays hidden there.
+    let mut opening = voucher(
+        "1406/01/01",
+        vec![line("110101", 1_000_000, 0), line("310101", 0, 1_000_000)],
+    );
+    opening.voucher_type = "سند حسابداری افتتاحیه".to_string();
+    let opening = db.save_voucher(opening).unwrap();
+    db.set_voucher_permanent(opening.id, Some(&opening.updated_at))
+        .unwrap();
+
+    let temporary = db
+        .get_balance_sheet_scoped("1406/06/01", ReportScope::Temporary)
+        .unwrap();
+    assert_eq!(temporary.assets_total, 1_000_000);
+    assert_eq!(temporary.equity_total, 0);
+    assert!(temporary.balanced);
+}
+
+#[test]
 fn ledger_of_parent_account_includes_sub_accounts() {
     let db = db::memory_database();
     db.save_voucher(voucher(

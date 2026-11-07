@@ -49,7 +49,7 @@ impl Database {
         let terms = search_terms(search);
         let search = search.trim().to_string();
         let page = page_window(offset, limit)?;
-        let scope_sql = scope.sql();
+        let scope_sql = scope.sql("v");
 
         self.with_conn(|conn| {
             let where_clause = format!(
