@@ -109,7 +109,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 | `src-tauri/src/excel/` | ورود و خروجی Excel |
 | `scripts/` | ابزارهای بررسی، آزمون و سرور استاتیک UI |
 | `tests/` | آزمون‌های واحد فرانت‌اند (`tests/e2e/` آزمون‌های Playwright) |
-| `Docs/` | مستندات و گزارش بررسی فنی |
+| `Docs/` | مستندات جاری، سیاست‌ها و آرشیو بررسی‌ها |
 
 ## معماری
 
@@ -205,9 +205,10 @@ override فقط در build debug فعال است، بنابراین release هر
 
 ## مستندات بیشتر
 
+- [فهرست مستندات و سیاست آرشیو](Docs/README.md)
 - [وضعیت پروژه، کارهای انجام‌شده و باقی‌مانده](Docs/Project-Status.md)
-- [گزارش جامع بررسی فنی و حسابداری](Docs/Acc-Rust-Review-fa.md)
-- [آرشیو ممیزی فنی قبلی](Docs/Archive/Acc-Rust-Technical-Audit-2026-11-07-fa.md)
+- [گزارش جامع بررسی فنی و حسابداری (آرشیو)](Docs/Archive/Acc-Rust-Review-fa.md)
+- [گزارش بررسی فرانت‌اند و تجربه کاربری (آرشیو)](Docs/Archive/Acc-Rust-Frontend-UX-Review-fa.md)
 - [سیاست کد حساب](Docs/Account-Code-Policy.md)
 - [تأیید مستقل گزارش‌های مالی](Docs/Accounting-Report-Signoff.md)
 - [سیاست حفاظت از داده و انتشار](Docs/Data-Protection-and-Release-Policy.md)

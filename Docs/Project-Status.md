@@ -2,12 +2,13 @@
 
 **آخرین به‌روزرسانی:** ۸ نوامبر ۲۰۲۶<br>
 **مبنای بررسی:** شاخه `main`، commit `ccae0230bcf5802dd5cd3992cc30edaf3d1865ea` («Aggregate account group counts in one pass»، ۸ نوامبر ۲۰۲۶)<br>
-**مرجع تفصیلی:** [گزارش جامع بررسی فنی و حسابداری](Acc-Rust-Review-fa.md)<br>
+**مرجع تفصیلی:** [گزارش جامع بررسی فنی و حسابداری](Archive/Acc-Rust-Review-fa.md) (آرشیو ۸ نوامبر ۲۰۲۶)<br>
 **وضعیت انتشار:** «نیازمند تأیید»؛ تا امضای حسابدار/حسابرس مستقل و اجرای موفق CI روی commit نهایی، خروجی رسمی صورت‌های مالی قطعی نیست.
 
 > این سند تنها مرجع خلاصهٔ وضعیت پروژه است. جزئیات یافته‌ها، شواهد کد و معیارهای پذیرش در
-> [گزارش جامع بررسی فنی و حسابداری](Acc-Rust-Review-fa.md) نگهداری می‌شود. گزارش‌های فنی
-> قدیمی‌تر فقط به‌عنوان تاریخچه در پوشهٔ `Docs/Archive/` باقی مانده‌اند و مرجع وضعیت فعلی نیستند.
+> [گزارش جامع بررسی فنی و حسابداری](Archive/Acc-Rust-Review-fa.md) نگهداری می‌شود.
+> سایر بررسی‌های تاریخی در پوشهٔ `Docs/Archive/` یا تاریخچه Git هستند و مرجع وضعیت فعلی
+> نیستند.
 
 ## ۱. خلاصهٔ اجرایی
 
@@ -97,6 +98,27 @@ Rust + SQLite برای ادامهٔ کار مناسب است و بازنویسی
 | آزمون دسترس‌پذیری و اندازه‌های پنجره | `tests/e2e/accessibility-layout.spec.mjs` | پیاده‌سازی شده |
 | CI، امضای release و الزام sign-off | `.github/workflows/ci.yml`، `scripts/check-report-signoff.mjs` | پیاده‌سازی شده؛ اجرای release رسمی نیازمند گواهی و تأیید است |
 
+### قیدهای فنی تغییرناپذیر
+
+تغییرهای آینده باید این کنترل‌ها را حفظ کنند. این فهرست جایگزین آزمون‌ها نیست و
+هر مورد باید پوشش آزمون داشته باشد؛ موارد از بررسی سوم (`review-3`) به این سند
+منتقل شده‌اند.
+
+- مبالغ به‌صورت `i64` ریال و در UI با `BigInt` محاسبه می‌شوند؛ بازگشت به `f64`
+  ممنوع است (`ui/js/voucher/amounts.js`، `src-tauri/src/limits.rs`).
+- تریگر یک‌طرفه‌بودن ردیف سند در `src-tauri/src/db/schema.rs` باید حفظ شود: فقط
+  یکی از بدهکار یا بستانکار مثبت است.
+- تریگر سند دائمی، جفت حساب پایه/تفصیلی و کنترل `expected_updated_at` نباید
+  تضعیف شوند.
+- `PRAGMA synchronous` پیش‌فرض (FULL) و مسدودبودن `HESABDARI_SMOKE_DATA_DIR` در
+  release داخل `src-tauri/src/db/connection.rs` باید حفظ شوند.
+- تاریخچهٔ `account_classification_history` (schema v13) حذف یا بازنویسی نشود؛
+  برای دورهٔ پیش از ارتقا تاریخ جعلی ساخته نشود.
+- `ensure_printable` در `src-tauri/src/commands/print.rs` فقط تقویت شود و هرگز
+  دور زده نشود.
+- تا زمانی که `Accounting-Report-Signoff.md` وضعیت `approved` ندارد، gate انتشار
+  برداشته نشود.
+
 ## ۳. یافته‌های باز
 
 شناسه‌های زیر مطابق نسخهٔ ادغام‌شدهٔ گزارش تفصیلی (۸ نوامبر ۲۰۲۶) هستند.
@@ -184,9 +206,9 @@ HTML عنوان) نیز رفع شده‌اند و در جدول نمی‌آین�
 | سند | نقش |
 | --- | --- |
 | [`README.md`](../README.md) | معرفی، اجرا، ساخت و آزمون پروژه |
-| [`Acc-Rust-Review-fa.md`](Acc-Rust-Review-fa.md) | گزارش تفصیلی جاری فنی و حسابداری |
-| [`review-3.md`](review-3.md) | بررسی سوم کد و معیارهای پذیرش اصلاح‌های چاپ/گزارش (۸ نوامبر ۲۰۲۶) |
-| [`Archive/Acc-Rust-Technical-Audit-2026-11-07-fa.md`](Archive/Acc-Rust-Technical-Audit-2026-11-07-fa.md) | آرشیو تاریخی؛ مرجع وضعیت فعلی نیست |
+| [`Docs/README.md`](README.md) | فهرست مستندات، نقش هر سند و سیاست آرشیو |
+| [`Archive/Acc-Rust-Review-fa.md`](Archive/Acc-Rust-Review-fa.md) | گزارش تفصیلی فنی و حسابداری (۸ نوامبر ۲۰۲۶؛ آرشیو) |
+| [`Archive/Acc-Rust-Frontend-UX-Review-fa.md`](Archive/Acc-Rust-Frontend-UX-Review-fa.md) | بررسی فرانت‌اند و تجربه کاربری (۸ نوامبر ۲۰۲۶؛ آرشیو) |
 | [`Account-Code-Policy.md`](Account-Code-Policy.md) | سیاست واحد کد حساب و گروه |
 | [`Accounting-Report-Signoff.md`](Accounting-Report-Signoff.md) | کنترل تأیید مستقل و gate انتشار رسمی |
 | [`Data-Protection-and-Release-Policy.md`](Data-Protection-and-Release-Policy.md) | سیاست پشتیبان‌گیری، رمزنگاری و امضای انتشار |

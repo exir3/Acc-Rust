@@ -33,8 +33,11 @@ body.is-voucher-list-popup .statusbar {
   display: none !important;
 }
 
+/* The list fills its window: the table shrinks, the filter panel and the
+   bottom action bar keep their natural height. */
 body.is-voucher-list-popup .page-scroll {
-  padding-top: 14px;
+  padding: 0;
+  overflow: hidden;
 }
 
 /* ── Workspace (empty desktop with the background image) ─────── */
@@ -1594,6 +1597,117 @@ body.is-voucher-list-popup .page-scroll {
     border-inline-start: 0;
     box-shadow: none;
   }
+}
+
+/* ── Voucher list popup (reference-style desktop form) ───────── */
+
+.vlist-shell {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #ececec;
+  color: #000;
+  font-family: var(--font);
+  font-size: 12px;
+}
+
+.vlist-shell *,
+.vlist-shell *::before,
+.vlist-shell *::after { box-sizing: border-box; }
+
+.vlist-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.vlist-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.vlist-main .card.vlist-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 10px 12px 12px;
+  border-radius: 0;
+}
+
+.vlist-card > .empty-state { flex: 1; }
+
+.vlist-card .table-wrap {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.vlist-main .load-more {
+  flex: 0 0 auto;
+  padding: 0 2px;
+}
+
+.vlist-filter-panel {
+  flex: 0 0 auto;
+  max-height: 45vh;
+  overflow: auto;
+}
+
+.vlist-filter-panel[hidden] { display: none; }
+
+.vlist-filter-form { margin: 0; }
+
+.vlist-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 8px 12px;
+  padding-top: 3px;
+}
+
+.vlist-filter-wide { grid-column: 1 / -1; }
+
+.vlist-filter-grid .field-error {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+.vlist-filter-legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 0 5px;
+}
+
+.vlist-filter-clear {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #be123c;
+  font: inherit;
+  font-weight: normal;
+  cursor: pointer;
+}
+
+.vlist-filter-clear:hover { text-decoration: underline; }
+
+.vlist-toolbar { border-top-color: #b9b9b9; }
+
+@media (max-width: 820px) {
+  .vlist-filter-grid { grid-template-columns: 1fr; }
+  .vlist-filter-wide { grid-column: auto; }
 }
 
 /* ── Responsive ──────────────────────────────────────────────── */

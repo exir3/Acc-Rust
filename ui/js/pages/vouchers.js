@@ -2,11 +2,13 @@
 
 /* ── Vouchers list ──────────────────────────────────────────── */
 
+// The filter panel is closed by default and toggled from the bottom toolbar,
+// like the reference accounting-documents form (and the trial-balance popup).
+let voucherListState = { filterOpen: false, keydownBound: false };
+
 PAGES.vouchers = {
-  actions: () => [
-    { label: 'سند جدید', icon: 'i-plus', primary: true, onClick: () => openVoucherWindow() },
-    { label: 'به‌روزرسانی', icon: 'i-refresh', onClick: () => navigate('vouchers', { force: true }) },
-  ],
+  // The form's actions live in the bottom toolbar, not in the page header.
+  actions: () => [],
   load: async () => {
     const f = state.filters.vouchers;
     const report = await loadPagedList(
@@ -29,41 +31,82 @@ PAGES.vouchers = {
   bind: bindVouchers,
 };
 
-function vouchersFilterBar() {
+function vouchersFilterPanel() {
   const f = state.filters.vouchers;
   return `
-  <form class="filter-bar" data-filter="vouchers">
-    <div class="field grow">
-      <label for="vfSearch">جست‌وجو</label>
-      <input id="vfSearch" class="input" name="search" type="search" value="${esc(f.search)}" placeholder="شماره سند، شرح یا نام حساب…" />
-    </div>
-    <div class="field">
-      <label for="vfFrom">از تاریخ</label>
-      <input id="vfFrom" class="input" name="from" data-date type="text" inputmode="numeric" value="${esc(f.from)}" placeholder="۱۴۰۵/۰۱/۰۱" />
-    </div>
-    <div class="field">
-      <label for="vfTo">تا تاریخ</label>
-      <input id="vfTo" class="input" name="to" data-date type="text" inputmode="numeric" value="${esc(f.to)}" placeholder="۱۴۰۵/۱۲/۲۹" />
-    </div>
-    <button class="btn btn-primary" type="submit">${icon('i-search')}<span>اعمال فیلتر</span></button>
-    <button class="btn" type="button" data-reset>${icon('i-refresh')}<span>بازنشانی</span></button>
+  <form class="vlist-filter-form" data-filter="vouchers">
+    <fieldset id="vouchersFilterPanel" class="tbp-filter-panel vlist-filter-panel"${voucherListState.filterOpen ? '' : ' hidden'}>
+      <legend class="vlist-filter-legend">
+        <span>فیلترینگ گزارش</span>
+        <button type="button" class="vlist-filter-clear" data-reset>پاک کردن فیلترها</button>
+      </legend>
+      <div class="vlist-filter-grid">
+        <div class="field tbp-filter-field vlist-filter-wide">
+          <label class="tbp-filter-lbl" for="vfSearch">جست‌وجو:</label>
+          <input id="vfSearch" class="tbp-filter-inp" name="search" type="search" value="${esc(f.search)}" placeholder="شماره سند، شرح یا نام حساب…" />
+        </div>
+        <div class="field tbp-filter-field">
+          <label class="tbp-filter-lbl" for="vfFrom">از تاریخ:</label>
+          <input id="vfFrom" class="tbp-filter-inp" name="from" data-date type="text" inputmode="numeric" dir="ltr" value="${esc(f.from)}" placeholder="۱۴۰۵/۰۱/۰۱" />
+        </div>
+        <div class="field tbp-filter-field">
+          <label class="tbp-filter-lbl" for="vfTo">تا تاریخ:</label>
+          <input id="vfTo" class="tbp-filter-inp" name="to" data-date type="text" inputmode="numeric" dir="ltr" value="${esc(f.to)}" placeholder="۱۴۰۵/۱۲/۲۹" />
+        </div>
+      </div>
+    </fieldset>
   </form>`;
+}
+
+function vouchersToolbar() {
+  const open = voucherListState.filterOpen;
+  return `
+  <div class="tbp-toolbar vlist-toolbar" role="toolbar" aria-label="عملیات لیست اسناد حسابداری">
+    <div class="tbp-toolbar-group" role="group" aria-label="عملیات فرم">
+      <button type="button" class="tbp-fbtn apply" data-vlist-action="apply" title="اعمال فیلتر و نمایش گزارش (PageDown)">
+        <span class="tbp-tbtn-label">اعمال فیلتر</span>
+      </button>
+      <button type="button" class="tbp-tbtn${open ? ' pressed' : ''}" data-vlist-action="filter"
+        title="فیلترینگ گزارش (Insert)" aria-pressed="${open}" aria-expanded="${open}"
+        aria-controls="vouchersFilterPanel">
+        <span class="tbp-tbtn-label">فیلترینگ گزارش</span>
+      </button>
+      <button type="button" class="tbp-tbtn" data-vlist-action="new-voucher" title="سند جدید">
+        <span class="tbp-tbtn-label">سند جدید</span>
+      </button>
+      <button type="button" class="tbp-tbtn" data-vlist-action="refresh" title="به‌روزرسانی (F5)">
+        <span class="tbp-tbtn-label">به‌روزرسانی</span>
+      </button>
+    </div>
+    <div class="tbp-toolbar-group tbp-toolbar-close-group" role="group" aria-label="بستن فرم">
+      <button type="button" class="tbp-back-btn" data-vlist-action="close" title="بستن (Escape)">
+        <span class="tbp-tbtn-label">بستن</span>
+      </button>
+    </div>
+  </div>`;
 }
 
 function renderVouchers(report) {
   const shown = report.vouchers.length;
   const matched = Number(report.matchedCount ?? shown);
   return `
-  ${vouchersFilterBar()}
-  <div class="card">
-    ${shown ? renderVoucherTable(report) : `<div class="empty-state">
-      ${icon('i-doc')}
-      <b>سندی در این بازه یافت نشد</b>
-      <span>بازه تاریخ را تغییر دهید یا سند جدیدی ثبت کنید.</span>
-      <button type="button" class="btn btn-primary" data-new-voucher>${icon('i-plus')}<span>ثبت سند جدید</span></button>
-    </div>`}
-  </div>
-  ${loadMoreBar('vouchers', shown, matched, state.listOffsets.vouchers)}`;
+  <div class="vlist-shell">
+    <div class="vlist-content">
+      <div class="vlist-main">
+        <div class="card vlist-card">
+          ${shown ? renderVoucherTable(report) : `<div class="empty-state">
+            ${icon('i-doc')}
+            <b>سندی در این بازه یافت نشد</b>
+            <span>بازه تاریخ را تغییر دهید یا سند جدیدی ثبت کنید.</span>
+            <button type="button" class="btn btn-primary" data-new-voucher>${icon('i-plus')}<span>ثبت سند جدید</span></button>
+          </div>`}
+        </div>
+        ${loadMoreBar('vouchers', shown, matched, state.listOffsets.vouchers)}
+      </div>
+      ${vouchersFilterPanel()}
+    </div>
+    ${vouchersToolbar()}
+  </div>`;
 }
 
 function listPageStep(kind) {
@@ -134,6 +177,91 @@ function bindVouchers(root) {
   // «سند جدید» buttons are wired once by bindPageCommon.
   bindListPager(root);
   bindVoucherRowActions(root);
+  root.querySelectorAll('[data-vlist-action]').forEach((button) => {
+    button.addEventListener('click', () => voucherRunAction(button.dataset.vlistAction));
+  });
+  // #page survives re-renders, so bind the window-level shortcuts once.
+  if (!voucherListState.keydownBound) {
+    document.addEventListener('keydown', voucherHandleKeydown);
+    voucherListState.keydownBound = true;
+  }
+}
+
+function voucherHandleKeydown(event) {
+  if (event.defaultPrevented) return;
+  const target = event.target;
+  const tag = target?.tagName;
+  const inField = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA'
+    || target?.isContentEditable;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    void voucherCloseWindow();
+    return;
+  }
+  if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+  if (event.key === 'F5') {
+    event.preventDefault();
+    navigate('vouchers', { force: true });
+    return;
+  }
+  // PageDown/Insert have no native meaning in a single-line input, so they
+  // keep working while the user is typing a filter value.
+  const inSingleLineInput = tag === 'INPUT';
+  if (event.key === 'PageDown' && (!inField || inSingleLineInput)) {
+    event.preventDefault();
+    voucherApplyFilters();
+    return;
+  }
+  if (event.key === 'Insert' && (!inField || inSingleLineInput)) {
+    event.preventDefault();
+    voucherToggleFilterPanel();
+  }
+}
+
+function voucherRunAction(action) {
+  switch (action) {
+    case 'apply': voucherApplyFilters(); break;
+    case 'filter': voucherToggleFilterPanel(); break;
+    case 'new-voucher': openVoucherWindow(); break;
+    case 'refresh': navigate('vouchers', { force: true }); break;
+    case 'close': void voucherCloseWindow(); break;
+    default: break;
+  }
+}
+
+function voucherToggleFilterPanel(open = !voucherListState.filterOpen) {
+  voucherListState.filterOpen = open;
+  const panel = $('#vouchersFilterPanel');
+  if (panel) {
+    panel.hidden = !open;
+    if (open) panel.querySelector('input[name="search"]')?.focus();
+  }
+  $$('[data-vlist-action="filter"]').forEach((button) => {
+    button.classList.toggle('pressed', open);
+    button.setAttribute('aria-pressed', String(open));
+    button.setAttribute('aria-expanded', String(open));
+  });
+}
+
+function voucherApplyFilters() {
+  // The filter panel stays mounted while hidden, so its current values are
+  // submitted exactly as if the old in-page «اعمال فیلتر» button was pressed.
+  const form = $('form[data-filter="vouchers"]');
+  if (form) {
+    form.requestSubmit();
+    return;
+  }
+  navigate('vouchers', { force: true });
+}
+
+async function voucherCloseWindow() {
+  try {
+    if (currentWindow && typeof currentWindow.close === 'function') {
+      await currentWindow.close();
+      return;
+    }
+  } catch (_) { /* fall through to window.close */ }
+  window.close();
 }
 
 function bindListPager(root) {
