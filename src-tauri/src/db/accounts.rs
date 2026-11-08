@@ -4,11 +4,12 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::db::audit;
 use crate::db::classification::{self, AccountClassificationRow, EffectiveClassification};
-use crate::db::common::{db_error, normalize_code, to_fa_digits};
-use crate::db::fs_catalog::{get_fs_line, FsNormalSide};
+use crate::db::common::{db_error, normalize_code, to_fa_digits, today_jalali};
+use crate::db::fs_catalog::{get_fs_line, is_fs_line_code, FsNormalSide};
 use crate::db::model::{
-    Account, AccountGroup, AccountGroupList, AccountList, BulkAccountDeleteFailure,
-    BulkAccountDeleteResult, Database, NewAccount,
+    Account, AccountGroup, AccountGroupClassificationImpact, AccountGroupImpactAccount,
+    AccountGroupList, AccountList, BulkAccountDeleteFailure, BulkAccountDeleteResult, Database,
+    NewAccount,
 };
 use crate::db::validation::{
     validate_account_code, validate_group_code, validate_level, validate_name, validate_nature,
@@ -111,6 +112,12 @@ fn insert_account(conn: &Connection, account: &NewAccount) -> Result<Account, St
     )
     .map_err(db_error)?;
     let new_id = conn.last_insert_rowid();
+    classification::snapshot_classifications(
+        conn,
+        std::slice::from_ref(&account.code),
+        classification::HISTORY_BASELINE,
+        "نسخه اولیه طبقه‌بندی حساب",
+    )?;
 
     let mut created = fetch_account(conn, new_id)?;
     enrich_accounts(conn, std::slice::from_mut(&mut created))?;
@@ -123,6 +130,36 @@ fn optional_text(value: &str) -> Option<&str> {
     } else {
         Some(value.trim())
     }
+}
+
+/// All codes in the branch rooted at `code`, including the root itself.
+fn subtree_codes(conn: &Connection, code: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "WITH RECURSIVE subtree(code) AS (
+                 SELECT ?1
+                 UNION
+                 SELECT a.code
+                   FROM accounts a
+                   JOIN subtree s ON a.parent_code = s.code
+             )
+             SELECT code FROM subtree ORDER BY code",
+        )
+        .map_err(db_error)?;
+    let rows = stmt
+        .query_map(params![code], |row| row.get(0))
+        .map_err(db_error)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_error)
+}
+
+fn group_account_codes(conn: &Connection, group_code: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT code FROM accounts WHERE group_code = ?1 ORDER BY code")
+        .map_err(db_error)?;
+    let rows = stmt
+        .query_map(params![group_code], |row| row.get(0))
+        .map_err(db_error)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_error)
 }
 
 impl Database {
@@ -255,7 +292,7 @@ impl Database {
                     .map_err(db_error)?;
                 if posted_line_count > 0 {
                     return Err(format!(
-                        "این گروه {} ردیف سند ثبت‌شده دارد. تغییر نوع یا بخش پیش‌فرض، گزارش‌های تاریخی را بازطبقه‌بندی می‌کند؛ برای ادامه، تغییر را تأیید کنید.",
+                        "این گروه {} ردیف سند ثبت‌شده دارد. تغییر نوع یا بخش پیش‌فرض از امروز در گزارش‌ها اعمال می‌شود و گزارش‌های تاریخ‌های گذشته با طبقه‌بندی قبلی خود باقی می‌مانند؛ برای ادامه، تغییر را تأیید کنید.",
                         to_fa_digits(posted_line_count)
                     ));
                 }
@@ -271,6 +308,15 @@ impl Database {
             )
             .map_err(db_error)?;
             let group = fetch_group(&tx, id)?;
+            if classification_changed {
+                let codes = group_account_codes(&tx, &code)?;
+                classification::snapshot_classifications(
+                    &tx,
+                    &codes,
+                    &today_jalali(),
+                    "تغییر طبقه‌بندی گروه حساب",
+                )?;
+            }
             audit::log(
                 &tx,
                 "update",
@@ -282,6 +328,106 @@ impl Database {
             )?;
             tx.commit().map_err(db_error)?;
             Ok(group)
+        })
+    }
+
+    /// Previews which accounts would change statement line if the group's type
+    /// or default section were saved. It performs no writes, so the UI can show
+    /// the affected chart before the operator confirms a reclassification.
+    pub fn preview_account_group_classification_change(
+        &self,
+        id: i64,
+        group_type: &str,
+        default_section: &str,
+    ) -> Result<AccountGroupClassificationImpact, String> {
+        if id <= 0 {
+            return Err("شناسه گروه حساب نامعتبر است.".to_string());
+        }
+        let group_type = validate_type(group_type)?;
+        let default_section = validate_section(default_section)?;
+        self.with_conn(|conn| {
+            let group_code: String = conn
+                .query_row(
+                    "SELECT code FROM account_groups WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db_error)?
+                .ok_or_else(|| "گروه حساب یافت نشد.".to_string())?;
+
+            let posted_line_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*)
+                       FROM voucher_lines l
+                       JOIN accounts a
+                         ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
+                      WHERE a.group_code = ?1",
+                    params![group_code],
+                    |row| row.get(0),
+                )
+                .map_err(db_error)?;
+
+            let current = classification::load_classifications(conn)?;
+            let mut projected = current.clone();
+            for account in projected.values_mut() {
+                if account.group_code == group_code {
+                    account.group_type = group_type.clone();
+                    account.default_section = default_section.clone();
+                }
+            }
+
+            let mut affected = Vec::new();
+            let mut explicit_count = 0i64;
+            let mut inherited_count = 0i64;
+            let mut account_count = 0i64;
+            for (code, account) in &current {
+                if account.group_code != group_code {
+                    continue;
+                }
+                account_count += 1;
+                let before = classification::resolve_account(account, &current);
+                let after = classification::resolve_account(
+                    projected
+                        .get(code)
+                        .expect("projected chart contains every current account"),
+                    &projected,
+                );
+                if before.fs_line == after.fs_line {
+                    continue;
+                }
+                let explicit = is_fs_line_code(&account.stored_fs_line);
+                if explicit {
+                    explicit_count += 1;
+                } else {
+                    inherited_count += 1;
+                }
+                affected.push(AccountGroupImpactAccount {
+                    code: account.code.clone(),
+                    name: account.name.clone(),
+                    current_fs_line_title: get_fs_line(&before.fs_line)
+                        .map(|line| line.title.to_string())
+                        .unwrap_or_else(|| "طبقه‌بندی‌نشده".to_string()),
+                    current_fs_line: before.fs_line,
+                    current_source: before.source,
+                    new_fs_line_title: get_fs_line(&after.fs_line)
+                        .map(|line| line.title.to_string())
+                        .unwrap_or_else(|| "طبقه‌بندی‌نشده".to_string()),
+                    new_fs_line: after.fs_line,
+                    explicit_line: explicit,
+                });
+            }
+            affected.sort_by(|left, right| left.code.cmp(&right.code));
+            Ok(AccountGroupClassificationImpact {
+                group_id: id,
+                group_code,
+                posted_line_count,
+                account_count,
+                changed_count: affected.len() as i64,
+                explicit_count,
+                inherited_count,
+                accounts: affected,
+            })
         })
     }
 
@@ -763,6 +909,30 @@ impl Database {
             }
 
             let updated = fetch_account(&tx, id)?;
+            let classification_changed = before_account.fs_line != updated.fs_line
+                || before_account.contra_of != updated.contra_of
+                || before_account.contra_kind != updated.contra_kind
+                || before_account.opposite_fs_line != updated.opposite_fs_line
+                || before_account.split_by_sign != updated.split_by_sign
+                || before_account.classification_source != updated.classification_source;
+            let branch_changed =
+                old_group != group_code || old_nature != nature || old_parent_code != new_parent_code;
+            if classification_changed || branch_changed {
+                let codes = if classification_changed
+                    || old_group != group_code
+                    || old_parent_code != new_parent_code
+                {
+                    subtree_codes(&tx, &code)?
+                } else {
+                    vec![code.clone()]
+                };
+                classification::snapshot_classifications(
+                    &tx,
+                    &codes,
+                    &today_jalali(),
+                    "تغییر طبقه‌بندی حساب",
+                )?;
+            }
             audit::log(
                 &tx,
                 "update",

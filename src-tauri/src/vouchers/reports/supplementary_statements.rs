@@ -304,11 +304,12 @@ fn statement_pairs(
 fn opening_activities(
     conn: &Connection,
     opening: Option<&OpeningVoucher>,
+    as_of: &str,
 ) -> Result<Vec<AccountActivity>, String> {
     match opening {
         Some(opening) => {
             let pairs = pairs_for_voucher(conn, opening.id)?;
-            activities_from_totals(conn, &pairs)
+            activities_from_totals(conn, &pairs, as_of)
         }
         None => Ok(Vec::new()),
     }
@@ -396,9 +397,9 @@ impl Database {
                 .as_ref()
                 .map(|voucher| voucher.date.clone())
                 .unwrap_or_default();
-            let opening_activities = opening_activities(conn, opening.as_ref())?;
+            let opening_activities = opening_activities(conn, opening.as_ref(), &as_of)?;
             let period_pairs = statement_pairs(conn, &opening_date, &as_of, true, scope)?;
-            let period_activities = activities_from_totals(conn, &period_pairs)?;
+            let period_activities = activities_from_totals(conn, &period_pairs, &as_of)?;
             let net_income = net_income_between(conn, &opening_date, &as_of, scope)?;
 
             let mut rows = Vec::new();
@@ -507,15 +508,15 @@ impl Database {
                     from.clone()
                 };
 
-            let opening_activities = opening_activities(conn, opening.as_ref())?;
+            let opening_activities = opening_activities(conn, opening.as_ref(), &to)?;
             let before_activities = if !opening_date.is_empty() && effective_from > opening_date {
                 let pairs = statement_pairs(conn, &opening_date, &effective_from, false, scope)?;
-                activities_from_totals(conn, &pairs)?
+                activities_from_totals(conn, &pairs, &to)?
             } else {
                 Vec::new()
             };
             let period_pairs = statement_pairs(conn, &effective_from, &to, true, scope)?;
-            let period_activities = activities_from_totals(conn, &period_pairs)?;
+            let period_activities = activities_from_totals(conn, &period_pairs, &to)?;
 
             let opening_inventory = checked_add(
                 line_total(&opening_activities, "BS.CA.INV")?,
@@ -629,7 +630,7 @@ impl Database {
                 .unwrap_or_default();
             let net_income = net_income_between(conn, &opening_date, &as_of, scope)?;
 
-            let account_rows = classification::load_account_classifications(conn)?;
+            let account_rows = classification::load_account_classifications_as_of(conn, &as_of)?;
             let by_code: HashMap<String, AccountClassificationRow> = account_rows
                 .iter()
                 .map(|row| (row.code.clone(), row.clone()))
@@ -922,9 +923,9 @@ impl Database {
                 .as_ref()
                 .map(|voucher| voucher.date.clone())
                 .unwrap_or_default();
-            let opening_activities = opening_activities(conn, opening.as_ref())?;
+            let opening_activities = opening_activities(conn, opening.as_ref(), &as_of)?;
             let period_pairs = statement_pairs(conn, &opening_date, &as_of, true, scope)?;
-            let period_activities = activities_from_totals(conn, &period_pairs)?;
+            let period_activities = activities_from_totals(conn, &period_pairs, &as_of)?;
 
             let opening_cash = line_total(&opening_activities, CASH_FS_LINE)?;
             let closing_cash = checked_add(
@@ -935,7 +936,7 @@ impl Database {
             let net_change = checked_sub(closing_cash, opening_cash, "تغییر خالص نقد")?;
             let net_income = net_income_between(conn, &opening_date, &as_of, scope)?;
 
-            let account_rows = classification::load_account_classifications(conn)?;
+            let account_rows = classification::load_account_classifications_as_of(conn, &as_of)?;
             let by_code: HashMap<String, AccountClassificationRow> = account_rows
                 .iter()
                 .map(|row| (row.code.clone(), row.clone()))

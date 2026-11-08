@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{Connection, ToSql};
+use rusqlite::{params, Connection, ToSql};
 
-use crate::db::classification::{self, EffectiveClassification};
+use crate::db::classification::{self, AccountClassificationRow, EffectiveClassification};
 use crate::db::fs_catalog::{is_fs_line_code, FsStatement, UNCLASSIFIED};
 use crate::db::{self, Database};
 use crate::vouchers::model::{
@@ -167,14 +167,32 @@ pub(crate) fn run_integrity_checks(
     scope: ReportScope,
     balance_variance: Option<i64>,
 ) -> Result<IntegrityReport, String> {
-    let accounts = classification::load_account_classifications(conn)?;
-    let by_code = classification::load_classifications(conn)?;
+    let accounts = classification::load_account_classifications_as_of(conn, to)?;
+    let by_code = classification::load_classifications_as_of(conn, to)?;
     let effective: HashMap<String, EffectiveClassification> = accounts
         .iter()
         .map(|account| {
             (
                 account.code.clone(),
                 classification::resolve_account(account, &by_code),
+            )
+        })
+        .collect();
+
+    // Structural chart checks (a contra reference, for example) describe the
+    // live chart, not a historical snapshot. They must still catch a row that
+    // was changed outside the normal write path, so they read current rows.
+    let current_accounts = classification::load_account_classifications(conn)?;
+    let current_by_code: HashMap<String, AccountClassificationRow> = current_accounts
+        .iter()
+        .map(|account| (account.code.clone(), account.clone()))
+        .collect();
+    let current_effective: HashMap<String, EffectiveClassification> = current_accounts
+        .iter()
+        .map(|account| {
+            (
+                account.code.clone(),
+                classification::resolve_account(account, &current_by_code),
             )
         })
         .collect();
@@ -292,11 +310,11 @@ pub(crate) fn run_integrity_checks(
     // missing/self target, different line, or a target that is itself a contra
     // account.
     let mut contra_problems: Vec<String> = Vec::new();
-    for account in &accounts {
+    for account in &current_accounts {
         if account.contra_of.is_empty() {
             continue;
         }
-        let Some(own) = effective.get(&account.code) else {
+        let Some(own) = current_effective.get(&account.code) else {
             contra_problems.push(account.code.clone());
             continue;
         };
@@ -307,7 +325,7 @@ pub(crate) fn run_integrity_checks(
             contra_problems.push(account.code.clone());
             continue;
         }
-        let Some(target) = by_code.get(&account.contra_of) else {
+        let Some(target) = current_by_code.get(&account.contra_of) else {
             contra_problems.push(account.code.clone());
             continue;
         };
@@ -315,7 +333,7 @@ pub(crate) fn run_integrity_checks(
             contra_problems.push(account.code.clone());
             continue;
         }
-        let target_effective = classification::resolve_account(target, &by_code);
+        let target_effective = classification::resolve_account(target, &current_by_code);
         if target_effective.fs_line != own.fs_line
             || !target.contra_of.is_empty()
             || classification::is_contra_nature(&target.nature, &target_effective.fs_line)
@@ -520,6 +538,153 @@ pub(crate) fn run_integrity_checks(
         );
     }
 
+    // 10) A permanent voucher must belong to a usable fiscal year. Temporary
+    // vouchers are drafts and are allowed to sit outside the configured years
+    // until they are finalized.
+    let mut voucher_without_year: Vec<String> = Vec::new();
+    {
+        let sql = format!(
+            "SELECT v.number, v.date
+               FROM vouchers v
+              WHERE v.is_temporary = 0
+                AND {}
+                AND (?1 = '' OR v.date >= ?1)
+                AND v.date <= ?2
+                AND (v.fiscal_year_id IS NULL
+                     OR NOT EXISTS (SELECT 1 FROM fiscal_years f WHERE f.id = v.fiscal_year_id))
+              ORDER BY v.date, v.number",
+            scope.sql("v")
+        );
+        let mut statement = conn.prepare(&sql).map_err(db::db_error)?;
+        let rows = statement
+            .query_map(params![range_from, range_to], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(db::db_error)?;
+        for row in rows {
+            let (number, date) = row.map_err(db::db_error)?;
+            voucher_without_year.push(format!("شماره {} ({})", db::to_fa_digits(number), date));
+        }
+    }
+    if !voucher_without_year.is_empty() {
+        issue(
+            &mut issues,
+            "voucher_without_fiscal_year",
+            INTEGRITY_ERROR,
+            format!(
+                "{} سند دائمی به سال مالی معتبر متصل نیست: {}.",
+                db::to_fa_digits(voucher_without_year.len() as i64),
+                sample(&voucher_without_year).join("، ")
+            ),
+            Some(voucher_without_year.len() as i64),
+            None,
+            Vec::new(),
+        );
+    }
+
+    // 11) The voucher date must fall inside the linked fiscal year. This is a
+    // data-integrity check for rows written outside the normal save path; the
+    // save path itself rejects such a pair.
+    let mut date_outside_year: Vec<String> = Vec::new();
+    {
+        let sql = format!(
+            "SELECT v.number, v.date, f.title, f.start_date, f.end_date
+               FROM vouchers v
+               JOIN fiscal_years f ON f.id = v.fiscal_year_id
+              WHERE {}
+                AND (?1 = '' OR v.date >= ?1)
+                AND v.date <= ?2
+                AND (v.date < f.start_date OR v.date > f.end_date)
+              ORDER BY v.date, v.number",
+            scope.sql("v")
+        );
+        let mut statement = conn.prepare(&sql).map_err(db::db_error)?;
+        let rows = statement
+            .query_map(params![range_from, range_to], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(db::db_error)?;
+        for row in rows {
+            let (number, date, title, start, end) = row.map_err(db::db_error)?;
+            date_outside_year.push(format!(
+                "شماره {} ({}) خارج از «{}» ({} تا {})",
+                db::to_fa_digits(number),
+                date,
+                title,
+                start,
+                end
+            ));
+        }
+    }
+    if !date_outside_year.is_empty() {
+        issue(
+            &mut issues,
+            "voucher_date_outside_fiscal_year",
+            INTEGRITY_ERROR,
+            format!(
+                "{} سند تاریخی خارج از بازه سال مالی متصل به خود دارد: {}.",
+                db::to_fa_digits(date_outside_year.len() as i64),
+                sample(&date_outside_year).join("، ")
+            ),
+            Some(date_outside_year.len() as i64),
+            None,
+            Vec::new(),
+        );
+    }
+
+    // 12) Legacy level-4 rows stay readable but cannot be edited as a normal
+    // account/detail pair. The explicit migration tool in settings resolves
+    // them; until then the row is reported so it cannot be forgotten.
+    let mut legacy_pending: Vec<String> = Vec::new();
+    {
+        let sql = format!(
+            "SELECT v.number, l.account_code
+               FROM voucher_lines l
+               JOIN vouchers v ON v.id = l.voucher_id
+              WHERE l.legacy_level4_pending = 1
+                AND {}
+                AND (?1 = '' OR v.date >= ?1)
+                AND v.date <= ?2
+              ORDER BY v.date, v.number, l.row_no",
+            scope.sql("v")
+        );
+        let mut statement = conn.prepare(&sql).map_err(db::db_error)?;
+        let rows = statement
+            .query_map(params![range_from, range_to], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(db::db_error)?;
+        for row in rows {
+            let (number, code) = row.map_err(db::db_error)?;
+            legacy_pending.push(format!(
+                "شماره {} / حساب {}",
+                db::to_fa_digits(number),
+                code
+            ));
+        }
+    }
+    if !legacy_pending.is_empty() {
+        issue(
+            &mut issues,
+            "legacy_level4_pending",
+            INTEGRITY_WARNING,
+            format!(
+                "{} ردیف سند به حساب سطح چهار قدیمی اشاره می‌کند که هنوز مهاجرت نشده است؛ برای یکسان‌سازی تفصیلی‌ها، ابزار «مهاجرت حساب‌های سطح چهار» را در تنظیمات اجرا کنید: {}.",
+                db::to_fa_digits(legacy_pending.len() as i64),
+                sample(&legacy_pending).join("، ")
+            ),
+            Some(legacy_pending.len() as i64),
+            None,
+            Vec::new(),
+        );
+    }
+
     let mut counts = IntegrityCounts::default();
     for finding in &issues {
         match finding.severity.as_str() {
@@ -644,6 +809,93 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "invalid_contra"));
+    }
+
+    #[test]
+    fn permanent_voucher_without_fiscal_year_is_reported_as_error() {
+        let db = memory_database();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type, is_temporary, fiscal_year_id)
+                 VALUES (9001, '1405/01/10', 'سند حسابداری عادی', 0, NULL)",
+                [],
+            )
+            .map_err(db::db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let report = db
+            .integrity_report_for_test("1405/01/01", "1405/12/29", false, ReportScope::Working)
+            .unwrap();
+        assert!(!report.ok);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "voucher_without_fiscal_year"));
+    }
+
+    #[test]
+    fn voucher_date_outside_linked_fiscal_year_is_reported_as_error() {
+        let db = memory_database();
+        let year = db
+            .create_fiscal_year("سال نیمه", "1405/01/01", "1405/06/31", "open")
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type, is_temporary, fiscal_year_id)
+                 VALUES (9002, '1405/08/10', 'سند حسابداری عادی', 0, ?1)",
+                rusqlite::params![year.id],
+            )
+            .map_err(db::db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let report = db
+            .integrity_report_for_test("1405/01/01", "1405/12/29", false, ReportScope::Working)
+            .unwrap();
+        assert!(!report.ok);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "voucher_date_outside_fiscal_year"));
+    }
+
+    #[test]
+    fn legacy_level4_pending_lines_are_reported_as_warning() {
+        let db = memory_database();
+        db.save_voucher(voucher(
+            "1405/01/10",
+            "",
+            vec![line("110101", 1_000, 0), line("410101", 0, 1_000)],
+        ))
+        .unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE voucher_lines
+                    SET account_id = NULL, legacy_level4_pending = 1
+                  WHERE account_code = '110101'",
+                [],
+            )
+            .map_err(db::db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let report = db
+            .integrity_report_for_test("1405/01/01", "1405/12/29", false, ReportScope::Working)
+            .unwrap();
+        assert!(
+            report.ok,
+            "a pending legacy row is a warning: {:?}",
+            report.issues
+        );
+        assert!(report.counts.warning >= 1);
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "legacy_level4_pending"));
     }
 
     #[test]

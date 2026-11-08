@@ -76,6 +76,7 @@ pub fn run() {
             list_account_groups,
             create_account_group,
             update_account_group,
+            preview_account_group_classification_change,
             delete_account_group,
             list_accounts,
             list_fs_lines,

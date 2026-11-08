@@ -514,9 +514,36 @@ async function save() {
       || (editingGroup.defaultSection || '') !== defaultSection);
 
   if (classificationChanged && Number(editingGroup.postedLineCount) > 0) {
+    let impact = null;
+    try {
+      impact = await invoke('preview_account_group_classification_change', {
+        id: editingGroup.id,
+        groupType: type,
+        defaultSection,
+      });
+    } catch {
+      // The preview is advisory. Saving still revalidates in the backend, so
+      // a failed preview must not block the confirmation dialog.
+    }
+    const changed = Math.max(0, Number(impact && impact.changedCount) || 0);
+    const accounts = (impact && Array.isArray(impact.accounts)) ? impact.accounts : [];
+    let affectedText = '';
+    if (impact) {
+      const sample = accounts.slice(0, 6).map((account) => {
+        const oldTitle = account.currentFsLineTitle || 'طبقه‌بندی‌نشده';
+        const newTitle = account.newFsLineTitle || 'طبقه‌بندی‌نشده';
+        return `«${account.code} ${account.name}» از ${oldTitle} به ${newTitle}`;
+      });
+      const more = accounts.length > sample.length
+        ? ` و ${toFaDigits(accounts.length - sample.length)} حساب دیگر`
+        : '';
+      affectedText = changed > 0
+        ? ` ${toFaDigits(changed)} حساب سرفصل خود را عوض می‌کنند: ${sample.join('؛ ')}${more}.`
+        : ' هیچ سرفصلی در حساب‌های این گروه تغییر نمی‌کند.';
+    }
     openConfirm({
       title: 'تأیید بازطبقه‌بندی گروه',
-      message: `این گروه ${toFaDigits(editingGroup.postedLineCount)} ردیف سند ثبت‌شده دارد. تغییر نوع یا بخش پیش‌فرض، این ردیف‌ها را در گزارش‌های تاریخی بازطبقه‌بندی می‌کند. ادامه می‌دهید؟`,
+      message: `این گروه ${toFaDigits(editingGroup.postedLineCount)} ردیف سند ثبت‌شده دارد.${affectedText} تغییر از امروز اعمال می‌شود و گزارش‌های تاریخ‌های گذشته با طبقه‌بندی قبلی خود باقی می‌مانند. ادامه می‌دهید؟`,
       confirmLabel: 'تأیید و ذخیره',
       tone: 'warn',
       onConfirm: () => persistGroup({

@@ -384,6 +384,41 @@ mod tests {
     }
 
     #[test]
+    fn group_classification_preview_lists_affected_accounts_before_save() {
+        let db = test_database();
+        db.create_account("1901", "حساب آزمایشی گروه", 1, "1", "debtor", "", true)
+            .unwrap();
+        let group = db
+            .list_account_groups()
+            .unwrap()
+            .groups
+            .into_iter()
+            .find(|group| group.code == "1")
+            .unwrap();
+
+        let preview = db
+            .preview_account_group_classification_change(
+                group.id,
+                &group.group_type,
+                "non_current_asset",
+            )
+            .unwrap();
+
+        assert_eq!(preview.group_code, "1");
+        assert_eq!(preview.changed_count, 1);
+        assert_eq!(preview.inherited_count, 1);
+        assert_eq!(preview.explicit_count, 0);
+        let account = preview
+            .accounts
+            .iter()
+            .find(|account| account.code == "1901")
+            .expect("affected account is listed");
+        assert_eq!(account.current_fs_line, "BS.CA.REC");
+        assert_eq!(account.new_fs_line, "BS.NCA.OTH");
+        assert!(!account.explicit_line);
+    }
+
+    #[test]
     fn updating_a_contra_account_to_another_line_is_rejected() {
         let db = test_database();
         db.create_accounts_atomic(vec![

@@ -76,6 +76,22 @@ pub(crate) fn update_account_group(
 }
 
 #[tauri::command(async)]
+pub(crate) fn preview_account_group_classification_change(
+    id: i64,
+    group_type: String,
+    default_section: Option<String>,
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<db::AccountGroupClassificationImpact, String> {
+    require_window(&window, &["main", "account-groups"])?;
+    state.database.preview_account_group_classification_change(
+        id,
+        &group_type,
+        default_section.as_deref().unwrap_or(""),
+    )
+}
+
+#[tauri::command(async)]
 pub(crate) fn delete_account_group(
     id: i64,
     app: AppHandle,

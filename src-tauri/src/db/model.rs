@@ -62,6 +62,37 @@ pub struct AccountGroupList {
     pub database_path: String,
 }
 
+/// One account touched by a proposed group reclassification. `current_*`
+/// describes the live chart, `new_*` the classification that would apply if
+/// the group edit were saved.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountGroupImpactAccount {
+    pub code: String,
+    pub name: String,
+    pub current_fs_line: String,
+    pub current_fs_line_title: String,
+    pub current_source: String,
+    pub new_fs_line: String,
+    pub new_fs_line_title: String,
+    /// True when the account has its own explicit line; false when the line
+    /// comes from an ancestor or from the group section.
+    pub explicit_line: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountGroupClassificationImpact {
+    pub group_id: i64,
+    pub group_code: String,
+    pub posted_line_count: i64,
+    pub account_count: i64,
+    pub changed_count: i64,
+    pub explicit_count: i64,
+    pub inherited_count: i64,
+    pub accounts: Vec<AccountGroupImpactAccount>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {

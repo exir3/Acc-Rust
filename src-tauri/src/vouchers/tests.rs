@@ -80,6 +80,120 @@ fn validates_jalali_leap_day_and_supported_year_range() {
 }
 
 #[test]
+fn historical_statement_keeps_classification_snapshot_after_later_change() {
+    let db = db::memory_database();
+    db.save_voucher(cash_sale("1404/06/15", 1_000)).unwrap();
+
+    let before = db.get_balance_sheet("1404/12/29").unwrap();
+    let row = before
+        .assets
+        .iter()
+        .find(|row| row.account_code == "110101")
+        .expect("cash detail row");
+    assert_eq!(row.fs_line, "BS.CA.CASH");
+    assert_eq!(row.amount, 1_000);
+
+    let account = db
+        .list_accounts()
+        .unwrap()
+        .accounts
+        .into_iter()
+        .find(|account| account.code == "110101")
+        .unwrap();
+    db.update_account_with_classification(
+        account.id,
+        &account.name,
+        &account.group_code,
+        &account.nature,
+        &account.parent_code,
+        None,
+        db::ClassificationUpdate {
+            fs_line: "BS.CA.REC".to_string(),
+            contra_of: String::new(),
+            contra_kind: String::new(),
+            opposite_fs_line: String::new(),
+            split_by_sign: false,
+            system_role: String::new(),
+        },
+    )
+    .unwrap();
+
+    // The 1404 statement was already issued. A classification change made
+    // today must not move its cash balance into receivables.
+    let historical = db.get_balance_sheet("1404/12/29").unwrap();
+    let row = historical
+        .assets
+        .iter()
+        .find(|row| row.account_code == "110101")
+        .expect("historical cash detail row");
+    assert_eq!(row.fs_line, "BS.CA.CASH");
+    assert_eq!(row.amount, 1_000);
+
+    // A report dated after the change uses the new line.
+    let current = db.get_balance_sheet("1410/12/29").unwrap();
+    let row = current
+        .assets
+        .iter()
+        .find(|row| row.account_code == "110101")
+        .expect("current receivables detail row");
+    assert_eq!(row.fs_line, "BS.CA.REC");
+    assert_eq!(row.amount, 1_000);
+}
+
+#[test]
+fn historical_statement_keeps_group_section_snapshot_after_group_change() {
+    let db = db::memory_database();
+    db.create_account("1901", "حساب آزمایشی گروه", 1, "1", "debtor", "", true)
+        .unwrap();
+    db.save_voucher(voucher(
+        "1404/06/15",
+        vec![line("1901", 500, 0), line("310101", 0, 500)],
+    ))
+    .unwrap();
+
+    let before = db.get_balance_sheet("1404/12/29").unwrap();
+    let row = before
+        .assets
+        .iter()
+        .find(|row| row.account_code == "1901")
+        .expect("group-classified row");
+    assert_eq!(row.fs_line, "BS.CA.REC");
+
+    let group = db
+        .list_account_groups()
+        .unwrap()
+        .groups
+        .into_iter()
+        .find(|group| group.code == "1")
+        .unwrap();
+    db.update_account_group_confirmed(
+        group.id,
+        &group.code,
+        &group.name,
+        &group.group_type,
+        "non_current_asset",
+        true,
+    )
+    .unwrap();
+
+    let historical = db.get_balance_sheet("1404/12/29").unwrap();
+    let row = historical
+        .assets
+        .iter()
+        .find(|row| row.account_code == "1901")
+        .expect("historical group-classified row");
+    assert_eq!(row.fs_line, "BS.CA.REC");
+
+    let current = db.get_balance_sheet("1410/12/29").unwrap();
+    let row = current
+        .assets
+        .iter()
+        .find(|row| row.account_code == "1901")
+        .expect("current group-classified row");
+    assert_eq!(row.fs_line, "BS.NCA.OTH");
+}
+
+#[test]
 fn voucher_list_separates_book_count_from_filtered_count() {
     let db = db::memory_database();
     db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();

@@ -36,15 +36,15 @@ pub(crate) use backup::{
 pub use common::{normalize_digits, DB_FILE_NAME};
 pub use connection::initialize;
 pub use model::{
-    Account, AccountGroup, AccountGroupList, AccountList, AuditLogEntry, AuditLogList,
-    BulkAccountDeleteFailure, BulkAccountDeleteResult, CarryForwardExecutionResult,
-    CarryForwardLine, CarryForwardPlan, ClosingBlocker, ClosingCounts, ClosingExecutionResult,
-    ClosingLine, ClosingLineTotals, ClosingPreview, ClosingReversalResult, ClosingRoleAccount,
-    ClosingRoles, ClosingRunRecord, ClosingTotals, ClosingVoucherRef, Database, FiscalYear,
-    FiscalYearList, FsCatalog, FsCatalogOption, FsLineInfo, LegacyLevel4Account,
-    LegacyLevel4Analysis, LegacyLevel4MigrationResult, LegacyLevel4ResolutionPreview, Limits,
-    NewAccount, Settings, ACCOUNT_GROUP_SECTIONS, ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES,
-    MAX_ACCOUNT_LEVEL,
+    Account, AccountGroup, AccountGroupClassificationImpact, AccountGroupImpactAccount,
+    AccountGroupList, AccountList, AuditLogEntry, AuditLogList, BulkAccountDeleteFailure,
+    BulkAccountDeleteResult, CarryForwardExecutionResult, CarryForwardLine, CarryForwardPlan,
+    ClosingBlocker, ClosingCounts, ClosingExecutionResult, ClosingLine, ClosingLineTotals,
+    ClosingPreview, ClosingReversalResult, ClosingRoleAccount, ClosingRoles, ClosingRunRecord,
+    ClosingTotals, ClosingVoucherRef, Database, FiscalYear, FiscalYearList, FsCatalog,
+    FsCatalogOption, FsLineInfo, LegacyLevel4Account, LegacyLevel4Analysis,
+    LegacyLevel4MigrationResult, LegacyLevel4ResolutionPreview, Limits, NewAccount, Settings,
+    ACCOUNT_GROUP_SECTIONS, ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES, MAX_ACCOUNT_LEVEL,
 };
 pub(crate) use portable::{is_encrypted_backup, validate_portable_password, PORTABLE_EXTENSION};
 

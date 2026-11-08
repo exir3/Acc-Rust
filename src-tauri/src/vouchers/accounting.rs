@@ -123,18 +123,23 @@ pub(crate) fn account_activities(
 
     // Step 2: every account of the chart (accounts without movement stay at
     // zero, exactly like the old LEFT JOIN), in code order.
-    activities_from_totals(conn, &totals)
+    activities_from_totals(conn, &totals, to)
 }
 
 /// Turns raw debit/credit totals per effective account code into classified
 /// statement activities. Every account of the chart is returned, so callers
 /// see zero lines too. Supplementary statements use this for their opening
 /// snapshot and period movements; `account_activities` uses it for date ranges.
+///
+/// `as_of` selects the dated classification snapshot used to place the
+/// amounts. Callers pass the statement's end date, never "today", so a later
+/// reclassification cannot rewrite a report that was issued for a past period.
 pub(crate) fn activities_from_totals(
     conn: &Connection,
     totals: &HashMap<String, (i64, i64)>,
+    as_of: &str,
 ) -> Result<Vec<AccountActivity>, String> {
-    let rows = classification::load_account_classifications(conn)?;
+    let rows = classification::load_account_classifications_as_of(conn, as_of)?;
     let classification_map: HashMap<String, AccountClassificationRow> = rows
         .iter()
         .map(|row| (row.code.clone(), row.clone()))

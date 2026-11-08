@@ -439,7 +439,7 @@ fn load_snapshot(
         None => year.end_date.clone(),
     };
     let accounts = load_accounts(conn)?;
-    let classifications = classification::load_classifications(conn)?;
+    let classifications = classification::load_classifications_as_of(conn, &as_of)?;
 
     let opening_rows = normalize_rows(
         load_raw_rows(conn, &year, &as_of, BASIS_OPENING)?,
@@ -1780,7 +1780,8 @@ fn build_carry_forward_plan_conn(
 
     let snapshot = load_snapshot(conn, source_id, None)?;
     let target_accounts = load_accounts(conn)?;
-    let target_classifications = classification::load_classifications(conn)?;
+    let target_classifications =
+        classification::load_classifications_as_of(conn, &target.start_date)?;
 
     let mut errors: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();

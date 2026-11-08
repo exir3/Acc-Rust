@@ -88,6 +88,43 @@ pub(crate) struct Contribution {
     pub(crate) moved: bool,
 }
 
+/// Baseline date used for the first snapshot of an account. It intentionally
+/// predates every supported Jalali date, so a report for any period can find a
+/// classification even when the account was created later or the database was
+/// upgraded after the historical vouchers were entered.
+pub(crate) const HISTORY_BASELINE: &str = "0001/01/01";
+
+fn map_classification_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountClassificationRow> {
+    Ok(AccountClassificationRow {
+        code: row.get(0)?,
+        name: row.get(1)?,
+        parent_code: row.get(2)?,
+        nature: row.get(3)?,
+        group_type: row.get(4)?,
+        group_code: row.get(5)?,
+        default_section: row.get(6)?,
+        stored_fs_line: row.get(7)?,
+        classification_source: row.get(8)?,
+        contra_of: row.get(9)?,
+        contra_kind: row.get(10)?,
+        opposite_fs_line: row.get(11)?,
+        split_by_sign: row.get::<_, i64>(12)? != 0,
+        system_role: row.get(13)?,
+    })
+}
+
+fn history_table_exists(conn: &Connection) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'account_classification_history'
+        )",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(db_error)
+}
+
 /// Loads every account in code order, with its name. Reports iterate this list
 /// so they render in the chart's natural order without a second query.
 pub(crate) fn load_account_classifications(
@@ -115,24 +152,62 @@ pub(crate) fn load_account_classifications(
         )
         .map_err(db_error)?;
     let rows = stmt
-        .query_map([], |row| {
-            Ok(AccountClassificationRow {
-                code: row.get(0)?,
-                name: row.get(1)?,
-                parent_code: row.get(2)?,
-                nature: row.get(3)?,
-                group_type: row.get(4)?,
-                group_code: row.get(5)?,
-                default_section: row.get(6)?,
-                stored_fs_line: row.get(7)?,
-                classification_source: row.get(8)?,
-                contra_of: row.get(9)?,
-                contra_kind: row.get(10)?,
-                opposite_fs_line: row.get(11)?,
-                split_by_sign: row.get::<_, i64>(12)? != 0,
-                system_role: row.get(13)?,
-            })
-        })
+        .query_map([], map_classification_row)
+        .map_err(db_error)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_error)
+}
+
+/// Loads the classification that was in force on `as_of`. Each account uses
+/// the newest snapshot with `valid_from <= as_of`; accounts without a snapshot
+/// keep the live chart fields so a partially migrated database still works.
+pub(crate) fn load_account_classifications_as_of(
+    conn: &Connection,
+    as_of: &str,
+) -> Result<Vec<AccountClassificationRow>, String> {
+    let value = as_of.trim();
+    if value.is_empty() || !history_table_exists(conn)? {
+        return load_account_classifications(conn);
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT a.code,
+                    a.name,
+                    COALESCE(a.parent_code, ''),
+                    a.nature,
+                    CASE WHEN h.id IS NULL THEN COALESCE(g.type, '')
+                         ELSE h.group_type END,
+                    COALESCE(a.group_code, ''),
+                    CASE WHEN h.id IS NULL THEN COALESCE(g.default_section, '')
+                         ELSE h.default_section END,
+                    CASE WHEN h.id IS NULL THEN COALESCE(a.fs_line, '')
+                         ELSE h.fs_line END,
+                    CASE WHEN h.id IS NULL THEN COALESCE(a.classification_source, 'auto')
+                         ELSE 'history:' || h.classification_source END,
+                    CASE WHEN h.id IS NULL THEN COALESCE(a.contra_of, '')
+                         ELSE h.contra_of END,
+                    CASE WHEN h.id IS NULL THEN COALESCE(a.contra_kind, '')
+                         ELSE h.contra_kind END,
+                    CASE WHEN h.id IS NULL THEN COALESCE(a.opposite_fs_line, '')
+                         ELSE h.opposite_fs_line END,
+                    CASE WHEN h.id IS NULL THEN COALESCE(a.split_by_sign, 0)
+                         ELSE h.split_by_sign END,
+                    COALESCE(a.system_role, '')
+               FROM accounts a
+               LEFT JOIN account_groups g ON g.code = a.group_code
+               LEFT JOIN account_classification_history h
+                      ON h.id = (
+                          SELECT h2.id
+                            FROM account_classification_history h2
+                           WHERE h2.account_code = a.code
+                             AND h2.valid_from <= ?1
+                           ORDER BY h2.valid_from DESC, h2.id DESC
+                           LIMIT 1
+                      )
+              ORDER BY a.code",
+        )
+        .map_err(db_error)?;
+    let rows = stmt
+        .query_map(params![value], map_classification_row)
         .map_err(db_error)?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_error)
 }
@@ -144,6 +219,189 @@ pub(crate) fn load_classifications(
         .into_iter()
         .map(|row| (row.code.clone(), row))
         .collect())
+}
+
+pub(crate) fn load_classifications_as_of(
+    conn: &Connection,
+    as_of: &str,
+) -> Result<HashMap<String, AccountClassificationRow>, String> {
+    Ok(load_account_classifications_as_of(conn, as_of)?
+        .into_iter()
+        .map(|row| (row.code.clone(), row))
+        .collect())
+}
+
+/// Captures the effective classification of every requested account at
+/// `valid_from`. Group and parent changes are materialised through
+/// `resolve_account`, so inheritance is frozen exactly as it looked on that
+/// date rather than being recomputed from today's chart.
+pub(crate) fn snapshot_classifications(
+    conn: &Connection,
+    codes: &[String],
+    valid_from: &str,
+    reason: &str,
+) -> Result<(), String> {
+    if codes.is_empty() || !history_table_exists(conn)? {
+        return Ok(());
+    }
+    let date = valid_from.trim();
+    if date.is_empty() {
+        return Err("تاریخ اعتبار نسخه طبقه‌بندی مشخص نیست.".to_string());
+    }
+    let by_code = load_classifications(conn)?;
+    let mut seen: HashSet<&str> = HashSet::new();
+    for code in codes {
+        if !seen.insert(code.as_str()) {
+            continue;
+        }
+        let Some(account) = by_code.get(code) else {
+            continue;
+        };
+        let effective = resolve_account(account, &by_code);
+        let split_by_sign = i64::from(effective.split_by_sign);
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM account_classification_history
+                  WHERE account_code = ?1 AND valid_from = ?2",
+                params![code, date],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_error)?;
+        let next_from: Option<String> = conn
+            .query_row(
+                "SELECT MIN(valid_from) FROM account_classification_history
+                  WHERE account_code = ?1 AND valid_from > ?2",
+                params![code, date],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        let previous: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM account_classification_history
+                  WHERE account_code = ?1 AND valid_from < ?2
+                  ORDER BY valid_from DESC, id DESC LIMIT 1",
+                params![code, date],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db_error)?;
+
+        if let Some(id) = existing {
+            conn.execute(
+                "UPDATE account_classification_history
+                    SET fs_line = ?1, classification_source = ?2,
+                        group_type = ?3, default_section = ?4,
+                        contra_of = ?5, contra_kind = ?6, opposite_fs_line = ?7,
+                        split_by_sign = ?8, valid_to = ?9, change_reason = ?10,
+                        changed_at = datetime('now', 'localtime')
+                  WHERE id = ?11",
+                params![
+                    effective.fs_line,
+                    effective.source,
+                    account.group_type,
+                    account.default_section,
+                    account.contra_of,
+                    account.contra_kind,
+                    effective.opposite_fs_line,
+                    split_by_sign,
+                    next_from,
+                    reason,
+                    id
+                ],
+            )
+            .map_err(db_error)?;
+        } else {
+            conn.execute(
+                "INSERT INTO account_classification_history
+                    (account_code, fs_line, classification_source, group_type,
+                     default_section, contra_of, contra_kind, opposite_fs_line,
+                     split_by_sign, valid_from, valid_to, change_reason)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    code,
+                    effective.fs_line,
+                    effective.source,
+                    account.group_type,
+                    account.default_section,
+                    account.contra_of,
+                    account.contra_kind,
+                    effective.opposite_fs_line,
+                    split_by_sign,
+                    date,
+                    next_from,
+                    reason
+                ],
+            )
+            .map_err(db_error)?;
+            if let Some(previous_id) = previous {
+                conn.execute(
+                    "UPDATE account_classification_history
+                        SET valid_to = ?1
+                      WHERE id = ?2 AND (valid_to IS NULL OR valid_to > ?1)",
+                    params![date, previous_id],
+                )
+                .map_err(db_error)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fills the baseline snapshot for accounts that do not have any history row
+/// yet. Idempotent: existing history is never rewritten.
+pub(crate) fn seed_classification_history(conn: &Connection) -> Result<(), String> {
+    if !history_table_exists(conn)? {
+        return Ok(());
+    }
+    let missing: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.code
+                   FROM accounts a
+                  WHERE NOT EXISTS (
+                        SELECT 1 FROM account_classification_history h
+                         WHERE h.account_code = a.code
+                  )
+                  ORDER BY a.code",
+            )
+            .map_err(db_error)?;
+        let rows = stmt.query_map([], |row| row.get(0)).map_err(db_error)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(db_error)?
+    };
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let by_code = load_classifications(conn)?;
+    for code in missing {
+        let Some(account) = by_code.get(&code) else {
+            continue;
+        };
+        let effective = resolve_account(account, &by_code);
+        conn.execute(
+            "INSERT OR IGNORE INTO account_classification_history
+                (account_code, fs_line, classification_source, group_type,
+                 default_section, contra_of, contra_kind, opposite_fs_line,
+                 split_by_sign, valid_from, valid_to, change_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, ?11)",
+            params![
+                code,
+                effective.fs_line,
+                effective.source,
+                account.group_type,
+                account.default_section,
+                account.contra_of,
+                account.contra_kind,
+                effective.opposite_fs_line,
+                i64::from(effective.split_by_sign),
+                HISTORY_BASELINE,
+                "نسخه پایه طبقه‌بندی هنگام ارتقا"
+            ],
+        )
+        .map_err(db_error)?;
+    }
+    Ok(())
 }
 
 fn normalized_source(value: &str) -> &'static str {
@@ -181,7 +439,18 @@ pub(crate) fn resolve_account(
     account: &AccountClassificationRow,
     by_code: &HashMap<String, AccountClassificationRow>,
 ) -> EffectiveClassification {
-    let (fs_line, source) = if is_fs_line_code(&account.stored_fs_line) {
+    let (fs_line, source) = if let Some(original) =
+        account.classification_source.strip_prefix("history:")
+    {
+        // A dated snapshot already holds the resolved line, including the
+        // explicit UNCLASSIFIED state. Falling back to today's chart here
+        // would silently reclassify the historical period. The suffix keeps
+        // the original source (manual/inherit/auto) for status displays.
+        (
+            account.stored_fs_line.clone(),
+            normalized_source(original).to_string(),
+        )
+    } else if is_fs_line_code(&account.stored_fs_line) {
         (
             account.stored_fs_line.clone(),
             normalized_source(&account.classification_source).to_string(),
@@ -756,5 +1025,29 @@ mod tests {
         assert_eq!(contribution.fs_line, "IS.OOE");
         assert_eq!(contribution.amount, 100);
         assert!(contribution.moved);
+    }
+
+    #[test]
+    fn historical_unclassified_snapshot_does_not_inherit_today_line() {
+        let parent = row("1101", "", "debtor", "current_asset", "BS.CA.CASH");
+        let mut child = row("110101", "1101", "debtor", "", "UNCLASSIFIED");
+        child.classification_source = "history:auto".to_string();
+        let map = HashMap::from([
+            (parent.code.clone(), parent),
+            (child.code.clone(), child.clone()),
+        ]);
+        let effective = resolve_account(&child, &map);
+        assert_eq!(effective.fs_line, "UNCLASSIFIED");
+    }
+
+    #[test]
+    fn historical_snapshot_keeps_original_source_for_status_displays() {
+        let mut account = row("1901", "", "debtor", "current_asset", "BS.CA.REC");
+        account.classification_source = "history:inherit".to_string();
+        let mut map = HashMap::new();
+        map.insert(account.code.clone(), account.clone());
+        let effective = resolve_account(&account, &map);
+        assert_eq!(effective.fs_line, "BS.CA.REC");
+        assert_eq!(effective.source, "inherit");
     }
 }

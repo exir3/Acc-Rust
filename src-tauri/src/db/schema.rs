@@ -3,7 +3,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db::classification::{
-    backfill_classifications, ensure_closing_system_accounts, seed_starter_classifications,
+    backfill_classifications, ensure_closing_system_accounts, seed_classification_history,
+    seed_starter_classifications,
 };
 use crate::db::common::{
     db_error, normalize_digits, to_fa_digits, BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION,
@@ -170,6 +171,37 @@ pub(crate) const REFERENCE_SCHEMA: &str = r#"
 
     CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
+
+    -- Dated snapshots of each account's effective statement classification.
+    -- Reports resolve the newest snapshot whose valid_from is not after their
+    -- report date, so a classification change made today cannot silently
+    -- rewrite a statement that was already issued for an earlier period.
+    -- valid_to is exclusive and is kept for interval inspection; reports use
+    -- the newest valid_from at or before the report date.
+    CREATE TABLE IF NOT EXISTS account_classification_history (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_code          TEXT NOT NULL REFERENCES accounts(code)
+                              ON UPDATE CASCADE ON DELETE CASCADE,
+        fs_line               TEXT NOT NULL,
+        classification_source TEXT NOT NULL DEFAULT 'auto',
+        group_type            TEXT NOT NULL DEFAULT '',
+        default_section       TEXT NOT NULL DEFAULT '',
+        contra_of             TEXT NOT NULL DEFAULT '',
+        contra_kind           TEXT NOT NULL DEFAULT '',
+        opposite_fs_line      TEXT NOT NULL DEFAULT '',
+        split_by_sign         INTEGER NOT NULL DEFAULT 0
+                              CHECK(split_by_sign IN (0, 1)),
+        valid_from            TEXT NOT NULL,
+        valid_to              TEXT,
+        change_reason         TEXT NOT NULL DEFAULT '',
+        changed_by            TEXT NOT NULL DEFAULT '',
+        changed_at            TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_account_classification_history_from
+        ON account_classification_history(account_code, valid_from);
+    CREATE INDEX IF NOT EXISTS idx_account_classification_history_range
+        ON account_classification_history(account_code, valid_from, valid_to);
 
     -- One row per successfully completed bulk import. A retried request with
     -- the same file content returns the original result instead of inserting
@@ -866,6 +898,11 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
         backfill_classifications(&tx)?;
     }
 
+    // Capture the classification every existing account has at upgrade time.
+    // This baseline is what historical reports will keep using from now on;
+    // later changes add dated snapshots without touching it.
+    seed_classification_history(&tx)?;
+
     if version < CURRENT_SCHEMA_VERSION {
         tx.execute(
             "UPDATE app_meta SET value = ?1 WHERE key = 'schema_version'",
@@ -973,6 +1010,10 @@ pub(crate) fn seed_default_accounts(conn: &mut Connection) -> rusqlite::Result<(
     // invents a role for an existing account.
     if classified {
         ensure_closing_system_accounts(&tx).map_err(classification_error)?;
+        // A fresh database gets its chart after the migration ran, so the
+        // baseline snapshot is seeded here. On later opens this only fills in
+        // accounts that were created outside the normal write path.
+        seed_classification_history(&tx).map_err(classification_error)?;
     }
     tx.commit()?;
     Ok(())
