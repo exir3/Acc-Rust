@@ -1328,6 +1328,7 @@ impl Database {
 
             Ok(CashFlowReport {
                 statement: "cash_flow".to_string(),
+                from_date: opening_date,
                 to_date: as_of,
                 sections,
                 opening_cash,

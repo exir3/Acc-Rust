@@ -3365,10 +3365,20 @@ fn cash_flow_statement_tracks_operating_investing_financing() {
 
     let report = db.get_cash_flow("1405/12/29").unwrap();
     assert_eq!(report.statement, "cash_flow");
+    assert_eq!(report.from_date, "1405/01/01");
     assert_eq!(report.opening_cash, 400_000);
     assert_eq!(report.closing_cash, 500_000);
     assert_eq!(report.net_change, 100_000);
     assert_eq!(report.sections.len(), 3);
+
+    let meta = crate::report::ReportMeta {
+        company: "شرکت آزمایشی".to_string(),
+        fiscal_year: "1405".to_string(),
+        today: "1405/12/29".to_string(),
+        show_print_date_time: true,
+    };
+    let document = crate::report::cash_flow_print_doc(&report, &meta);
+    assert!(document.html.contains("از ۱۴۰۵/۰۱/۰۱ تا ۱۴۰۵/۱۲/۲۹"));
 }
 
 #[test]

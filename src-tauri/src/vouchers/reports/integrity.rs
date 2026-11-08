@@ -702,7 +702,19 @@ pub(crate) fn run_integrity_checks(
 }
 
 impl Database {
-    /// Integrity checks for a saved book, exposed to tests and future commands.
+    /// Integrity checks for a saved book, shared by report commands that need
+    /// to block or disclose an unhealthy book before printing.
+    pub(crate) fn integrity_report(
+        &self,
+        from: &str,
+        to: &str,
+        cumulative: bool,
+        scope: ReportScope,
+    ) -> Result<IntegrityReport, String> {
+        self.with_conn(|conn| run_integrity_checks(conn, from, to, cumulative, scope, None))
+    }
+
+    /// Integrity checks for a saved book, exposed to tests.
     #[cfg(test)]
     pub(crate) fn integrity_report_for_test(
         &self,
@@ -711,7 +723,7 @@ impl Database {
         cumulative: bool,
         scope: ReportScope,
     ) -> Result<IntegrityReport, String> {
-        self.with_conn(|conn| run_integrity_checks(conn, from, to, cumulative, scope, None))
+        self.integrity_report(from, to, cumulative, scope)
     }
 }
 

@@ -60,6 +60,15 @@ pub(crate) fn show_preview_window(app: &AppHandle, doc: report::PrintDoc) -> Res
             return Err(format!("باز کردن پنجره پیش‌نمایش ناموفق بود: {error}"));
         }
     };
+    // The stored document is only kept while its preview window exists.
+    let cleanup_app = app.clone();
+    let cleanup_label = label.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            let state = cleanup_app.state::<AppState>();
+            lock(&state.print_docs).remove(&cleanup_label);
+        }
+    });
     let _ = window.maximize();
     let _ = window.set_focus();
     Ok(())

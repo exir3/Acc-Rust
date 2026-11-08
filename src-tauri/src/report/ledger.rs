@@ -1,11 +1,15 @@
 //! Ledger print document.
 
 use crate::report::layout::*;
-use crate::vouchers::LedgerReport;
+use crate::vouchers::{IntegrityReport, LedgerReport};
 
 /* ── Ledger ─────────────────────────────────────────────────── */
 
-pub fn ledger_print_doc(report: &LedgerReport, meta: &ReportMeta) -> PrintDoc {
+pub fn ledger_print_doc(
+    report: &LedgerReport,
+    meta: &ReportMeta,
+    integrity: &IntegrityReport,
+) -> PrintDoc {
     // A parent account's ledger mixes several sub-accounts, so each row
     // also names the account it belongs to.
     let wide = report.includes_children;
@@ -32,7 +36,7 @@ pub fn ledger_print_doc(report: &LedgerReport, meta: &ReportMeta) -> PrintDoc {
 <td class="num">{run_debit}</td>
 <td class="num">{run_credit}</td>
 </tr>"#,
-            date = date(&row.date),
+            date = html(&date(&row.date)),
             number = to_fa_digits(row.number),
             account_cell = account_cell,
             description = html(if row.line_description.trim().is_empty() {
@@ -62,6 +66,7 @@ pub fn ledger_print_doc(report: &LedgerReport, meta: &ReportMeta) -> PrintDoc {
 
     let body = format!(
         r#"{head}
+{integrity_warning}
 <div class="rpt-note">حساب: <b>{code} — {name}</b> &nbsp;|&nbsp; گروه: <b>{group}</b>{children_note}</div>
 <table class="rpt-table" style="margin-top:8px">
 <thead><tr>
@@ -85,6 +90,7 @@ pub fn ledger_print_doc(report: &LedgerReport, meta: &ReportMeta) -> PrintDoc {
 </tfoot>
 </table>"#,
         head = head("دفتر کل حساب", meta, &period(&report.from, &report.to)),
+        integrity_warning = integrity_warning(integrity),
         code = code(&report.account_code),
         name = html(&report.account_name),
         group = html(&report.group_name),

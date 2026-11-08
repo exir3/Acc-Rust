@@ -82,6 +82,15 @@ pub fn cash_flow_print_doc(report: &CashFlowReport, meta: &ReportMeta) -> PrintD
             money(report.variance)
         )
     };
+    let period_text = if report.from_date.trim().is_empty() {
+        format!("تا تاریخ {}", date(&report.to_date))
+    } else {
+        format!(
+            "از {} تا {}",
+            date(&report.from_date),
+            date(&report.to_date)
+        )
+    };
     let body = format!(
         r#"{head}
 {sections}
@@ -100,11 +109,7 @@ pub fn cash_flow_print_doc(report: &CashFlowReport, meta: &ReportMeta) -> PrintD
 <div class="rpt-note">{status}</div>
 {unresolved}
 {integrity}"#,
-        head = head(
-            "صورت جریان‌های نقدی (روش غیرمستقیم)",
-            meta,
-            &format!("تا تاریخ {}", date(&report.to_date))
-        ),
+        head = head("صورت جریان‌های نقدی (روش غیرمستقیم)", meta, &period_text),
         sections = sections,
         net_change = money(report.net_change),
         variance_note = variance_note,

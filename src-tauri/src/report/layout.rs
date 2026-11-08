@@ -64,6 +64,11 @@ html, body { margin: 0; padding: 0; background: #fff; }
 .rpt-health[data-ok="true"] { border-right-color: #0d7f7a; background: #f0fbf9; color: #0d5f5a; }
 .rpt-health[data-ok="false"] { border-right-color: #b42318; background: #fff5f5; color: #5c1a15; }
 .rpt-health h3 { margin: 0 0 4px; font-size: 11.5px; }
+.rpt-warning {
+  margin-top: 12px; padding: 7px 9px; font-size: 11px;
+  border: 1px solid #f0c6c2; border-right: 4px solid #b42318;
+  background: #fff5f5; color: #5c1a15;
+}
 .rpt-issue { margin: 3px 0; }
 .rpt-issue[data-severity="error"] { color: #b42318; }
 .rpt-issue[data-severity="warning"] { color: #9a5b00; }
@@ -113,7 +118,7 @@ pub(crate) fn date(value: &str) -> String {
     if value.trim().is_empty() {
         "—".to_string()
     } else {
-        html(&to_fa_digits(value))
+        to_fa_digits(value)
     }
 }
 
@@ -128,6 +133,27 @@ pub(crate) fn period(report_from: &str, report_to: &str) -> String {
         (false, true) => format!("از {}", date(report_from)),
         (false, false) => format!("از {} تا {}", date(report_from), date(report_to)),
     }
+}
+
+/// A compact warning bar for a report that is printed in a working scope even
+/// though the accounting-health checks found errors. Escaping happens here,
+/// once, on the generated message.
+pub(crate) fn integrity_warning(integrity: &IntegrityReport) -> String {
+    if integrity.ok {
+        return String::new();
+    }
+    let first_error = integrity
+        .issues
+        .iter()
+        .find(|issue| issue.severity == "error")
+        .map(|issue| issue.message.as_str())
+        .unwrap_or("خطای سلامت حسابداری گزارش را ناتمام می‌داند.");
+    format!(
+        r#"<div class="rpt-warning"><b>هشدار کنترل سلامت حسابداری:</b> {message} ({errors} خطا، {warnings} هشدار) — این نسخه برای بررسی است؛ پیش از اتکا به گزارش، موارد Integrity را برطرف کنید.</div>"#,
+        message = html(first_error),
+        errors = to_fa_digits(integrity.counts.error.to_string()),
+        warnings = to_fa_digits(integrity.counts.warning.to_string()),
+    )
 }
 
 /// Print-side summary of the accounting-health checks attached to a
@@ -201,7 +227,7 @@ pub(crate) fn page(
     let today = if meta.show_print_date_time {
         format!(
             "<span>تاریخ تهیه: {today}</span>",
-            today = date(&meta.today)
+            today = html(&date(&meta.today))
         )
     } else {
         String::new()
@@ -260,12 +286,12 @@ pub(crate) fn head(title: &str, meta: &ReportMeta, period_text: &str) -> String 
     let period_cell = if period_text.is_empty() {
         String::new()
     } else {
-        format!("<span>دوره: <b>{period_text}</b></span>")
+        format!("<span>دوره: <b>{}</b></span>", html(period_text))
     };
     let today_cell = if meta.show_print_date_time {
         format!(
             "<span>تاریخ تهیه: <b>{today}</b></span>",
-            today = date(&meta.today)
+            today = html(&date(&meta.today))
         )
     } else {
         String::new()

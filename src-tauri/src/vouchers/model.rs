@@ -799,6 +799,11 @@ pub struct CashFlowUnresolvedVoucher {
 #[serde(rename_all = "camelCase")]
 pub struct CashFlowReport {
     pub statement: String,
+    /// Date of the opening voucher the period starts from. Empty when the
+    /// books have no opening voucher, in which case the statement covers
+    /// everything up to `to_date`.
+    #[serde(default)]
+    pub from_date: String,
     pub to_date: String,
     pub sections: Vec<CashFlowSection>,
     #[serde(serialize_with = "serialize_exact_amount")]

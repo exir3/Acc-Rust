@@ -1,11 +1,15 @@
 //! Single-voucher print document.
 
 use crate::report::layout::*;
-use crate::vouchers::Voucher;
+use crate::vouchers::{IntegrityReport, Voucher};
 
 /* ── Voucher ────────────────────────────────────────────────── */
 
-pub fn voucher_print_doc(voucher: &Voucher, meta: &ReportMeta) -> PrintDoc {
+pub fn voucher_print_doc(
+    voucher: &Voucher,
+    meta: &ReportMeta,
+    integrity: &IntegrityReport,
+) -> PrintDoc {
     let mut rows = String::new();
     for line in &voucher.lines {
         rows.push_str(&format!(
@@ -28,6 +32,7 @@ pub fn voucher_print_doc(voucher: &Voucher, meta: &ReportMeta) -> PrintDoc {
 
     let body = format!(
         r#"{head}
+{integrity_warning}
 <div class="rpt-note">شماره سند: <b>{number}</b> &nbsp;|&nbsp; تاریخ: <b>{date}</b> &nbsp;|&nbsp; نوع: <b>{kind}</b></div>
 <table class="rpt-table" style="margin-top:8px">
 <thead><tr>
@@ -42,8 +47,9 @@ pub fn voucher_print_doc(voucher: &Voucher, meta: &ReportMeta) -> PrintDoc {
 </table>
 <div class="rpt-note">شرح سند: {description}</div>"#,
         head = head("سند حسابداری", meta, ""),
+        integrity_warning = integrity_warning(integrity),
         number = to_fa_digits(voucher.number),
-        date = date(&voucher.date),
+        date = html(&date(&voucher.date)),
         kind = html(&voucher.voucher_type),
         rows = rows,
         debit = money(voucher.total_debit),

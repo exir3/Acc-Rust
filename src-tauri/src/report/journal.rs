@@ -1,11 +1,15 @@
 //! Journal (day book) print document.
 
 use crate::report::layout::*;
-use crate::vouchers::JournalReport;
+use crate::vouchers::{IntegrityReport, JournalReport};
 
 /* ── Journal ────────────────────────────────────────────────── */
 
-pub fn journal_print_doc(report: &JournalReport, meta: &ReportMeta) -> PrintDoc {
+pub fn journal_print_doc(
+    report: &JournalReport,
+    meta: &ReportMeta,
+    integrity: &IntegrityReport,
+) -> PrintDoc {
     let mut rows = String::new();
     for row in &report.rows {
         let account = format!("{} — {}", code(&row.account_code), html(&row.account_name));
@@ -18,7 +22,7 @@ pub fn journal_print_doc(report: &JournalReport, meta: &ReportMeta) -> PrintDoc 
 <td class="num">{debit}</td>
 <td class="num">{credit}</td>
 </tr>"#,
-            date = date(&row.date),
+            date = html(&date(&row.date)),
             number = to_fa_digits(row.number),
             account = account,
             description = html(if row.line_description.trim().is_empty() {
@@ -38,6 +42,7 @@ pub fn journal_print_doc(report: &JournalReport, meta: &ReportMeta) -> PrintDoc 
 
     let body = format!(
         r#"{head}
+{integrity_warning}
 <table class="rpt-table">
 <thead><tr>
 <th style="width:78px">تاریخ</th><th style="width:58px">شماره سند</th>
@@ -50,6 +55,7 @@ pub fn journal_print_doc(report: &JournalReport, meta: &ReportMeta) -> PrintDoc 
 </tr></tfoot>
 </table>"#,
         head = head("دفتر روزنامه", meta, &period(&report.from, &report.to)),
+        integrity_warning = integrity_warning(integrity),
         rows = rows,
         count = to_fa_digits(report.voucher_count),
         debit = money(report.total_debit),

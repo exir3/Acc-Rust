@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::report::layout::portable_base_style;
-use crate::vouchers::{BalanceSheetReport, TrialBalanceReport, Voucher};
+use crate::vouchers::{BalanceSheetReport, IntegrityReport, TrialBalanceReport, Voucher};
 
 // The file is itself `tests.rs`; the inner module keeps the usual `mod tests`
 // layout so every test names the same way as elsewhere in the crate.
@@ -72,12 +72,44 @@ mod tests {
             show_print_date_time: true,
         };
 
-        let doc = voucher_print_doc(&voucher, &meta);
+        let doc = voucher_print_doc(&voucher, &meta, &IntegrityReport::default());
         assert!(!doc.html.contains("<script>"));
         assert!(!doc.html.contains("<svg/onload"));
         assert!(!doc.html.contains("<img src=x"));
         assert!(doc.html.contains("&lt;script&gt;"));
         assert!(doc.html.contains("۱۴۰۵/۰۱/۰۱&lt;script&gt;"));
+    }
+
+    #[test]
+    fn print_header_escapes_company_and_period_exactly_once() {
+        let meta = ReportMeta {
+            company: "شرکت \"<نام>\" & مشارکت".to_string(),
+            fiscal_year: "1405".to_string(),
+            today: "1405/01/01\"<x>".to_string(),
+            show_print_date_time: true,
+        };
+        let report = crate::vouchers::JournalReport {
+            from: "1405/01/01\"<x>".to_string(),
+            to: "1405/01/02\"<x>".to_string(),
+            search: String::new(),
+            rows: Vec::new(),
+            row_count: 0,
+            total_debit: 0,
+            total_credit: 0,
+            voucher_count: 0,
+        };
+
+        let doc = journal_print_doc(&report, &meta, &IntegrityReport::default());
+        assert!(doc
+            .html
+            .contains("شرکت &quot;&lt;نام&gt;&quot; &amp; مشارکت"));
+        assert!(doc.html.contains("از ۱۴۰۵/۰۱/۰۱&quot;&lt;x&gt;"));
+        assert!(doc.html.contains("تا ۱۴۰۵/۰۱/۰۲&quot;&lt;x&gt;"));
+        assert!(doc
+            .html
+            .contains("تاریخ تهیه: <b>۱۴۰۵/۰۱/۰۱&quot;&lt;x&gt;</b>"));
+        assert!(!doc.html.contains("&amp;quot;"));
+        assert!(!doc.html.contains("&amp;lt;"));
     }
 
     #[test]
@@ -282,6 +314,7 @@ mod tests {
 
         let cash_flow = CashFlowReport {
             statement: "cash_flow".to_string(),
+            from_date: "1405/01/01".to_string(),
             to_date: "1405/12/29".to_string(),
             sections: vec![
                 CashFlowSection {

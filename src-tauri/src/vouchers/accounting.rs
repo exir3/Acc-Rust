@@ -4,7 +4,7 @@ use crate::db::classification::{self, AccountClassificationRow, EffectiveClassif
 use crate::db::fs_catalog::FsStatement;
 use crate::db::{self};
 use crate::vouchers::model::{ReportScope, CLOSING_FINAL, VOUCHER_TYPES};
-use rusqlite::{params, Connection};
+use rusqlite::{params_from_iter, Connection, ToSql};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -42,9 +42,6 @@ pub(crate) fn account_activities(
     skip_types: &[&str],
     scope: ReportScope,
 ) -> Result<Vec<AccountActivity>, String> {
-    let skip_a = skip_types.first().copied().unwrap_or("");
-    let skip_b = skip_types.get(1).copied().unwrap_or(skip_a);
-    let skip_c = skip_types.get(2).copied().unwrap_or("");
     let (from_value, to_value) = if cumulative {
         ("".to_string(), to.to_string())
     } else {
@@ -55,6 +52,23 @@ pub(crate) fn account_activities(
     // predicate; reusing `scope_sql` there would bind to the outer closing
     // voucher and let an out-of-scope opening cancel the final closing.
     let opening_scope_sql = scope.sql("o");
+
+    // Build one placeholder per skipped type instead of hard-coding three.
+    // The fixed parameters occupy ?1..?4, so skips start at ?5.
+    let skip_sql = if skip_types.is_empty() {
+        String::new()
+    } else {
+        let placeholders = (0..skip_types.len())
+            .map(|index| format!("?{}", index + 5))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("AND v.type NOT IN ({placeholders})")
+    };
+    let mut values: Vec<&dyn ToSql> =
+        vec![&from_value, &to_value, &CLOSING_FINAL, &VOUCHER_TYPES[1]];
+    for skip in skip_types {
+        values.push(skip);
+    }
 
     // Step 1: totals per effective account, grouped in SQLite.
     //
@@ -77,15 +91,13 @@ pub(crate) fn account_activities(
                   WHERE (?1 = '' OR v.date >= ?1)
                     AND (?2 = '' OR v.date <= ?2)
                     AND {scope_sql}
-                    AND v.type <> ?3
-                    AND v.type <> ?4
-                    AND v.type <> ?7
+                    {skip_sql}
                     AND NOT (
-                          v.type = ?5
+                          v.type = ?3
                           AND NOT EXISTS (
                               SELECT 1
                                 FROM vouchers o
-                               WHERE o.type = ?6
+                               WHERE o.type = ?4
                                  AND {opening_scope_sql}
                                  AND (?2 = '' OR o.date <= ?2)
                                  AND (o.date > v.date
@@ -96,24 +108,13 @@ pub(crate) fn account_activities(
             ))
             .map_err(db::db_error)?;
         let rows = stmt
-            .query_map(
-                params![
-                    from_value,
-                    to_value,
-                    skip_a,
-                    skip_b,
-                    CLOSING_FINAL,
-                    VOUCHER_TYPES[1],
-                    skip_c
-                ],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                },
-            )
+            .query_map(params_from_iter(values), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
             .map_err(db::db_error)?;
         for row in rows {
             let (code, debit, credit) = row.map_err(db::db_error)?;
@@ -294,4 +295,71 @@ pub(crate) fn group_type_class(group_type: &str) -> Option<&'static str> {
         .iter()
         .find(|entry| entry.0 == group_type)
         .map(|entry| entry.1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_activities_skips_every_requested_voucher_type() {
+        let database = db::memory_database();
+        let skip_types = ["skip-a", "skip-b", "skip-c", "skip-d"];
+        database
+            .with_conn(|conn| {
+                let cash_id: i64 = conn
+                    .query_row(
+                        "SELECT id FROM accounts WHERE code = '1101'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(db::db_error)?;
+                let capital_id: i64 = conn
+                    .query_row(
+                        "SELECT id FROM accounts WHERE code = '3101'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(db::db_error)?;
+                for (index, voucher_type) in skip_types
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once("keep-type"))
+                    .enumerate()
+                {
+                    conn.execute(
+                        "INSERT INTO vouchers (number, date, type) VALUES (?1, '1405/01/01', ?2)",
+                        rusqlite::params![(index as i64) + 1, voucher_type],
+                    )
+                    .map_err(db::db_error)?;
+                    let voucher_id = conn.last_insert_rowid();
+                    conn.execute(
+                        "INSERT INTO voucher_lines
+                            (voucher_id, row_no, account_id, account_code, description, debit, credit)
+                         VALUES (?1, 1, ?2, '1101', '', 100, 0),
+                                (?1, 2, ?3, '3101', '', 0, 100)",
+                        rusqlite::params![voucher_id, cash_id, capital_id],
+                    )
+                    .map_err(db::db_error)?;
+                }
+                let activities = account_activities(
+                    conn,
+                    "1405/01/01",
+                    "1405/12/29",
+                    false,
+                    &skip_types,
+                    ReportScope::Working,
+                )?;
+                let cash = activities
+                    .iter()
+                    .find(|activity| activity.account_code == "1101")
+                    .expect("cash activity");
+                assert_eq!(
+                    cash.contribution_amount, 100,
+                    "only the type outside the skip list may remain"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
 }
