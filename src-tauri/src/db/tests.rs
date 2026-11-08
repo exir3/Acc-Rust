@@ -1095,6 +1095,86 @@ mod tests {
     }
 
     #[test]
+    fn group_counts_cover_base_and_detail_voucher_lines() {
+        let db = test_database();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'عادی')",
+                [],
+            )
+            .map_err(db_error)?;
+            let voucher_id = conn.last_insert_rowid();
+            // A line on the posting base and a line on one of its details both
+            // belong to group "1"; the credit line belongs to group "7".
+            insert_test_line(conn, voucher_id, 1, "110101", None, 300, 0).map_err(db_error)?;
+            insert_test_line(conn, voucher_id, 2, "110201", Some("110201001"), 700, 0)
+                .map_err(db_error)?;
+            insert_test_line(conn, voucher_id, 3, "410101", None, 0, 1000).map_err(db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let accounts = db.list_accounts().unwrap().accounts;
+        let expected_group_one_accounts = accounts
+            .iter()
+            .filter(|account| account.group_code == "1")
+            .count() as i64;
+
+        let groups = db.list_account_groups().unwrap().groups;
+        let group_one = groups.iter().find(|group| group.code == "1").unwrap();
+        assert_eq!(group_one.account_count, expected_group_one_accounts);
+        assert_eq!(group_one.posted_line_count, 2);
+
+        let group_seven = groups.iter().find(|group| group.code == "7").unwrap();
+        assert_eq!(group_seven.posted_line_count, 1);
+        assert!(groups
+            .iter()
+            .any(|group| group.account_count == 0 && group.posted_line_count == 0));
+    }
+
+    #[test]
+    fn created_and_updated_group_reports_its_counts() {
+        let db = test_database();
+        let created = db
+            .create_account_group("90", "گروه شمارش", "دارایی", "")
+            .unwrap();
+        assert_eq!(created.account_count, 0);
+        assert_eq!(created.posted_line_count, 0);
+
+        db.create_account("9001", "حساب شمارش", 1, "90", "debtor", "", true)
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO vouchers (number, date, type) VALUES (1, '1405/01/01', 'عادی')",
+                [],
+            )
+            .map_err(db_error)?;
+            let voucher_id = conn.last_insert_rowid();
+            insert_test_line(conn, voucher_id, 1, "9001", None, 100, 0).map_err(db_error)?;
+            Ok(())
+        })
+        .unwrap();
+
+        // Saving returns the group from `fetch_group`, so its counts must match
+        // what the list reports.
+        let updated = db
+            .update_account_group(created.id, "90", "گروه شمارش", "دارایی", "")
+            .unwrap();
+        assert_eq!(updated.account_count, 1);
+        assert_eq!(updated.posted_line_count, 1);
+
+        let listed = db
+            .list_account_groups()
+            .unwrap()
+            .groups
+            .into_iter()
+            .find(|group| group.id == created.id)
+            .unwrap();
+        assert_eq!(listed.account_count, updated.account_count);
+        assert_eq!(listed.posted_line_count, updated.posted_line_count);
+    }
+
+    #[test]
     fn creates_and_updates_account() {
         let db = test_database();
         let created = db

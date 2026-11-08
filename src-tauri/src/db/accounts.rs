@@ -1072,18 +1072,39 @@ impl Database {
     }
 }
 
+/// Group rows with account and posted-line counts.
+///
+/// The counts are aggregated once over the whole chart. Correlated `COUNT(*)`
+/// subqueries made `list_account_groups` scan every `voucher_lines` row once
+/// per group, which took seconds on a real book; this keeps the same result in
+/// one scan and is also reused when a single group is fetched after a save.
+const GROUP_WITH_COUNTS: &str = "
+    WITH account_counts AS (
+        SELECT group_code, COUNT(*) AS account_count
+          FROM accounts
+         GROUP BY group_code
+    ),
+    line_counts AS (
+        SELECT a.group_code, COUNT(*) AS line_count
+          FROM voucher_lines l
+          JOIN accounts a
+            ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
+         GROUP BY a.group_code
+    )
+    SELECT g.id, g.code, g.name, g.type, g.default_section,
+           g.created_at, g.updated_at,
+           COALESCE(ac.account_count, 0),
+           COALESCE(lc.line_count, 0)
+      FROM account_groups g
+      LEFT JOIN account_counts ac ON ac.group_code = g.code
+      LEFT JOIN line_counts lc ON lc.group_code = g.code
+";
+
 fn list_groups(conn: &Connection) -> Result<Vec<AccountGroup>, String> {
     let mut stmt = conn
-        .prepare(
-            "SELECT g.id, g.code, g.name, g.type, g.default_section, g.created_at, g.updated_at,
-                    (SELECT COUNT(*) FROM accounts a WHERE a.group_code = g.code),
-                    (SELECT COUNT(*) FROM voucher_lines l
-                       JOIN accounts a
-                         ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
-                      WHERE a.group_code = g.code)
-               FROM account_groups g
-              ORDER BY CAST(g.code AS INTEGER), g.code",
-        )
+        .prepare(&format!(
+            "{GROUP_WITH_COUNTS} ORDER BY CAST(g.code AS INTEGER), g.code"
+        ))
         .map_err(db_error)?;
     let rows = stmt.query_map([], row_to_group).map_err(db_error)?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(db_error)
@@ -1175,14 +1196,7 @@ fn statement_key(statement: crate::db::fs_catalog::FsStatement) -> &'static str 
 
 fn fetch_group(conn: &Connection, id: i64) -> Result<AccountGroup, String> {
     conn.query_row(
-        "SELECT g.id, g.code, g.name, g.type, g.default_section, g.created_at, g.updated_at,
-                (SELECT COUNT(*) FROM accounts a WHERE a.group_code = g.code),
-                (SELECT COUNT(*) FROM voucher_lines l
-                   JOIN accounts a
-                     ON a.code = COALESCE(NULLIF(l.detail1_code, ''), l.account_code)
-                  WHERE a.group_code = g.code)
-           FROM account_groups g
-          WHERE g.id = ?1",
+        &format!("{GROUP_WITH_COUNTS} WHERE g.id = ?1"),
         params![id],
         row_to_group,
     )
