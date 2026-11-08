@@ -6,7 +6,7 @@
 //! expected values live in `fixtures/report_reference.json` and are compared
 //! exactly, so a classification change cannot silently alter a report.
 
-use crate::db::{self, Database};
+use crate::db::{self, Database, NewAccount};
 use crate::vouchers::model::{
     ReportScope, Voucher, VoucherInput, VoucherLineInput, CLOSING_FINAL, CLOSING_TEMPORARY,
 };
@@ -559,6 +559,88 @@ fn financial_reports_match_the_reference_fixture() {
         "report output no longer matches the approved reference fixture; if the classification change is intentional, update \
          src-tauri/src/vouchers/reports/fixtures/report_reference.json deliberately"
     );
+}
+
+#[test]
+fn financial_statement_totals_match_the_shared_webapp_parity_scenario() {
+    let db = db::memory_database();
+    for (code, name, group_type, section) in [
+        ("9801", "دارایی آزمون تطبیق", "دارایی", "current_asset"),
+        ("9802", "حقوق مالکانه آزمون تطبیق", "سرمایه", "equity"),
+        ("9803", "درآمد آزمون تطبیق", "درآمد", "revenue"),
+        ("9804", "هزینه آزمون تطبیق", "هزینه", "admin_expense"),
+    ] {
+        db.create_account_group(code, name, group_type, section)
+            .unwrap();
+    }
+
+    db.create_accounts_atomic(vec![
+        NewAccount::new("90001", "موجودی نقد", 1, "9801", "debtor", "", true)
+            .with_fs_line("BS.CA.CASH"),
+        NewAccount::new("90004", "سرمایه", 1, "9802", "creditor", "", true)
+            .with_fs_line("BS.EQ.CAP"),
+        NewAccount::new("90005", "فروش کالا و خدمات", 1, "9803", "creditor", "", true)
+            .with_fs_line("IS.REV"),
+        NewAccount::new("90007", "هزینه اداری", 1, "9804", "debtor", "", true)
+            .with_fs_line("IS.ADM"),
+    ])
+    .unwrap();
+
+    save_permanent(
+        &db,
+        voucher(
+            "1404/01/01",
+            OPENING_TYPE,
+            vec![line("90001", 1_000, 0), line("90004", 0, 1_000)],
+        ),
+    );
+    save_permanent(
+        &db,
+        voucher(
+            "1404/02/01",
+            "",
+            vec![line("90001", 500, 0), line("90005", 0, 500)],
+        ),
+    );
+    save_permanent(
+        &db,
+        voucher(
+            "1404/03/01",
+            "",
+            vec![line("90007", 100, 0), line("90001", 0, 100)],
+        ),
+    );
+
+    let income = db
+        .get_income_statement_scoped("1404/01/01", "1404/12/29", ReportScope::Official)
+        .unwrap();
+    let balance = db
+        .get_balance_sheet_scoped("1404/12/29", ReportScope::Official)
+        .unwrap();
+    let trial_balance = db
+        .get_trial_balance_filtered_scoped(
+            "1404/01/01",
+            "1404/12/29",
+            "",
+            "",
+            true,
+            false,
+            ReportScope::Official,
+        )
+        .unwrap();
+
+    assert_eq!(trial_balance.closing_debit, 1_500);
+    assert_eq!(trial_balance.closing_credit, 1_500);
+    assert_eq!(income.revenue_total, 500);
+    assert_eq!(income.expense_total, 100);
+    assert_eq!(income.gross_profit, 500);
+    assert_eq!(income.operating_profit, 400);
+    assert_eq!(income.profit_before_tax, 400);
+    assert_eq!(income.net_profit, 400);
+    assert_eq!(balance.assets_total, 1_400);
+    assert_eq!(balance.total_liabilities_equity, 1_400);
+    assert!(income.integrity.ok);
+    assert!(balance.integrity.ok);
 }
 
 #[test]

@@ -11,8 +11,7 @@
 //!   cargo test --release perf_and_equivalence -- --ignored --nocapture
 use crate::db;
 use crate::vouchers::model::{ReportScope, VOUCHER_TYPES};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use sha2::{Digest, Sha256};
 use std::time::Instant;
 
 fn env_n(k: &str, d: usize) -> usize {
@@ -21,11 +20,11 @@ fn env_n(k: &str, d: usize) -> usize {
         .and_then(|v| v.parse().ok())
         .unwrap_or(d)
 }
-fn h<T: serde::Serialize>(v: &T) -> (u64, usize) {
+fn h<T: serde::Serialize>(v: &T) -> (String, usize) {
     let s = serde_json::to_string(v).unwrap();
-    let mut x = DefaultHasher::new();
-    s.hash(&mut x);
-    (x.finish(), s.len())
+    let digest = Sha256::digest(s.as_bytes());
+    let hash = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    (hash, s.len())
 }
 
 #[test]
@@ -78,13 +77,32 @@ fn perf_and_equivalence() {
                     let di = rnd(details.len() as u64) as usize;
                     let (bi, dcode) = &details[di];
                     let use_detail = rnd(4) != 0; // some lines post to the base account only
-                    let (debit, credit) = if row < 4 { if row % 2 == 0 { (amount, 0) } else { (0, amount) } } else { (7, 0) };
+                    let (debit, credit) = match row {
+                        0 | 2 => (amount, 0),
+                        1 => (0, amount),
+                        3 => (0, amount + 7),
+                        _ => (7, 0),
+                    };
                     let det: Option<&str> = if use_detail { Some(dcode.as_str()) } else { None };
                     ls.execute(rusqlite::params![vid, row + 1, base[*bi].0, base[*bi].1, det, debit, credit]).unwrap();
                 }
             }
         }
         tx.execute("UPDATE vouchers SET is_temporary = 0 WHERE number % 10 <> 0", []).unwrap();
+        let unbalanced_vouchers: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM (
+                    SELECT v.id
+                      FROM vouchers v
+                      JOIN voucher_lines l ON l.voucher_id = v.id
+                     GROUP BY v.id
+                    HAVING SUM(l.debit) <> SUM(l.credit)
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unbalanced_vouchers, 0, "synthetic benchmark vouchers must balance");
         tx.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_voucher_lines_effective_account ON voucher_lines(COALESCE(NULLIF(detail1_code, ''), account_code));
              CREATE INDEX IF NOT EXISTS idx_vouchers_date_number ON vouchers(date, number);
