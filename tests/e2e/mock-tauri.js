@@ -151,6 +151,18 @@
         },
       ],
     }),
+    get_balance_sheet: () => ({
+      assets: [],
+      assetsTotal: 0,
+      liabilities: [],
+      liabilitiesTotal: 0,
+      equity: [],
+      equityTotal: 0,
+      profit: 0,
+      totalLiabilitiesEquity: 0,
+      balanced: true,
+      integrity: { ok: true, counts: { error: 0, warning: 0, info: 0 }, issues: [] },
+    }),
     save_settings: ({ companyName, fiscalYear }) => {
       backend.settings.companyName = String(companyName ?? backend.settings.companyName ?? '');
       backend.settings.fiscalYear = String(fiscalYear ?? backend.settings.fiscalYear ?? '');
