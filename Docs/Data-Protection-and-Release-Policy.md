@@ -35,8 +35,8 @@
 
 ## ۲. ممیزی وابستگی‌ها
 
-- `npm audit --audit-level=high` و `cargo audit` در هر push و pull request روی `main` اجرا می‌شوند.
-- هشدارهای high/critical تا رفع یا ثبت استثنای مستند، ادغام را متوقف می‌کنند.
+- `npm audit --audit-level=moderate` و `cargo audit --deny warnings` در هر push و pull request روی `main` اجرا می‌شوند. آستانهٔ `moderate` برای پوشش هشدارهای prototype-pollution و ReDoS انتخاب شده است.
+- هشدارهای moderate/high/critical تا رفع یا ثبت استثنای مستند، ادغام را متوقف می‌کنند.
 - به‌روزرسانی وابستگی‌ها فقط همراه با اجرای کامل CI انجام می‌شود.
 
 ## ۳. امضای خروجی انتشار

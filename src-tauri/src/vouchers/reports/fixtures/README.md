@@ -6,6 +6,17 @@ and book in code, runs the trial balance, income statement and balance sheet,
 and compares every total and row with this file. A classification change that
 alters a report therefore fails CI until the fixture is updated deliberately.
 
+## Scope of this fixture
+
+This fixture currently pins the **trial balance, income statement and balance
+sheet**. The journal and ledger have their own Rust unit tests. The four
+supplementary statements (cash flow, changes in equity, cost of goods sold and
+profit appropriation) are covered by computational tests in
+`src-tauri/src/vouchers/tests.rs` and print-document tests in
+`src-tauri/src/report/tests.rs`, but they are **not yet part of
+`report_reference.json`**. They still require an independent accounting
+reference or manual review before an official release.
+
 ## Dataset coverage
 
 The reference book is small enough to audit by hand and covers:
@@ -61,9 +72,11 @@ cancel each other.
 
 The values above were derived from the accounting identities of the dataset and
 reviewed against the report code. They are an **internal reference, not yet a
-formal accountant/auditor sign-off**. Before an official release, the
-responsible accountant should review the dataset and expected values and record
-approval in `Docs/Accounting-Report-Signoff.md`. The release CI job runs
+formal accountant/auditor sign-off**. The four supplementary statements are
+outside this fixture and need independent reference examples. Before an
+official release, the responsible accountant should review the dataset,
+expected values and supplementary statements, and record approval in
+`Docs/Accounting-Report-Signoff.md`. The release CI job runs
 `node scripts/check-report-signoff.mjs`; it fails unless that document says
 `Status: approved`, names the reviewer and date, and its `Fixture-SHA256`
 matches this directory's `report_reference.json`. Editing the fixture therefore

@@ -3,11 +3,19 @@
 **تاریخ بررسی:** ۷ نوامبر ۲۰۲۶  
 **مخزن:** `exir3/Acc-Rust` (خصوصی)  
 **شاخه بررسی‌شده:** `main`  
-**آخرین commit بررسی‌شده:** `5ce45dd4f7f2cd9ee86fa2ac27d1a4de495c3224`  
+**commit مبنای گزارش اولیه:** `5ce45dd4f7f2cd9ee86fa2ac27d1a4de495c3224`<br>
+**آخرین commit بازبینی مجدد:** `94da09a16c3cd41310f159be42d080ed2dcaf4e0`<br>
 **نسخه برنامه:** `5.0.0`  
-**دامنه بازبینی اولیه:** کد commit بالا و شواهد CI همان commit  
-**صحت‌سنجی تکمیلی:** ۷ نوامبر ۲۰۲۶؛ درخت کاری محلی Acc-Rust و WebApp در `E:\WebApp`  
+**دامنه بازبینی اولیه:** کد commit مبنا و شواهد CI همان commit<br>
+**صحت‌سنجی تکمیلی:** ۷ و ۸ نوامبر ۲۰۲۶؛ درخت کاری محلی Acc-Rust و WebApp در `E:\WebApp`<br>
 **توضیح وضعیت:** هنگام صحت‌سنجی تکمیلی، درخت کاری هر دو مخزن تغییرات ثبت‌نشده داشت. وضعیت‌های «درخت کاری فعلی» در این گزارش بر مبنای همان کد محلی است و به commit اصلی نسبت داده نمی‌شود.
+
+**به‌روزرسانی صحت‌سنجی (۸ نوامبر ۲۰۲۶):** بازبینی مجدد روی `main` و commit `94da09a16c3cd41310f159be42d080ed2dcaf4e0` انجام شد. یک نقص در اتصال رابط کاربری چهار صورت تکمیلی پیدا و اصلاح شد (جزئیات در P1-03). آزمون‌های `cargo test` (۲۰۶ قبول، ۲ مورد ignored)، `npm test` (۱۹ مورد)، `npm run test:e2e` (۳۱ مورد)، `npm run check:js` (۴۹ فایل)، `npm run lint:js`، `cargo clippy --all-targets -- -D warnings` و `cargo fmt --check` موفق بودند. `npm run check:signoff` مطابق انتظار به‌دلیل pending بودن تأیید مستقل شکست می‌خورد.
+
+**جایگاه سند:** این گزارش مرجع تفصیلی یافته‌ها، شواهد و معیارهای پذیرش است. خلاصهٔ
+وضعیت جاری، قابلیت‌های پیاده‌سازی‌شده و موانع انتشار در
+[Project-Status.md](Project-Status.md) نگهداری می‌شود و گزارش فنی قبلی فقط در
+[آرشیو](Archive/Acc-Rust-Technical-Audit-2026-11-07-fa.md) باقی مانده است.
 
 ---
 
@@ -22,7 +30,7 @@ Acc-Rust از نظر زیرساخت یک نرم‌افزار حسابداری د
 3. تأیید مستقل محاسبات و طبقه‌بندی‌های مالی هنوز انجام نشده و سند sign-off در وضعیت pending است.
 4. تراز آزمایشی و ورود Excel همچنان داده‌های گسترده را یک‌جا پردازش می‌کنند؛ اندازه‌گیری کارایی لازم است.
 5. آزمون‌های mock و smoke موجود جای آزمون کامل UI→IPC→SQLite و چاپ/PDF واقعی را نمی‌گیرند.
-6. یافته‌های مربوط به P1-01، P1-05، P2-01 و P2-06 در درخت کاری فعلی اصلاح شده‌اند؛ جزئیات و شواهد در بخش‌های مربوط آمده است.
+6. یافته‌های مربوط به P1-01، P1-03 (از نظر پیاده‌سازی و اتصال UI)، P1-05، P2-01، P2-04 و P2-06 در درخت کاری فعلی اصلاح شده‌اند؛ تأیید حسابداری صورت‌های تکمیلی زیر P1-04 باقی است. جزئیات و شواهد در بخش‌های مربوط آمده است.
 
 ### ارزیابی کلی
 
@@ -177,6 +185,8 @@ SQLite (schema, migrations, transactions, backup)
 
 وجود routeها و منطق گزارش‌های متناظر در WebApp در `E:\WebApp` نیز تأیید شد. این بررسی، تطبیق عددی کامل دو برنامه یا تأیید استاندارد حسابداری را اثبات نمی‌کند. صورت جریان وجوه نقد در Rust با روش غیرمستقیم پیاده شده است. صورت بهای تمام‌شده محدودیت نبود ماژول تولید/انبار را صریحاً اعلام می‌کند و فقط سرفصل‌های هزینه و تغییر موجودی را پوشش می‌دهد. گزارش مقایسه‌ای دو دوره نیز همچنان به‌عنوان قابلیت مستقل تثبیت نشده است.
 
+**اصلاح در صحت‌سنجی مجدد (۸ نوامبر ۲۰۲۶):** فایل‌های صفحه و فرمان‌های چاپ این چهار صورت وجود داشتند، اما اسکریپت‌های چهار صفحه در `ui/index.html` بارگذاری نمی‌شدند و گزینه‌های منوی گزارش‌ها فیلد `page` نداشتند؛ در نتیجه دسترسی از رابط کاربری عملاً برقرار نبود. بارگذاری اسکریپت‌ها، اتصال گزینه‌های منو، عنوان صفحه و مقادیر پیش‌فرض فیلترها اصلاح شد و آزمون رگرسیون `tests/ui-report-wiring.test.mjs` برای جلوگیری از تکرار این نقص افزوده شد.
+
 **اقدام باقی‌مانده:**
 
 - برای هر صورت، مشخصات حسابداری و مثال‌های مرجع مستقل تهیه/تکمیل شود؛ خروجی Rust با WebApp و محاسبهٔ دستی در سطح ردیف، جمع و مانده مقایسه شود.
@@ -185,7 +195,7 @@ SQLite (schema, migrations, transactions, backup)
 
 **معیار پذیرش:** برای هر صورت، نمونه‌های مانده افتتاحیه، اصلاحی، زیان/سود و بستن سال وجود داشته باشد و خروجی محاسباتی، چاپی و مرجع به‌طور مستقل تطبیق داده شود.
 
-**فایل‌های فعلی:** `src-tauri/src/vouchers/reports/supplementary_statements.rs`، `src-tauri/src/commands/reports.rs`، `src-tauri/src/report/` و `ui/js/pages/`. مرجع WebApp: `E:\WebApp\app\api\statements\` و `E:\WebApp\lib\accounting\statement-engine.ts`.
+**فایل‌های فعلی:** `src-tauri/src/vouchers/reports/supplementary_statements.rs`، `src-tauri/src/commands/reports.rs`، `src-tauri/src/report/`، `ui/js/pages/` و `tests/ui-report-wiring.test.mjs`. مرجع WebApp: `E:\WebApp\app\api\statements\` و `E:\WebApp\lib\accounting\statement-engine.ts`.
 
 ### P1-04 ـ نبود تأیید مستقل حسابدار/حسابرس برای ارقام مرجع
 
@@ -201,7 +211,7 @@ SQLite (schema, migrations, transactions, backup)
 3. پس از تأیید، نام بازبین، تاریخ و SHA-256 فایل مرجع در سربرگ ماشین‌خوان سند ثبت شود.
 4. تغییر بعدی در fixture یا منطق صورت مالی باید sign-off جدید را الزامی کند.
 
-**نکته:** آخرین CI سبز است، اما مرحله sign-off مستقل و امضای نسخه رسمی در آن اجرا نشده‌اند. این مرحله در CI فقط برای `release=true` فعال می‌شود.
+**نکته:** آخرین CI تأییدشده سبز است، اما مرحله sign-off مستقل و امضای نسخه رسمی در آن اجرا نشده‌اند. این مرحله در CI فقط برای `release=true` فعال می‌شود و اجرای CI روی commit نهایی هنوز تأیید نشده است.
 
 **فایل:** [Accounting-Report-Signoff.md](https://github.com/exir3/Acc-Rust/blob/5ce45dd4f7f2cd9ee86fa2ac27d1a4de495c3224/Docs/Accounting-Report-Signoff.md)
 
@@ -546,7 +556,7 @@ CI یک smoke test واقعی برای اجرای EXE و WebView2 دارد و آ
 
 ### وضعیت آخرین CI بررسی‌شده
 
-آخرین اجرای CI روی commit `5ce45dd4f7f2cd9ee86fa2ac27d1a4de495c3224` با شناسه اجرای `42382175589` در تاریخ ۷ نوامبر ۲۰۲۶ موفق بوده است.
+آخرین اجرای CI تأییدشده روی commit `5ce45dd4f7f2cd9ee86fa2ac27d1a4de495c3224` با شناسه اجرای `42382175589` در تاریخ ۷ نوامبر ۲۰۲۶ موفق بوده است. این اجرا پیش از تغییرات محلی ۸ نوامبر ۲۰۲۶ است و اجرای CI روی commit نهایی باید جداگانه تأیید شود.
 
 | Job | نتیجه | موارد اجراشده |
 |---|---|---|
@@ -567,8 +577,8 @@ CI یک smoke test واقعی برای اجرای EXE و WebView2 دارد و آ
 آزمون‌های زیر پس از تغییرات ثبت‌نشدهٔ موجود و اصلاح بازاعتبارسنجی دائمی‌سازی اجرا شدند:
 
 - `cargo test`: ۲۰۶ آزمون موفق، ۲ آزمون نادیده‌گرفته‌شده؛ شامل آزمون تاریخ خارج از سال مالی و نبود سال مالی برای سند.
-- `cargo clippy --all-targets -- -D warnings` و `cargo fmt -- --check`: موفق.
-- `npm test`: ۱۵ آزمون موفق؛ `npm run lint:js` و `npm run check:js`: موفق، ۴۹ فایل JS از نظر syntax بررسی شد.
+- `cargo clippy --all-targets -- -D warnings` و `cargo fmt --check`: موفق.
+- `npm test`: ۱۹ آزمون موفق (شامل آزمون رگرسیون اتصال UI چهار صورت تکمیلی)؛ `npm run lint:js` و `npm run check:js`: موفق، ۴۹ فایل JS از نظر syntax بررسی شد.
 - `npm run test:e2e`: ۳۱ آزمون موفق.
 - `npm run check:signoff`: عمداً با وضعیت pending متوقف شد؛ تأیید مستقل هنوز ثبت نشده است.
 
@@ -698,7 +708,7 @@ Acc-Rust از نظر طراحی کلی، زیرساخت مناسبی دارد و
 
 - [مخزن Acc-Rust](https://github.com/exir3/Acc-Rust)
 - [آخرین اجرای CI روی commit بررسی‌شده](https://github.com/exir3/Acc-Rust/actions/runs/42382175589)
-- [گزارش فنی قبلی داخل مخزن](https://github.com/exir3/Acc-Rust/blob/5ce45dd4f7f2cd9ee86fa2ac27d1a4de495c3224/Docs/Acc-Rust-Technical-Audit-2026-11-07-fa.md)
-- [وضعیت پروژه](https://github.com/exir3/Acc-Rust/blob/5ce45dd4f7f2cd9ee86fa2ac27d1a4de495c3224/Docs/Project-Status.md)
+- [گزارش فنی قبلی داخل مخزن (آرشیو)](https://github.com/exir3/Acc-Rust/blob/main/Docs/Archive/Acc-Rust-Technical-Audit-2026-11-07-fa.md)
+- [وضعیت پروژه](https://github.com/exir3/Acc-Rust/blob/main/Docs/Project-Status.md)
 - [کنترل تأیید مستقل صورت‌های مالی](https://github.com/exir3/Acc-Rust/blob/5ce45dd4f7f2cd9ee86fa2ac27d1a4de495c3224/Docs/Accounting-Report-Signoff.md)
 - [سیاست حفاظت داده و انتشار](https://github.com/exir3/Acc-Rust/blob/5ce45dd4f7f2cd9ee86fa2ac27d1a4de495c3224/Docs/Data-Protection-and-Release-Policy.md)

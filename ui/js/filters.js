@@ -40,6 +40,10 @@ function defaultFilters() {
     },
     income: { from, to, scope: 'official' },
     balance: { asOf: to, scope: 'official' },
+    equity: { asOf: to, scope: 'official' },
+    cashflow: { asOf: to, scope: 'official' },
+    cogs: { from, to, scope: 'official' },
+    appropriation: { asOf: to, scope: 'official' },
   };
 }
 
