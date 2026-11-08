@@ -1438,6 +1438,13 @@ body.is-voucher-list-popup .page-scroll {
   background: #fff5f5;
 }
 
+.tbp-filter-help {
+  grid-column: 2;
+  color: #5b6b80;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
 .tbp-filter-options,
 .tbp-filter-button-row {
   grid-column: 1 / -1;

@@ -815,6 +815,39 @@ input, textarea, select { user-select: text; }
 .note[data-tone="warn"] { background: var(--warn-soft); border-color: #f0d9a8; border-inline-start-color: var(--amber); color: #6b4600; }
 .note[data-tone="danger"] { background: var(--danger-soft); border-color: #f2cdca; border-inline-start-color: var(--danger); color: #8d2018; }
 
+/* ── Keyboard shortcut guide ───────────────────────────────────── */
+.shortcut-group + .shortcut-group { margin-top: 12px; }
+.shortcut-group h4 {
+  margin: 0 0 5px;
+  color: #33475f;
+  font-size: 12px;
+  font-weight: 700;
+}
+.shortcut-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px dashed #e0e7f1;
+  font-size: 12px;
+}
+.shortcut-row:last-child { border-bottom: 0; }
+.shortcut-row kbd {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid #cbd5e3;
+  border-radius: 4px;
+  background: #f7f9fc;
+  color: #1f3552;
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.shortcut-row span { color: #33475f; }
+
+
 /* ── Data grid ────────────────────────────────────────────────────────── */
 .table-wrap {
   overflow: auto;

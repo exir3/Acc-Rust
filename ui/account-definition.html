@@ -58,6 +58,16 @@
       <!-- ── Drill-down breadcrumb ─────────────────────────────────── -->
       <nav class="ad-breadcrumb" id="adBreadcrumb" aria-label="مسیر حساب‌ها"></nav>
 
+      <!-- ── Direct account search ─────────────────────────────────── -->
+      <div class="ad-searchbar" role="search">
+        <label class="ad-search-label" for="adSearch">جستجوی حساب:</label>
+        <input id="adSearch" class="ad-input ad-search-input" type="search"
+               placeholder="کد، نام یا گروه حساب…" autocomplete="off" spellcheck="false"
+               aria-label="جستجوی حساب در همه سطوح" />
+        <button type="button" class="ad-btn" id="adSearchClear" disabled>پاک کردن</button>
+        <span class="ad-search-status" id="adSearchStatus" role="status" aria-live="polite"></span>
+      </div>
+
       <!-- ── Accounts grid ─────────────────────────────────────────── -->
       <div class="ad-grid" role="grid" aria-label="فهرست حساب‌ها" aria-colcount="5">
         <div class="ad-grid-head" role="row" id="adGridHead">

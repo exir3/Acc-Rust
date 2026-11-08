@@ -332,6 +332,20 @@ body.ag-page {
   box-shadow: 0 0 0 3px rgba(47, 123, 235, .14);
 }
 
+.ag-input.is-invalid,
+.ag-input.is-invalid:focus {
+  border-color: var(--danger);
+  background: #fff7f7;
+  box-shadow: 0 0 0 3px rgba(192, 57, 43, .14);
+}
+
+.ag-field-error {
+  margin-top: 3px;
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+
 .ag-input:disabled {
   background: #f4f7fc;
   border-color: #d5deea;

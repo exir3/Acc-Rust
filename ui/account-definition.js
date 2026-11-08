@@ -94,6 +94,9 @@
     closeApproved: false,
     refreshQueued: false,
     initialized: false,
+    searchQuery: '',
+    searchBasePath: null,
+    searchBaseId: null,
     toastTimer: null,
     lastRowClick: { id: null, at: 0 },
   };
@@ -143,6 +146,10 @@
       Boolean(state.form.splitBySign),
       state.form.systemRole || '',
     ]);
+  }
+
+  function isDirty() {
+    return isEditing() && snapshot() !== state.initial;
   }
 
   /* ── Normalisation ───────────────────────────────────────────── */
@@ -228,6 +235,130 @@
 
   function selectedAccount() {
     return state.accounts.find((account) => account.id === state.selectedId) || null;
+  }
+
+  /* ── Search model ────────────────────────────────────────────── */
+
+  function normalizeSearch(value) {
+    return toEnDigits(String(value ?? '')).trim().toLocaleLowerCase('fa');
+  }
+
+  function searchActive() {
+    return state.searchQuery.trim().length > 0;
+  }
+
+  function accountPath(account) {
+    const byCode = new Map(state.accounts.map((item) => [item.code, item]));
+    const chain = [];
+    const seen = new Set();
+    let current = account;
+    while (current && !seen.has(current.code)) {
+      seen.add(current.code);
+      chain.unshift(current);
+      current = current.parentCode ? byCode.get(current.parentCode) : null;
+    }
+    return chain;
+  }
+
+  function accountPathLabel(account) {
+    return accountPath(account).map((item) => item.name).join(' ← ');
+  }
+
+  function searchResults() {
+    const query = normalizeSearch(state.searchQuery);
+    if (!query) return [];
+    return state.accounts.filter((account) => {
+      const code = normalizeSearch(account.code);
+      const name = normalizeSearch(account.name);
+      const group = normalizeSearch(account.groupName);
+      const parent = normalizeSearch(account.parentName);
+      return code.includes(query)
+        || name.includes(query)
+        || group.includes(query)
+        || parent.includes(query);
+    }).sort(compareCodes);
+  }
+
+  function displayedAccounts() {
+    return searchActive() ? searchResults() : visibleAccounts();
+  }
+
+  function syncSearchControls() {
+    const input = $('#adSearch');
+    const clearButton = $('#adSearchClear');
+    const status = $('#adSearchStatus');
+    if (input) {
+      if (document.activeElement !== input && input.value !== state.searchQuery) {
+        input.value = state.searchQuery;
+      }
+      input.disabled = isEditing() || isBusy() || !state.loaded;
+    }
+    if (clearButton) clearButton.disabled = !searchActive() || isBusy();
+    if (status) {
+      status.classList.remove('is-empty');
+      if (!searchActive()) {
+        status.textContent = '';
+      } else {
+        const count = searchResults().length;
+        status.textContent = count
+          ? `${toFaDigits(count)} حساب یافت شد.`
+          : 'موردی یافت نشد؛ عبارت جستجو را پاک کنید.';
+        status.classList.toggle('is-empty', count === 0);
+      }
+    }
+  }
+
+  function resetSearch(options = {}) {
+    const { restore = false } = options;
+    const basePath = state.searchBasePath;
+    const baseId = state.searchBaseId;
+    state.searchQuery = '';
+    state.searchBasePath = null;
+    state.searchBaseId = null;
+    const input = $('#adSearch');
+    if (input) input.value = '';
+    if (!restore || basePath === null) return;
+    navigateTo(basePath);
+    if (baseId == null) return;
+    const baseAccount = state.accounts.find((account) => account.id === baseId);
+    const visible = visibleAccounts();
+    if (baseAccount && visible.some((account) => account.id === baseAccount.id)) {
+      state.selectedId = baseAccount.id;
+      state.form = formFromAccount(baseAccount);
+      state.initial = snapshot();
+      renderAll();
+      focusSelectedRow();
+    }
+  }
+
+  function activateSearchResult(account) {
+    if (!account) return;
+    const parentPath = accountPath(account).slice(0, -1).map((item) => item.code);
+    resetSearch();
+    navigateTo(parentPath, { selectCode: account.code });
+  }
+
+  function handleSearchInput(value) {
+    const next = String(value ?? '');
+    const wasActive = searchActive();
+    if (!wasActive && next.trim()) {
+      state.searchBasePath = [...state.drillPath];
+      state.searchBaseId = state.selectedId;
+    }
+    state.searchQuery = next;
+    if (!next.trim()) {
+      resetSearch({ restore: true });
+      renderAll();
+      return;
+    }
+    const results = searchResults();
+    const current = results.find((account) => account.id === state.selectedId);
+    const nextAccount = current || results[0] || null;
+    state.selectedId = nextAccount ? nextAccount.id : null;
+    state.form = nextAccount ? formFromAccount(nextAccount) : emptyForm();
+    state.initial = snapshot();
+    clearError();
+    renderAll();
   }
 
   function formFromAccount(account) {
@@ -326,10 +457,46 @@
     bar.hidden = !state.error;
   }
 
+  function setFieldError(control, message) {
+    if (!control) return;
+    control.classList.add('is-invalid');
+    control.setAttribute('aria-invalid', 'true');
+    const field = control.closest('.ad-field');
+    if (!field) return;
+    let error = field.querySelector('.ad-field-error');
+    if (!error) {
+      error = document.createElement('small');
+      error.className = 'ad-field-error';
+      error.id = control.id ? `${control.id}Error` : '';
+      field.append(error);
+    }
+    error.textContent = message;
+    if (error.id) control.setAttribute('aria-describedby', error.id);
+  }
+
+  function clearFieldError(control) {
+    if (!control) return;
+    control.classList.remove('is-invalid');
+    control.removeAttribute('aria-invalid');
+    control.removeAttribute('aria-describedby');
+    control.closest('.ad-field')?.querySelector('.ad-field-error')?.remove();
+  }
+
+  function clearFieldErrors() {
+    $$('.ad-input.is-invalid').forEach(clearFieldError);
+  }
+
+  function focusFieldError(control) {
+    if (!control || typeof control.focus !== 'function') return;
+    control.focus({ preventScroll: true });
+    control.scrollIntoView({ block: 'center' });
+  }
+
   function clearError() {
     state.error = '';
     const bar = $('#adError');
     if (bar) bar.hidden = true;
+    clearFieldErrors();
   }
 
   function toast(message, tone = 'ok') {
@@ -347,6 +514,7 @@
   /* ── Rendering ───────────────────────────────────────────────── */
 
   function renderAll() {
+    syncSearchControls();
     renderBreadcrumb();
     renderGrid();
     renderForm();
@@ -410,7 +578,7 @@
       state.drillPath = chain.map((account) => account.code);
     }
 
-    const visible = visibleAccounts();
+    const visible = displayedAccounts();
 
     if (state.mode === 'view' && !state.loading && state.loaded) {
       const kept = visible.find((account) => account.id === state.selectedId);
@@ -430,7 +598,10 @@
       return;
     }
     if (visible.length === 0) {
-      body.innerHTML = '<div class="ad-state">حسابی در این سطح تعریف نشده است</div>';
+      // eslint-disable-next-line no-unsanitized/property -- static empty-state markup
+      body.innerHTML = searchActive()
+        ? '<div class="ad-state">موردی یافت نشد؛ برای بازگشت به مسیر قبلی، جستجو را پاک کنید.</div>'
+        : '<div class="ad-state">حسابی در این سطح تعریف نشده است</div>';
       return;
     }
 
@@ -441,15 +612,23 @@
       if (index % 2 === 1) classes.push('even');
       if (selected) classes.push('selected');
       if (!account.isActive) classes.push('is-inactive');
+      if (searchActive()) classes.push('search-result');
       const tabIndex = selected && state.mode === 'view' && !isBusy() ? 0 : -1;
+      const pathTitle = searchActive() ? accountPathLabel(account) : '';
+      const parentLabel = searchActive()
+        ? (accountPath(account).slice(0, -1).map((item) => item.name).join(' ← ')
+          || (account.level === 1 ? account.groupName : '')
+          || '—')
+        : (account.parentName || (account.level === 1 ? account.groupName : '') || '—');
       return `
         <div class="${classes.join(' ')}" role="row" data-id="${account.id}"
-             tabindex="${tabIndex}" aria-selected="${selected}">
+             tabindex="${tabIndex}" aria-selected="${selected}"
+             ${pathTitle ? `title="${esc(pathTitle)}"` : ''}>
           <div class="ad-cell ad-center ad-num" role="gridcell">${toFaDigits(index + 1)}</div>
           <div class="ad-cell ad-center ad-code" dir="ltr" role="gridcell">${esc(toFaDigits(account.code))}</div>
-          <div class="ad-cell ad-start ad-name" role="gridcell" title="${esc(account.name)}">${esc(account.name)}</div>
+          <div class="ad-cell ad-start ad-name" role="gridcell" title="${esc(pathTitle || account.name)}">${esc(account.name)}</div>
           <div class="ad-cell ad-center" role="gridcell">${esc(levelName(account.level))}</div>
-          <div class="ad-cell ad-start" role="gridcell" title="${esc(account.parentName || (account.level === 1 ? account.groupName : ''))}">${esc(account.parentName || (account.level === 1 ? account.groupName : '') || '—')}</div>
+          <div class="ad-cell ad-start ad-path" role="gridcell" title="${esc(parentLabel)}">${esc(parentLabel)}</div>
         </div>`;
     }).join('');
 
@@ -824,14 +1003,24 @@
     if (options.focus !== false) focusSelectedRow();
   }
 
-  function navigateTo(path) {
+  function navigateTo(path, options = {}) {
     if (isEditing() || isBusy()) return;
     state.lastRowClick = { id: null, at: 0 };
+    if (searchActive()) {
+      state.searchQuery = '';
+      state.searchBasePath = null;
+      state.searchBaseId = null;
+      const input = $('#adSearch');
+      if (input) input.value = '';
+    }
     const chain = resolveChain(path);
     state.drillPath = chain.map((account) => account.code);
     state.mode = 'view';
     const visible = visibleAccounts();
-    const next = visible[0] || null;
+    const wanted = options.selectCode
+      ? visible.find((account) => account.code === options.selectCode)
+      : null;
+    const next = wanted || visible[0] || null;
     state.selectedId = next ? next.id : null;
     state.form = next ? formFromAccount(next) : emptyForm();
     state.initial = snapshot();
@@ -852,7 +1041,7 @@
   }
 
   function moveSelection(direction) {
-    const visible = visibleAccounts();
+    const visible = displayedAccounts();
     if (visible.length === 0) return;
     const index = visible.findIndex((account) => account.id === state.selectedId);
     let nextIndex;
@@ -874,6 +1063,7 @@
       showError('ابتدا یک گروه حساب تعریف کنید.');
       return;
     }
+    if (searchActive()) resetSearch();
     const level = currentLevel();
     if (level > MAX_LEVEL) {
       showError('در ساختار فعلی، بعد از سطح تفصیلی ۱ امکان تعریف سطح دیگری وجود ندارد.');
@@ -915,6 +1105,11 @@
   }
 
   function startEdit() {
+    if (searchActive()) {
+      const target = selectedAccount();
+      if (target) activateSearchResult(target);
+      else resetSearch();
+    }
     const account = selectedAccount();
     if (!account || isEditing() || isBusy() || !state.loaded) return;
     state.mode = 'edit';
@@ -925,8 +1120,9 @@
     focusName();
   }
 
-  function cancelEdit() {
-    if (!isEditing() || isBusy()) return;
+  function cancelEdit(options = {}) {
+    const { force = false } = options;
+    if (!isEditing() || (!force && isBusy())) return;
     state.mode = 'view';
     const account = selectedAccount();
     state.form = account ? formFromAccount(account) : emptyForm();
@@ -935,6 +1131,23 @@
     renderAll();
     focusSelectedRow();
     maybeQueuedRefresh();
+  }
+
+  function requestCancelEdit() {
+    if (!isEditing() || isBusy()) return;
+
+    if (!isDirty()) {
+      cancelEdit();
+      return;
+    }
+
+    openConfirm({
+      title: 'لغو ویرایش',
+      message: 'تغییرات ذخیره‌نشده کنار گذاشته شوند؟',
+      confirmLabel: 'لغو تغییرات',
+      tone: 'danger',
+      onConfirm: () => cancelEdit({ force: true }),
+    });
   }
 
   /* ── Save ────────────────────────────────────────────────────── */
@@ -958,24 +1171,37 @@
     const oppositeFsLine = splitBySign ? (state.form.oppositeFsLine || '') : '';
     const systemRole = state.form.systemRole || '';
 
+    clearFieldErrors();
+
     if (!code || !name) {
       showError('لطفاً کد و نام حساب را وارد کنید.');
+      if (!code) setFieldError($('#adCode'), 'کد حساب الزامی است.');
+      if (!name) setFieldError($('#adName'), 'نام حساب الزامی است.');
+      focusFieldError(!code ? $('#adCode') : $('#adName'));
       return;
     }
     if (charCount(name) > MAX_ACCOUNT_NAME) {
       showError(`نام حساب نباید بیش از ${toFaDigits(MAX_ACCOUNT_NAME)} کاراکتر باشد.`);
+      setFieldError($('#adName'), `نام حساب نباید بیش از ${toFaDigits(MAX_ACCOUNT_NAME)} کاراکتر باشد.`);
+      focusFieldError($('#adName'));
       return;
     }
     if (!/^\d+$/.test(code)) {
       showError('کد حساب باید فقط شامل عدد باشد.');
+      setFieldError($('#adCode'), 'کد حساب باید فقط شامل عدد باشد.');
+      focusFieldError($('#adCode'));
       return;
     }
     if (code.length > 50) {
       showError('کد حساب نمی‌تواند بیشتر از ۵۰ رقم باشد.');
+      setFieldError($('#adCode'), 'کد حساب نمی‌تواند بیشتر از ۵۰ رقم باشد.');
+      focusFieldError($('#adCode'));
       return;
     }
     if (!/[1-9]/.test(code)) {
       showError('کد حساب باید بزرگ‌تر از صفر باشد.');
+      setFieldError($('#adCode'), 'کد حساب باید بزرگ‌تر از صفر باشد.');
+      focusFieldError($('#adCode'));
       return;
     }
     // The 4/2/3 digit prefixes are only a suggestion used by nextAccountCode().
@@ -993,6 +1219,8 @@
     if (mode === 'new' && state.accounts.some((account) => account.code === code)) {
       const duplicate = state.accounts.find((account) => account.code === code);
       showError(`کد «${toFaDigits(code)}» قبلاً برای حساب «${duplicate.name}» ثبت شده است.`);
+      setFieldError($('#adCode'), 'این کد حساب قبلاً استفاده شده است.');
+      focusFieldError($('#adCode'));
       return;
     }
     if (mode === 'edit' && !editingAccount) {
@@ -1012,26 +1240,41 @@
     }
     if (!state.groups.some((group) => group.code === groupCode)) {
       showError('گروه حساب انتخاب‌شده معتبر نیست.');
+      setFieldError($('#adGroup'), 'گروه حساب انتخاب‌شده معتبر نیست.');
+      focusFieldError($('#adGroup'));
       return;
     }
     if (!nature) {
       showError('ماهیت حساب باید بدهکار، بستانکار یا ماهیت دوگانه باشد.');
+      setFieldError($('#adNature'), 'ماهیت حساب را انتخاب کنید.');
+      focusFieldError($('#adNature'));
       return;
     }
     if (contraOf && !contraKind) {
       showError('برای حساب کاهنده، انتخاب نوع کاهنده الزامی است.');
+      setFieldError($('#adContraOf'), 'حساب کاهنده انتخاب شده است.');
+      setFieldError($('#adContraKind'), 'نوع کاهنده را انتخاب کنید.');
+      focusFieldError($('#adContraKind'));
       return;
     }
     if (!contraOf && contraKind) {
       showError('نوع کاهنده بدون انتخاب حساب کاهنده مجاز نیست.');
+      setFieldError($('#adContraKind'), 'نوع کاهنده بدون حساب کاهنده مجاز نیست.');
+      setFieldError($('#adContraOf'), 'حساب کاهنده را انتخاب کنید.');
+      focusFieldError($('#adContraOf'));
       return;
     }
     if (splitBySign && !oppositeFsLine) {
       showError('برای تفکیک بر اساس علامت، انتخاب سرفصل مقابل الزامی است.');
+      setFieldError($('#adOppositeFsLine'), 'سرفصل مقابل را انتخاب کنید.');
+      focusFieldError($('#adOppositeFsLine'));
       return;
     }
     if (oppositeFsLine && fsLine && oppositeFsLine === fsLine) {
       showError('سرفصل مقابل باید با سرفصل اصلی متفاوت باشد.');
+      setFieldError($('#adFsLine'), 'سرفصل اصلی است.');
+      setFieldError($('#adOppositeFsLine'), 'سرفصل مقابل باید متفاوت باشد.');
+      focusFieldError($('#adOppositeFsLine'));
       return;
     }
 
@@ -1156,6 +1399,7 @@
       if (!state.result && returnFocus && returnFocus.isConnected) {
         returnFocus.focus();
       }
+      maybeQueuedRefresh();
     }
   }
 
@@ -1468,7 +1712,7 @@
 
   function requestClose() {
     if (isBusy()) return;
-    if (isEditing()) {
+    if (isEditing() && isDirty()) {
       openConfirm({
         title: 'بستن فرم',
         message: 'تغییرات ذخیره‌نشده کنار گذاشته شوند و فرم بسته شود؟',
@@ -1490,7 +1734,7 @@
         event.preventDefault();
         return;
       }
-      if (isEditing()) {
+      if (isEditing() && isDirty()) {
         event.preventDefault();
         openConfirm({
           title: 'بستن فرم',
@@ -1531,8 +1775,10 @@
 
     if (event.key === 'Escape') {
       event.preventDefault();
-      if (isEditing()) {
-        cancelEdit();
+      if (searchActive()) {
+        resetSearch({ restore: true });
+      } else if (isEditing()) {
+        requestCancelEdit();
       } else if (state.drillPath.length > 0) {
         goBack();
       } else {
@@ -1565,6 +1811,11 @@
 
     if (event.key === 'Enter') {
       if (typing || control || isEditing()) return;
+      if (searchActive()) {
+        event.preventDefault();
+        activateSearchResult(selectedAccount());
+        return;
+      }
       const account = selectedAccount();
       if (account) {
         event.preventDefault();
@@ -1576,7 +1827,10 @@
 
     if (event.key === 'Backspace') {
       if (typing || control || isEditing()) return;
-      if (state.drillPath.length > 0) {
+      if (searchActive()) {
+        event.preventDefault();
+        resetSearch({ restore: true });
+      } else if (state.drillPath.length > 0) {
         event.preventDefault();
         goBack();
       }
@@ -1625,6 +1879,13 @@
       const account = state.accounts.find((item) => item.id === Number(row.dataset.id));
       if (!account) return;
 
+      // In search mode a single click resolves the result to its place in the
+      // tree, so the breadcrumb and the visible list stay consistent.
+      if (searchActive()) {
+        activateSearchResult(account);
+        return;
+      }
+
       // دابل‌کلیک باید مانند Enter یک سطح پایین‌تر برود. چون رندر پس از
       // انتخاب ردیف، عنصر ردیف را جایگزین می‌کند، رویداد dblclick مرورگر
       // قابل اتکا نیست و فاصله دو کلیک را خودمان می‌سنجیم.
@@ -1649,37 +1910,47 @@
       const digits = onlyDigits(event.target.value);
       state.form.code = toFaDigits(digits);
       event.target.value = state.form.code;
+      clearFieldError(event.target);
     });
     $('#adName')?.addEventListener('input', (event) => {
       state.form.name = event.target.value;
+      clearFieldError(event.target);
     });
     $('#adGroup')?.addEventListener('change', (event) => {
       state.form.groupCode = event.target.value;
+      clearFieldError(event.target);
     });
     $('#adNature')?.addEventListener('change', (event) => {
       state.form.nature = event.target.value;
+      clearFieldError(event.target);
     });
     $('#adActive')?.addEventListener('change', (event) => {
       state.form.isActive = event.target.checked;
     });
     $('#adFsLine')?.addEventListener('change', (event) => {
       state.form.fsLine = event.target.value;
+      clearFieldError(event.target);
     });
     $('#adSystemRole')?.addEventListener('change', (event) => {
       state.form.systemRole = event.target.value;
+      clearFieldError(event.target);
     });
     $('#adContraOf')?.addEventListener('change', (event) => {
       state.form.contraOf = event.target.value;
+      clearFieldError(event.target);
     });
     $('#adContraKind')?.addEventListener('change', (event) => {
       state.form.contraKind = event.target.value;
+      clearFieldError(event.target);
     });
     $('#adOppositeFsLine')?.addEventListener('change', (event) => {
       state.form.oppositeFsLine = event.target.value;
+      clearFieldError(event.target);
     });
     $('#adSplitBySign')?.addEventListener('change', (event) => {
       state.form.splitBySign = event.target.checked;
       if (!state.form.splitBySign) state.form.oppositeFsLine = '';
+      clearFieldError($('#adOppositeFsLine'));
       renderForm();
     });
 
@@ -1688,10 +1959,16 @@
     $('#adDelete')?.addEventListener('click', deleteSelected);
     $('#adDeleteAll')?.addEventListener('click', deleteAll);
     $('#adSave')?.addEventListener('click', () => { void save(); });
-    $('#adCancel')?.addEventListener('click', cancelEdit);
+    $('#adCancel')?.addEventListener('click', requestCancelEdit);
     $('#adExport')?.addEventListener('click', () => { void exportExcel(); });
     $('#adImport')?.addEventListener('click', importExcel);
     $('#adErrorClose')?.addEventListener('click', clearError);
+    $('#adSearch')?.addEventListener('input', (event) => handleSearchInput(event.target.value));
+    $('#adSearchClear')?.addEventListener('click', () => {
+      resetSearch({ restore: true });
+      if (!searchActive()) renderAll();
+      $('#adSearch')?.focus();
+    });
 
     $('#adConfirmYes')?.addEventListener('click', () => { void confirmYes(); });
     $('#adConfirmNo')?.addEventListener('click', closeConfirm);

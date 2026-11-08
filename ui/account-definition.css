@@ -83,6 +83,49 @@ body.ad-page [hidden] {
   min-width: 8px;
 }
 
+/* ── Direct account search ────────────────────────────────────── */
+
+.ad-searchbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ad-search-label {
+  flex: 0 0 auto;
+  color: #1f4e79;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ad-search-input {
+  flex: 0 1 320px;
+  width: 320px;
+  max-width: 45vw;
+  height: 28px;
+}
+
+.ad-searchbar .ad-btn {
+  height: 28px;
+  padding: 0 10px;
+}
+
+.ad-search-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #5b6b80;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ad-search-status.is-empty {
+  color: #8a5a00;
+}
+
 /* ── Group boxes ──────────────────────────────────────────────── */
 
 .ad-groupbox {
@@ -355,6 +398,20 @@ body.ad-page [hidden] {
 .ad-input:focus {
   border-color: #3c7fb1;
   box-shadow: 0 0 0 2px rgba(60, 127, 177, 0.18);
+}
+
+.ad-input.is-invalid,
+.ad-input.is-invalid:focus {
+  border-color: #c00000;
+  background: #fff7f7;
+  box-shadow: 0 0 0 2px rgba(192, 0, 0, 0.14);
+}
+
+.ad-field-error {
+  margin-top: 3px;
+  color: #c00000;
+  font-size: 10.5px;
+  line-height: 1.6;
 }
 
 .ad-input:disabled {

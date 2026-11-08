@@ -27,6 +27,24 @@ export async function openAccountDefinitionPage(page, options = {}) {
   await expect(page.locator('#adBreadcrumb [data-root]')).toBeVisible();
 }
 
+export async function openAccountGroupsPage(page, options = {}) {
+  await installMock(page, options);
+  await page.goto('/account-groups.html');
+  await expect(page.locator('#agGridBody .ag-row').first()).toBeVisible();
+  await expect(page.locator('#agNew')).toBeEnabled();
+}
+
+/** The trial balance renders inside the main window only in its popup mode. */
+export async function openTrialBalancePage(page, options = {}) {
+  await installMock(page, options);
+  await page.addInitScript(() => {
+    window.__IS_TRIAL_BALANCE_POPUP__ = true;
+  });
+  await page.goto('/index.html');
+  await expect(page.locator('#tbpSearch')).toBeVisible();
+  await expect(page.locator('.tbp-data-row[data-code]').first()).toBeVisible();
+}
+
 export const pickerRows = (page) => page.locator('#accountPickerRows .ap-row[data-picker-index]');
 
 export const pickerRow = (page, text) => pickerRows(page).filter({ hasText: text });

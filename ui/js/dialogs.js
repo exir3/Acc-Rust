@@ -11,7 +11,8 @@ function toast(message, tone = 'info') {
   el.dataset.tone = tone;
   el.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 3400);
+  const duration = tone === 'error' ? 8000 : tone === 'warn' ? 6000 : 3400;
+  toastTimer = setTimeout(() => { el.hidden = true; }, duration);
 }
 
 function setStatus(message, tone = 'ok') {

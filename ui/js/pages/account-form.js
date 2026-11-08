@@ -3,6 +3,7 @@
 /* ── Account form ───────────────────────────────────────────── */
 
 let fsCatalogCache = null;
+let accountDialogPreparing = false;
 
 async function ensureFsCatalog() {
   if (fsCatalogCache) return fsCatalogCache;
@@ -48,13 +49,25 @@ function optionList(options, selected, emptyLabel) {
 }
 
 async function openAccountDialog(account) {
+  if (accountDialogPreparing) return;
   const isEdit = Boolean(account);
   const groups = state.groups;
   if (!groups.length) {
     toast('ابتدا حداقل یک گروه حساب تعریف کنید.', 'info');
     return;
   }
-  const catalog = await ensureFsCatalog();
+  let catalog;
+  if (fsCatalogCache) {
+    catalog = await ensureFsCatalog();
+  } else {
+    accountDialogPreparing = true;
+    toast('در حال آماده‌سازی فرم حساب…', 'info');
+    try {
+      catalog = await ensureFsCatalog();
+    } finally {
+      accountDialogPreparing = false;
+    }
+  }
 
   const hierarchy = state.accountDrillPath
     .map((code) => state.accounts.find((item) => item.code === code))
@@ -184,17 +197,30 @@ async function openAccountDialog(account) {
 
   if (!dialog) return;
   const codeInput = $('#acctCode', dialog.body);
+  const nameInput = $('#acctName', dialog.body);
   const levelSelect = $('#acctLevel', dialog.body);
   const groupSelect = $('#acctGroup', dialog.body);
   const parentSelect = $('#acctParent', dialog.body);
+  const natureSelect = $('#acctNature', dialog.body);
   const postable = $('#acctPostable', dialog.body);
 
   if (codeInput) {
     codeInput.addEventListener('input', () => {
+      clearFieldError(codeInput);
       const cleaned = digitsOnly(codeInput.value);
       if (codeInput.value !== cleaned) codeInput.value = cleaned;
     });
   }
+  nameInput?.addEventListener('input', () => clearFieldError(nameInput));
+  levelSelect?.addEventListener('change', () => clearFieldError(levelSelect));
+  groupSelect?.addEventListener('change', () => clearFieldError(groupSelect));
+  parentSelect?.addEventListener('change', () => clearFieldError(parentSelect));
+  natureSelect?.addEventListener('change', () => clearFieldError(natureSelect));
+  ['#acctFsLine', '#acctSystemRole', '#acctContraOf', '#acctContraKind', '#acctOppositeFsLine', '#acctSplitBySign']
+    .forEach((selector) => {
+      const control = $(selector, dialog.body);
+      control?.addEventListener('change', () => clearFieldError(control));
+    });
 
   const refreshParents = () => {
     if (!parentSelect) return;
@@ -274,6 +300,30 @@ async function submitAccountForm(ref, button, account) {
     errorBox.hidden = false;
   };
 
+  const focusInvalid = (input) => {
+    if (!input || typeof input.focus !== 'function') return;
+    input.focus({ preventScroll: true });
+    input.scrollIntoView({ block: 'center' });
+  };
+
+  const fail = (input, message) => {
+    showError(message);
+    if (input) setFieldError(input, message);
+    focusInvalid(input);
+    return false;
+  };
+
+  const clearFormFieldErrors = () => {
+    [codeInput, nameInput, levelSelect, groupSelect, natureSelect, parentSelect,
+      fsLineSelect, systemRoleSelect, contraOfSelect, contraKindSelect,
+      oppositeFsLineSelect, splitBySignCheck].forEach((control) => {
+      if (control) clearFieldError(control);
+    });
+  };
+
+  clearFormFieldErrors();
+  if (errorBox) errorBox.hidden = true;
+
   const code = digitsOnly(codeInput?.value || '');
   const name = (nameInput?.value || '').trim().replace(/\s+/g, ' ');
   const level = Number(levelSelect?.value || 1);
@@ -288,15 +338,33 @@ async function submitAccountForm(ref, button, account) {
   const splitBySign = Boolean(splitBySignCheck?.checked);
   const oppositeFsLine = splitBySign ? (oppositeFsLineSelect?.value || '') : '';
 
-  if (!account && !code) return showError('کد حساب الزامی است.');
-  if (!name) return showError('نام حساب الزامی است.');
-  if (!groupCode) return showError('گروه حساب را انتخاب کنید.');
-  if (level > 1 && !parentCode) return showError('برای این سطح، انتخاب حساب بالاتر الزامی است.');
-  if (contraOf && !contraKind) return showError('برای حساب کاهنده، انتخاب نوع کاهنده الزامی است.');
-  if (!contraOf && contraKind) return showError('نوع کاهنده بدون انتخاب حساب کاهنده مجاز نیست.');
-  if (splitBySign && !oppositeFsLine) return showError('برای تفکیک بر اساس علامت، انتخاب سرفصل مقابل الزامی است.');
+  if (!account && !code) return fail(codeInput, 'کد حساب الزامی است.');
+  if (!name) return fail(nameInput, 'نام حساب الزامی است.');
+  if (!groupCode) return fail(groupSelect, 'گروه حساب را انتخاب کنید.');
+  if (level > 1 && !parentCode) return fail(parentSelect, 'برای این سطح، انتخاب حساب بالاتر الزامی است.');
+  if (contraOf && !contraKind) {
+    showError('برای حساب کاهنده، انتخاب نوع کاهنده الزامی است.');
+    setFieldError(contraOfSelect, 'حساب کاهنده انتخاب شده است.');
+    setFieldError(contraKindSelect, 'نوع کاهنده را انتخاب کنید.');
+    focusInvalid(contraKindSelect);
+    return;
+  }
+  if (!contraOf && contraKind) {
+    showError('نوع کاهنده بدون انتخاب حساب کاهنده مجاز نیست.');
+    setFieldError(contraKindSelect, 'نوع کاهنده بدون حساب کاهنده مجاز نیست.');
+    setFieldError(contraOfSelect, 'حساب کاهنده را انتخاب کنید.');
+    focusInvalid(contraOfSelect);
+    return;
+  }
+  if (splitBySign && !oppositeFsLine) {
+    return fail(oppositeFsLineSelect, 'برای تفکیک بر اساس علامت، انتخاب سرفصل مقابل الزامی است.');
+  }
   if (oppositeFsLine && fsLine && oppositeFsLine === fsLine) {
-    return showError('سرفصل مقابل باید با سرفصل اصلی متفاوت باشد.');
+    showError('سرفصل مقابل باید با سرفصل اصلی متفاوت باشد.');
+    setFieldError(fsLineSelect, 'سرفصل اصلی است.');
+    setFieldError(oppositeFsLineSelect, 'سرفصل مقابل باید متفاوت باشد.');
+    focusInvalid(oppositeFsLineSelect);
+    return;
   }
 
   const classification = hasClassification ? {

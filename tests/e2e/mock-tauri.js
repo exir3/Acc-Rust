@@ -121,6 +121,36 @@
 
   const handlers = {
     get_settings: () => clone(backend.settings),
+    get_trial_balance: () => ({
+      rows: [
+        {
+          accountCode: '1000',
+          accountName: 'کل دارای معین',
+          groupName: 'دارایی‌ها',
+          parentCode: '',
+          level: 1,
+          openingDebit: 1000,
+          openingCredit: 0,
+          periodDebit: 0,
+          periodCredit: 0,
+          closingDebit: 1000,
+          closingCredit: 0,
+        },
+        {
+          accountCode: '2000',
+          accountName: 'کل بدون معین',
+          groupName: 'دارایی‌ها',
+          parentCode: '',
+          level: 1,
+          openingDebit: 0,
+          openingCredit: 1000,
+          periodDebit: 0,
+          periodCredit: 0,
+          closingDebit: 0,
+          closingCredit: 1000,
+        },
+      ],
+    }),
     save_settings: ({ companyName, fiscalYear }) => {
       backend.settings.companyName = String(companyName ?? backend.settings.companyName ?? '');
       backend.settings.fiscalYear = String(fiscalYear ?? backend.settings.fiscalYear ?? '');

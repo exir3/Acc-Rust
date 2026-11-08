@@ -143,10 +143,46 @@ function showError(message, severity = 'validation') {
   }
 }
 
+function setFieldError(control, message) {
+  if (!control) return;
+  control.classList.add('is-invalid');
+  control.setAttribute('aria-invalid', 'true');
+  const field = control.closest('.ag-field');
+  if (!field) return;
+  let error = field.querySelector('.ag-field-error');
+  if (!error) {
+    error = document.createElement('small');
+    error.className = 'ag-field-error';
+    error.id = control.id ? `${control.id}Error` : '';
+    field.append(error);
+  }
+  error.textContent = message;
+  if (error.id) control.setAttribute('aria-describedby', error.id);
+}
+
+function clearFieldError(control) {
+  if (!control) return;
+  control.classList.remove('is-invalid');
+  control.removeAttribute('aria-invalid');
+  control.removeAttribute('aria-describedby');
+  control.closest('.ag-field')?.querySelector('.ag-field-error')?.remove();
+}
+
+function clearFieldErrors() {
+  $$('.ag-input.is-invalid').forEach(clearFieldError);
+}
+
+function focusFieldError(control) {
+  if (!control || typeof control.focus !== 'function') return;
+  control.focus({ preventScroll: true });
+  control.scrollIntoView({ block: 'center' });
+}
+
 function clearError() {
   clearTimeout(state.errorTimer);
   const bar = $('#agError');
   if (bar) bar.hidden = true;
+  clearFieldErrors();
 }
 
 function toast(message, tone = 'ok') {
@@ -387,7 +423,7 @@ function selectGroup(id) {
 }
 
 function startNew() {
-  if (state.saving || state.deleting || state.loading) return;
+  if (state.mode !== 'view' || state.saving || state.deleting || state.loading) return;
 
   let maxCode = 0n;
   for (const group of state.groups) {
@@ -462,6 +498,23 @@ function isDirty() {
   return false;
 }
 
+function requestCancelEdit() {
+  if (state.mode === 'view' || state.saving || state.deleting) return;
+
+  if (!isDirty()) {
+    cancelEdit();
+    return;
+  }
+
+  openConfirm({
+    title: 'لغو ویرایش',
+    message: 'تغییرات ذخیره‌نشده از بین می‌رود. لغو ویرایش را تأیید می‌کنید؟',
+    confirmLabel: 'لغو تغییرات',
+    tone: 'danger',
+    onConfirm: () => cancelEdit(),
+  });
+}
+
 /* ── Save / delete ───────────────────────────────────────────── */
 
 async function save() {
@@ -472,28 +525,43 @@ async function save() {
   const name = normalizeName(state.form.name);
   const type = state.form.type;
 
+  clearFieldErrors();
+
   if (!code || !name) {
     showError('لطفاً کد و نام گروه را وارد کنید.', 'validation');
+    if (!code) setFieldError($('#agCode'), 'کد گروه الزامی است.');
+    if (!name) setFieldError($('#agName'), 'نام گروه الزامی است.');
+    focusFieldError(!code ? $('#agCode') : $('#agName'));
     return;
   }
   if (charCount(code) > 50) {
     showError('کد گروه نمی‌تواند بیشتر از ۵۰ کاراکتر باشد.', 'validation');
+    setFieldError($('#agCode'), 'کد گروه نمی‌تواند بیشتر از ۵۰ کاراکتر باشد.');
+    focusFieldError($('#agCode'));
     return;
   }
   if (!/^0*[1-9][0-9]*$/.test(code)) {
     showError('کد گروه باید فقط شامل ارقام انگلیسی و بزرگ‌تر از صفر باشد.', 'validation');
+    setFieldError($('#agCode'), 'کد گروه باید فقط شامل ارقام انگلیسی و بزرگ‌تر از صفر باشد.');
+    focusFieldError($('#agCode'));
     return;
   }
   if (charCount(name) > 255) {
     showError('نام گروه نمی‌تواند بیشتر از ۲۵۵ کاراکتر باشد.', 'validation');
+    setFieldError($('#agName'), 'نام گروه نمی‌تواند بیشتر از ۲۵۵ کاراکتر باشد.');
+    focusFieldError($('#agName'));
     return;
   }
   if (!TYPES.includes(type)) {
     showError('نوع حساب انتخاب‌شده معتبر نیست.', 'validation');
+    setFieldError($('#agType'), 'نوع حساب انتخاب‌شده معتبر نیست.');
+    focusFieldError($('#agType'));
     return;
   }
   if (wasNew && state.groups.some((group) => group.code === code)) {
     showError('کد گروه تکراری است.', 'validation');
+    setFieldError($('#agCode'), 'کد گروه تکراری است.');
+    focusFieldError($('#agCode'));
     return;
   }
   if (!invoke) {
@@ -818,18 +886,10 @@ function handleKeydown(event) {
     event.preventDefault();
     if (state.mode === 'view') {
       requestClose();
-    } else if (isDirty()) {
-      // Escape must not throw away typed changes silently; it follows the
-      // same confirmation path as the cancel and close buttons.
-      openConfirm({
-        title: 'لغو ویرایش',
-        message: 'تغییرات ذخیره‌نشده از بین می‌رود. لغو ویرایش را تأیید می‌کنید؟',
-        confirmLabel: 'لغو تغییرات',
-        tone: 'danger',
-        onConfirm: () => cancelEdit(),
-      });
     } else {
-      cancelEdit();
+      // Escape, the cancel button and the close button all follow the same
+      // path so typed changes are never discarded silently.
+      requestCancelEdit();
     }
     return;
   }
@@ -873,18 +933,22 @@ function bindEvents() {
     const digits = onlyDigits(event.target.value);
     state.form.code = toFaDigits(digits);
     event.target.value = state.form.code;
+    clearFieldError(event.target);
   });
 
   $('#agName').addEventListener('input', (event) => {
     state.form.name = event.target.value;
+    clearFieldError(event.target);
   });
 
   $('#agType').addEventListener('change', (event) => {
     state.form.type = event.target.value;
+    clearFieldError(event.target);
   });
 
   $('#agDefaultSection').addEventListener('change', (event) => {
     state.form.defaultSection = event.target.value;
+    clearFieldError(event.target);
   });
 
   $('#agGridBody').addEventListener('click', (event) => {
@@ -911,7 +975,7 @@ function bindEvents() {
   $('#agEdit').addEventListener('click', startEdit);
   $('#agDelete').addEventListener('click', deleteSelected);
   $('#agSave').addEventListener('click', save);
-  $('#agCancel').addEventListener('click', cancelEdit);
+  $('#agCancel').addEventListener('click', requestCancelEdit);
   $('#agErrorClose').addEventListener('click', clearError);
 
   $('#agConfirmYes').addEventListener('click', confirmYes);

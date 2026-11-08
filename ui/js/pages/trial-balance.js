@@ -437,6 +437,7 @@ function trialFilterPanelMarkup() {
         <select id="tbpScope" name="scope" class="tbp-filter-sel">
           ${REPORT_SCOPES.map((scope) => `<option value="${scope.value}"${scope.value === normalizeReportScope(f.scope) ? ' selected' : ''}>${esc(scope.label)}</option>`).join('')}
         </select>
+        <small class="tbp-filter-help">رسمی: فقط دائمی • کاری: دائمی و موقت • فقط موقت: فقط اسناد موقت</small>
       </div>
       <div class="tbp-filter-field">
         <label class="tbp-filter-lbl" for="tbpAccountFrom">از کد:</label>
@@ -825,7 +826,6 @@ function trialHandleKeydown(event) {
   if (!trialView || !document.getElementById('tbpGrid')) return;
   const tag = event.target?.tagName;
   const isInput = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || event.target?.isContentEditable;
-  const isSearchInput = event.target?.id === 'tbpSearch';
 
   switch (event.key) {
     case 'Escape':
@@ -862,7 +862,9 @@ function trialHandleKeydown(event) {
       break;
     case 'ArrowUp':
     case 'ArrowDown':
-      if (isInput && !isSearchInput) break;
+      // Text fields keep their native caret movement; row navigation only
+      // applies when focus is on the report grid or the page itself.
+      if (isInput) break;
       event.preventDefault();
       trialMoveSelection(event.key === 'ArrowDown' ? 1 : -1);
       break;

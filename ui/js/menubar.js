@@ -723,14 +723,63 @@ function showAboutDialog() {
   });
 }
 
+const SHORTCUT_GROUPS = [
+  {
+    title: 'عمومی',
+    items: [
+      ['Ctrl + N', 'صدور سند جدید'],
+      ['Esc', 'بستن منوها، دیالوگ‌ها و پنجره‌ها'],
+    ],
+  },
+  {
+    title: 'فرم سند حسابداری',
+    items: [
+      ['F2 یا Ctrl + S', 'ذخیره سند'],
+      ['Ctrl + N', 'سند جدید'],
+      ['Ctrl + P', 'ذخیره و چاپ سند'],
+      ['Ctrl + F', 'جستجوی شماره سند'],
+      ['Space یا F4', 'باز کردن انتخابگر حساب'],
+      ['Enter / Shift + Enter', 'حرکت بین فیلدهای جدول'],
+      ['Ctrl + C / Ctrl + V', 'کپی یا چسباندن ردیف (بدون انتخاب متن)'],
+    ],
+  },
+  {
+    title: 'تعریف حساب و گروه حساب',
+    items: [
+      ['F2', 'ذخیره'],
+      ['F3', 'ویرایش'],
+      ['Delete', 'حذف'],
+      ['Esc', 'انصراف از ویرایش با تأیید تغییرات'],
+      ['Arrow Up / Arrow Down', 'حرکت بین ردیف‌های فهرست'],
+    ],
+  },
+  {
+    title: 'گزارش تراز آزمایشی',
+    items: [
+      ['F5', 'به‌روزرسانی گزارش'],
+      ['Page Down', 'تولید گزارش'],
+      ['Insert', 'باز یا بستن پنل فیلتر'],
+      ['F7', 'چاپ گزارش'],
+      ['Enter', 'ورود به سطح پایین‌تر'],
+      ['Backspace', 'بازگشت به سطح بالاتر'],
+    ],
+  },
+];
+
 function showShortcutsDialog() {
+  const body = SHORTCUT_GROUPS.map((group) => `
+    <div class="shortcut-group">
+      <h4>${esc(group.title)}</h4>
+      ${group.items.map(([keys, description]) => `
+        <div class="shortcut-row">
+          <kbd dir="ltr">${esc(keys)}</kbd>
+          <span>${esc(description)}</span>
+        </div>`).join('')}
+    </div>`).join('');
   openDialog({
     title: 'میانبرهای صفحه‌کلید',
-    body: `
-      <div class="note">
-        <b><span dir="ltr">Ctrl + N</span></b> — صدور سند جدید<br>
-        <b><span dir="ltr">Esc</span></b> — بستن منوها و پنجره‌ها
-      </div>`,
+    body: `${body}
+      <div class="note">میانبرهای هر پنجره در tooltip دکمه‌های همان پنجره نیز نمایش داده می‌شوند.</div>`,
   });
 }
 

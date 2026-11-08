@@ -47,6 +47,8 @@ function padJalaliDate(value) {
   return `${parts[0].padStart(4, '0')}/${parts[1].padStart(2, '0')}/${parts[2].padStart(2, '0')}`;
 }
 
+let fieldErrorSeq = 0;
+
 function setFieldError(input, message) {
   input.classList.add('is-invalid');
   input.setAttribute('aria-invalid', 'true');
@@ -54,16 +56,20 @@ function setFieldError(input, message) {
   if (!field) return;
   let error = field.querySelector('.field-error');
   if (!error) {
+    fieldErrorSeq += 1;
     error = document.createElement('small');
     error.className = 'field-error';
+    error.id = `fieldError${fieldErrorSeq}`;
     field.append(error);
   }
   error.textContent = message;
+  input.setAttribute('aria-describedby', error.id);
 }
 
 function clearFieldError(input) {
   input.classList.remove('is-invalid');
   input.removeAttribute('aria-invalid');
+  input.removeAttribute('aria-describedby');
   input.closest('.field')?.querySelector('.field-error')?.remove();
 }
 
