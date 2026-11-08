@@ -134,6 +134,16 @@ jobs:
       - name: Install frontend tooling
         run: npm ci --no-audit --no-fund
 
+      # Tauri downloads the NSIS toolset from GitHub release assets on the
+      # first bundle. Caching it both speeds the job up and avoids depending
+      # on that download on every run. The key follows the lockfile so a Tauri
+      # CLI upgrade starts from a clean cache.
+      - name: Cache Tauri bundler tools
+        uses: actions/cache@v6
+        with:
+          path: ~\AppData\Local\tauri
+          key: tauri-bundler-tools-${{ hashFiles('package-lock.json') }}
+
       - name: Require signing for release builds
         if: ${{ env.RELEASE_BUILD == 'true' && (env.WINDOWS_CERTIFICATE_BASE64 == '' || env.WINDOWS_CERTIFICATE_PASSWORD == '') }}
         shell: pwsh
@@ -175,7 +185,24 @@ jobs:
           }
 
       - name: Bundle Windows installer (without binary patching)
-        run: npx tauri bundle --bundles nsis --no-binary-patching
+        shell: pwsh
+        # The bundler downloads NSIS with a single attempt and fails the job on
+        # any HTTP error. GitHub's release-asset CDN returned 504 twice on
+        # 2026-11-08 (once for nsis-3.13.zip, once for nsis_tauri_utils.dll),
+        # so retry the already-built bundle. A failed attempt can leave a
+        # partially extracted toolset; the bundler detects and recreates it.
+        run: |
+          $attempts = 4
+          for ($attempt = 1; $attempt -le $attempts; $attempt++) {
+            npx tauri bundle --bundles nsis --no-binary-patching
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            if ($attempt -eq $attempts) {
+              throw "Bundling failed after $attempts attempts (exit code $LASTEXITCODE)."
+            }
+            $delay = 15 * $attempt
+            Write-Warning "Bundling attempt $attempt failed; retrying in $delay seconds."
+            Start-Sleep -Seconds $delay
+          }
 
       - name: Sign Windows installer (optional)
         if: ${{ env.WINDOWS_CERTIFICATE_BASE64 != '' }}
