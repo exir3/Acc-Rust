@@ -678,7 +678,10 @@ impl Database {
             let mut next_number = used_numbers.iter().copied().max().unwrap_or(0);
             for account in accounts {
                 let code = db::normalize_code(&account.code);
-                let name = account.name.split_whitespace().collect::<Vec<_>>().join(" ");
+                let name = db::normalize_fa_text(&account.name)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 let parent_code = db::normalize_code(&account.parent_code);
                 let group_code = db::normalize_code(&account.group_code);
                 if code.is_empty()

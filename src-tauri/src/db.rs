@@ -31,7 +31,8 @@ mod validation;
 
 pub(crate) use accounts::ClassificationUpdate;
 pub(crate) use backup::{
-    cleanup_stale_plaintext_temps, prune_backup_files, prune_restore_safety_files,
+    backup_before_migration, cleanup_stale_plaintext_temps, prune_backup_files,
+    prune_migration_backups, prune_restore_safety_files,
 };
 pub use common::{normalize_digits, DB_FILE_NAME};
 pub use connection::initialize;
@@ -51,7 +52,9 @@ pub(crate) use portable::{is_encrypted_backup, validate_portable_password, PORTA
 pub(crate) use fiscal_years::{ensure_open_period, ensure_year_accepts_date};
 pub(crate) use legacy::legacy_migration_backup_path;
 
-pub(crate) use common::{db_error, normalize_code, random_hex, sha256_file, to_fa_digits};
+pub(crate) use common::{
+    db_error, fa_norm_sql, normalize_code, normalize_fa_text, random_hex, sha256_file, to_fa_digits,
+};
 #[cfg(test)]
 pub(crate) use schema::{
     apply_base_schema, apply_schema_migrations, seed_default_accounts, seed_default_groups,

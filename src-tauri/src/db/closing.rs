@@ -1609,6 +1609,7 @@ impl Database {
         &self,
         year_id: i64,
         reason: Option<&str>,
+        force: bool,
     ) -> Result<ClosingReversalResult, String> {
         if year_id <= 0 {
             return Err("شناسه سال مالی نامعتبر است.".to_string());
@@ -1631,6 +1632,21 @@ impl Database {
                     "سال مالی نهایی شده است؛ برای برگشت بستن ابتدا با ثبت دلیل آن را بازگشایی کنید."
                         .to_string(),
                 );
+            }
+            // Reversing the closing reopens the year for edits. If the next
+            // year already received an opening voucher, that voucher would
+            // silently keep balances from the now-obsolete closing. Require an
+            // explicit confirmation in that case.
+            if let Some(next) = next_year(&tx, &year)? {
+                if let Some(opening) = target_opening_voucher(&tx, &next)? {
+                    if !force {
+                        return Err(format!(
+                            "برای سال مالی بعد («{}») سند افتتاحیه شماره {} صادر شده است؛ برگشت بستن، آن افتتاحیه را کهنه می‌کند. ابتدا سند افتتاحیه را حذف کنید یا برگشت را با تأیید صریح انجام دهید.",
+                            next.title,
+                            to_fa_digits(opening.number.to_string())
+                        ));
+                    }
+                }
             }
             let before = serde_json::to_string(&run).map_err(|error| error.to_string())?;
             let ids: Vec<i64> = [run.temp_voucher_id, run.closing_voucher_id]

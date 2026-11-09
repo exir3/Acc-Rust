@@ -315,19 +315,36 @@ pub(crate) fn get_print_doc(
     stored_doc(&state.print_docs, window.label())
 }
 
+/// Appends `.html` only when the picked path has neither HTML suffix. A user
+/// who explicitly types `report.htm` keeps that name instead of receiving
+/// `report.htm.html`.
+fn preserve_html_suffix(path: std::path::PathBuf) -> std::path::PathBuf {
+    let has_html_suffix = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("html") || extension.eq_ignore_ascii_case("htm")
+        });
+    if has_html_suffix {
+        path
+    } else {
+        let mut name = path.into_os_string();
+        name.push(".html");
+        std::path::PathBuf::from(name)
+    }
+}
+
 /// Saves the standalone (browser-printable) HTML, used by the preview toolbar.
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn save_report_html(
     default_name: String,
-    html: String,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<Option<String>, String> {
     require_preview_window(&window)?;
     let doc = stored_doc(&state.print_docs, window.label())?;
-    // `html` comes from the WebView and is deliberately ignored. The file must
-    // contain exactly the document Rust built for this window.
-    let _ = html;
+    // The file always contains exactly the document Rust built for this
+    // window; the WebView does not supply HTML.
     let suggested = if default_name.trim().is_empty() {
         doc.file_name.as_str()
     } else {
@@ -337,20 +354,17 @@ pub(crate) fn save_report_html(
     let Some(picked) = rfd::FileDialog::new()
         .set_title("ذخیره گزارش قابل چاپ")
         .set_file_name(&file_name)
-        .add_filter("HTML", &["html"])
+        .add_filter("HTML", &["html", "htm"])
         .save_file()
     else {
         return Ok(None);
     };
-    let mut path = picked.to_string_lossy().to_string();
-    if !path.to_lowercase().ends_with(".html") {
-        path.push_str(".html");
-    }
+    let path = preserve_html_suffix(picked);
     std::fs::write(&path, &doc.html).map_err(|e| format!("ذخیره فایل ناموفق بود: {e}"))?;
     if let Ok(canonical) = std::fs::canonicalize(&path) {
         lock(&state.report_files).insert(canonical);
     }
-    Ok(Some(path))
+    Ok(Some(path.to_string_lossy().to_string()))
 }
 
 #[cfg(test)]
@@ -388,6 +402,27 @@ mod tests {
         assert_eq!(safe_html_file_name("a..b"), "a.b.html");
         assert_eq!(safe_html_file_name(" .. "), "گزارش.html");
         assert_eq!(safe_html_file_name("re\u{0007}port"), "report.html");
+    }
+
+    #[test]
+    fn preserve_html_suffix_keeps_htm_and_html_and_appends_only_otherwise() {
+        use std::path::PathBuf;
+        assert_eq!(
+            preserve_html_suffix(PathBuf::from("report.htm")),
+            PathBuf::from("report.htm")
+        );
+        assert_eq!(
+            preserve_html_suffix(PathBuf::from("report.HTML")),
+            PathBuf::from("report.HTML")
+        );
+        assert_eq!(
+            preserve_html_suffix(PathBuf::from("report.txt")),
+            PathBuf::from("report.txt.html")
+        );
+        assert_eq!(
+            preserve_html_suffix(PathBuf::from("report")),
+            PathBuf::from("report.html")
+        );
     }
 
     #[test]

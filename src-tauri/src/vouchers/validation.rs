@@ -4,7 +4,7 @@
 //! checks so they cannot disagree about which postings are allowed.
 
 use crate::db::fs_catalog::{section_of, FsNormalSide, FsSection};
-use crate::db::{self, classification, normalize_digits, Database};
+use crate::db::{self, classification, normalize_digits, normalize_fa_text, Database};
 use crate::vouchers::accounting::{classify, AccountClass};
 use crate::vouchers::model::{VoucherLineInput, CLOSING_FINAL, CLOSING_TEMPORARY, VOUCHER_TYPES};
 use rusqlite::{params, Connection};
@@ -87,7 +87,7 @@ pub(crate) fn check_range(from: &str, to: &str) -> Result<(), String> {
 }
 
 pub(crate) fn validate_description(input: &str, label: &str, max: usize) -> Result<String, String> {
-    let value = input.trim().to_string();
+    let value = normalize_fa_text(input).trim().to_string();
     if value.chars().count() > max {
         return Err(format!(
             "{label} نمی‌تواند بیشتر از {} کاراکتر باشد.",

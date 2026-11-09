@@ -417,12 +417,16 @@ pub(crate) fn execute_closing(
 pub(crate) fn reverse_closing(
     year_id: i64,
     reason: Option<String>,
+    force: Option<bool>,
     app: AppHandle,
     window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<db::ClosingReversalResult, String> {
     require_window(&window, &["main"])?;
-    let result = state.database.reverse_closing(year_id, reason.as_deref())?;
+    let result =
+        state
+            .database
+            .reverse_closing(year_id, reason.as_deref(), force.unwrap_or(false))?;
     notify_vouchers_changed(&app);
     Ok(result)
 }

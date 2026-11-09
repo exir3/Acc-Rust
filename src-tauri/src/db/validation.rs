@@ -1,6 +1,6 @@
 //! Input validation for account groups and accounts.
 
-use crate::db::common::normalize_code;
+use crate::db::common::{normalize_code, normalize_fa_text};
 use crate::db::model::{
     ACCOUNT_GROUP_SECTIONS, ACCOUNT_GROUP_TYPES, ACCOUNT_NATURES, MAX_ACCOUNT_LEVEL,
 };
@@ -37,7 +37,10 @@ pub(crate) fn validate_account_code(input: &str) -> Result<String, String> {
 }
 
 pub(crate) fn validate_name(input: &str, label: &str) -> Result<String, String> {
-    let name = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = normalize_fa_text(input)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if name.is_empty() {
         return Err(format!("{label} الزامی است."));
     }

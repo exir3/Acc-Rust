@@ -10,7 +10,7 @@ pub const DB_FILE_NAME: &str = "hesabdari.sqlite3";
 /// `CURRENT_SCHEMA_VERSION`. Keeping the two constants separate is intentional:
 /// a fresh database must still run the v5 voucher-pair migration.
 pub(crate) const BASE_SCHEMA_VERSION: i64 = 4;
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 13;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 14;
 // A pre-delete snapshot must preserve legacy vouchers exactly as they existed,
 // even when an old document already violates the current balancing rules.
 pub(crate) const BULK_DELETE_SNAPSHOT_KEY: &str = "backup_snapshot_kind";
@@ -52,6 +52,55 @@ pub fn normalize_digits(input: &str) -> String {
 
 pub(crate) fn normalize_code(input: &str) -> String {
     normalize_digits(input).trim().replace(' ', "")
+}
+
+/// Folds Persian/Arabic text to one canonical spelling. Arabic yeh, alef
+/// maksura and Arabic kaf become their Persian forms, and invisible bidi
+/// controls and tatweel are removed. Digits are intentionally left untouched;
+/// callers that need numeric input use [`normalize_digits`].
+pub(crate) fn normalize_fa_text(input: &str) -> String {
+    input
+        .chars()
+        .filter(|ch| !is_invisible_fa_mark(*ch))
+        .map(fold_fa_char)
+        .collect()
+}
+
+fn is_invisible_fa_mark(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{0640}'
+    )
+}
+
+fn fold_fa_char(ch: char) -> char {
+    match ch {
+        '\u{064A}' | '\u{0649}' => '\u{06CC}',
+        '\u{0643}' => '\u{06A9}',
+        other => other,
+    }
+}
+
+/// SQL expression that applies [`normalize_fa_text`] to a column. The literals
+/// come from the fixed mapping above, never from user input. Permanent voucher
+/// rows cannot be updated by a migration, so search compares against this
+/// expression instead of the raw stored text.
+pub(crate) fn fa_norm_sql(column: &str) -> String {
+    let mut expression = column.to_string();
+    for (from, to) in [
+        ('\u{064A}', '\u{06CC}'),
+        ('\u{0649}', '\u{06CC}'),
+        ('\u{0643}', '\u{06A9}'),
+    ] {
+        expression = format!("replace({expression}, '{from}', '{to}')");
+    }
+    for mark in [
+        '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}',
+        '\u{0640}',
+    ] {
+        expression = format!("replace({expression}, '{mark}', '')");
+    }
+    expression
 }
 
 pub(crate) fn to_fa_digits(value: impl ToString) -> String {

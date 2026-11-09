@@ -293,7 +293,10 @@ pub(crate) fn add_imported_account(
     if code.is_empty() {
         return Err("کد حساب در فایل اکسل خالی است.".to_string());
     }
-    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = db::normalize_fa_text(&name)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if name.chars().count() > 255 {
         return Err(format!(
             "عنوان حساب {} بیشتر از ۲۵۵ کاراکتر است.",

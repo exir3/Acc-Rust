@@ -195,7 +195,6 @@ async function saveHtml() {
   try {
     const saved = await invoke('save_report_html', {
       defaultName: state.doc.fileName,
-      html: state.doc.html,
     });
     if (saved) {
       setStatus(`گزارش ذخیره شد: ${saved}`, 'ok');

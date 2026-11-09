@@ -8,10 +8,12 @@
 //! integrity; the header is used as associated data so downgrade or parameter
 //! tampering fails authentication.
 //!
-//! Format v2 encrypts the SQLite file in independent 4 MiB chunks. Only one
-//! plaintext chunk and its ciphertext are in memory at once, so a 512 MiB
-//! backup no longer needs a gigabyte of RAM. Format v1 files are still read
-//! with the original whole-file path.
+//! Format v3 keeps the v2 chunked container but derives the key from a
+//! canonical password: Persian/Arabic digits and yeh/kaf are folded before
+//! Argon2, so the same password typed on another layout opens the file. V1 and
+//! v2 files still open with the original raw password, with the canonical form
+//! tried as a fallback. Format v2 encrypts in independent 4 MiB chunks; v1 is
+//! still read with the original whole-file path.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -20,15 +22,17 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
-use crate::db::common::CURRENT_SCHEMA_VERSION;
+use crate::db::common::{normalize_digits, normalize_fa_text, CURRENT_SCHEMA_VERSION};
 
 use super::backup::{create_private_file, replace_file, unique_sibling_path, PlaintextTempFile};
 
 const MAGIC: &[u8; 8] = b"HESABDBK";
 pub(crate) const PORTABLE_EXTENSION: &str = "hacc";
 const FORMAT_VERSION_V1: u16 = 1;
-const FORMAT_VERSION: u16 = 2;
+const FORMAT_VERSION_V2: u16 = 2;
+const FORMAT_VERSION: u16 = 3;
 const KDF_ARGON2ID: u8 = 1;
 const CIPHER_AES_256_GCM: u8 = 1;
 const SALT_LEN: usize = 16;
@@ -72,12 +76,49 @@ pub(crate) fn is_encrypted_backup(path: &Path) -> Result<bool, String> {
     }
 }
 
+/// Canonical password form used by format v3. The app already treats Arabic
+/// yeh/kaf and Persian/Arabic digits as equivalent in text and search, so a
+/// password follows the same rule before key derivation.
+fn normalize_portable_password(password: &str) -> String {
+    normalize_fa_text(&normalize_digits(password))
+}
+
+/// The raw password comes first for files written before format v3; the
+/// canonical form is the second chance for a password typed with another
+/// keyboard layout. Duplicates are dropped on purpose.
+fn legacy_password_candidates(password: &str) -> Vec<String> {
+    let normalized = normalize_portable_password(password);
+    if normalized == password {
+        vec![password.to_string()]
+    } else {
+        vec![password.to_string(), normalized]
+    }
+}
+
 /// Encrypts an already validated SQLite backup into a portable `.hacc` file.
 pub(crate) fn encrypt_backup_file(
     source: &Path,
     destination: &Path,
     password: &str,
     schema_version: i64,
+) -> Result<(), String> {
+    encrypt_backup_file_with_options(
+        source,
+        destination,
+        password,
+        schema_version,
+        FORMAT_VERSION,
+        true,
+    )
+}
+
+fn encrypt_backup_file_with_options(
+    source: &Path,
+    destination: &Path,
+    password: &str,
+    schema_version: i64,
+    format_version: u16,
+    normalize_password: bool,
 ) -> Result<(), String> {
     validate_portable_password(password)?;
     let metadata = std::fs::metadata(source)
@@ -101,6 +142,7 @@ pub(crate) fn encrypt_backup_file(
         .map_err(|error| format!("تولید nonce تصادفی ناموفق بود: {error}"))?;
 
     let header = build_header(
+        format_version,
         schema_version,
         DEFAULT_M_COST,
         DEFAULT_T_COST,
@@ -110,8 +152,13 @@ pub(crate) fn encrypt_backup_file(
         plaintext_len,
         &plaintext_sha256,
     )?;
+    let derived_password = if normalize_password {
+        normalize_portable_password(password)
+    } else {
+        password.to_string()
+    };
     let mut key = derive_key(
-        password,
+        &derived_password,
         &salt,
         DEFAULT_M_COST,
         DEFAULT_T_COST,
@@ -171,7 +218,7 @@ pub(crate) fn encrypt_backup_file(
             .map_err(|error| format!("تکمیل نوشتن فایل پشتیبان ناموفق بود: {error}"))?;
         Ok(())
     })();
-    key.fill(0);
+    key.zeroize();
 
     result?;
     replace_file(temporary.path(), destination)
@@ -219,30 +266,70 @@ pub(crate) fn decrypt_backup_file(
         ));
     }
 
-    let mut key = derive_key(
-        password,
-        &parsed.salt,
-        parsed.m_cost,
-        parsed.t_cost,
-        parsed.p_cost,
-    )?;
-    let result = match parsed.version {
-        FORMAT_VERSION_V1 => {
-            decrypt_v1(source, destination, &header, &parsed, &key, metadata.len())
+    match parsed.version {
+        // Files written before v3 used the raw password bytes. Try that first
+        // so existing backups never depend on the new normalization, then try
+        // the canonical form in case the password was typed on another layout.
+        FORMAT_VERSION_V1 | FORMAT_VERSION_V2 => {
+            let mut last_error = None;
+            for candidate in legacy_password_candidates(password) {
+                let mut key = derive_key(
+                    &candidate,
+                    &parsed.salt,
+                    parsed.m_cost,
+                    parsed.t_cost,
+                    parsed.p_cost,
+                )?;
+                let outcome = if parsed.version == FORMAT_VERSION_V1 {
+                    decrypt_v1(source, destination, &header, &parsed, &key, metadata.len())
+                } else {
+                    decrypt_v2(
+                        source,
+                        destination,
+                        &header,
+                        &parsed,
+                        &key,
+                        metadata.len(),
+                        &mut file,
+                    )
+                };
+                key.zeroize();
+                match outcome {
+                    Ok(()) => return Ok(()),
+                    Err(error) => {
+                        if last_error.is_none() {
+                            last_error = Some(error);
+                        }
+                    }
+                }
+            }
+            Err(last_error.unwrap_or_else(|| {
+                "رمز عبور نادرست است یا فایل پشتیبان آسیب دیده است.".to_string()
+            }))
         }
-        FORMAT_VERSION => decrypt_v2(
-            source,
-            destination,
-            &header,
-            &parsed,
-            &key,
-            metadata.len(),
-            &mut file,
-        ),
+        FORMAT_VERSION => {
+            let normalized = normalize_portable_password(password);
+            let mut key = derive_key(
+                &normalized,
+                &parsed.salt,
+                parsed.m_cost,
+                parsed.t_cost,
+                parsed.p_cost,
+            )?;
+            let result = decrypt_v2(
+                source,
+                destination,
+                &header,
+                &parsed,
+                &key,
+                metadata.len(),
+                &mut file,
+            );
+            key.zeroize();
+            result
+        }
         version => Err(format!("نسخه فایل پشتیبان پشتیبانی نمی‌شود: {version}")),
-    };
-    key.fill(0);
-    result
+    }
 }
 
 fn decrypt_v1(
@@ -291,6 +378,11 @@ fn decrypt_v2(
     file_len: u64,
     file: &mut std::fs::File,
 ) -> Result<(), String> {
+    // A legacy password candidate may retry after a failed first attempt, so
+    // the chunk reader always starts right after the header instead of relying
+    // on the caller's current file position.
+    file.seek(SeekFrom::Start(HEADER_LEN as u64))
+        .map_err(|error| format!("خواندن فایل پشتیبان رمزنگاری‌شده ناموفق بود: {error}"))?;
     let chunks = max_chunks(parsed.plaintext_len);
     let expected_len =
         HEADER_LEN as u64 + parsed.plaintext_len + chunks as u64 * CHUNK_FRAME_LEN as u64;
@@ -473,6 +565,7 @@ fn kdf_params_allowed(m_cost: u32, t_cost: u32, p_cost: u32) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 fn build_header(
+    format_version: u16,
     schema_version: i64,
     m_cost: u32,
     t_cost: u32,
@@ -492,7 +585,7 @@ fn build_header(
         .map_err(|_| "نسخه schema فایل پشتیبان معتبر نیست.".to_string())?;
     let mut header = [0u8; HEADER_LEN];
     header[..8].copy_from_slice(MAGIC);
-    header[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+    header[8..10].copy_from_slice(&format_version.to_le_bytes());
     header[10] = KDF_ARGON2ID;
     header[11] = CIPHER_AES_256_GCM;
     header[12..16].copy_from_slice(&schema_version.to_le_bytes());
@@ -535,6 +628,7 @@ mod tests {
 
     fn header_with_params(m_cost: u32, t_cost: u32, p_cost: u32) -> [u8; HEADER_LEN] {
         let mut header = build_header(
+            FORMAT_VERSION,
             CURRENT_SCHEMA_VERSION,
             DEFAULT_M_COST,
             DEFAULT_T_COST,
@@ -653,6 +747,70 @@ mod tests {
             error.contains("رمز") || error.contains("معتبر"),
             "unexpected error: {error}"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v3_folds_digits_and_persian_letters_in_the_password() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-portable-v3-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.sqlite3");
+        let encrypted = dir.join("backup.hacc");
+        let plain = dir.join("plain.sqlite3");
+        let bytes = b"portable backup payload".to_vec();
+        std::fs::write(&source, &bytes).unwrap();
+
+        // Arabic yeh/kaf and Persian digits on the writing keyboard.
+        let written = "گذرواژهي ۱۲۳۴";
+        let typed = "گذرواژهی 1234";
+        encrypt_backup_file(&source, &encrypted, written, CURRENT_SCHEMA_VERSION).unwrap();
+        let encoded = std::fs::read(&encrypted).unwrap();
+        assert_eq!(
+            u16::from_le_bytes(encoded[8..10].try_into().unwrap()),
+            FORMAT_VERSION
+        );
+
+        decrypt_backup_file(&encrypted, &plain, typed).unwrap();
+        assert_eq!(std::fs::read(&plain).unwrap(), bytes);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_files_open_with_the_normalized_password_as_a_fallback() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("hesabdari-portable-v2-fallback-{stamp}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.sqlite3");
+        let encrypted = dir.join("backup.hacc");
+        let plain = dir.join("plain.sqlite3");
+        let bytes = b"legacy portable payload".to_vec();
+        std::fs::write(&source, &bytes).unwrap();
+
+        // A v2 file used the exact password bytes; this one was written in the
+        // canonical Persian form and is opened with the Arabic keyboard form.
+        let written = "گذرواژهی 1234";
+        let typed = "گذرواژهي ۱۲۳۴";
+        encrypt_backup_file_with_options(
+            &source,
+            &encrypted,
+            written,
+            CURRENT_SCHEMA_VERSION,
+            FORMAT_VERSION_V2,
+            false,
+        )
+        .unwrap();
+
+        decrypt_backup_file(&encrypted, &plain, typed).unwrap();
+        assert_eq!(std::fs::read(&plain).unwrap(), bytes);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -15,8 +15,56 @@ mod limits;
 use commands::*;
 use tauri::Manager;
 
+/// Release builds abort on panic, so without a hook the only trace of a crash
+/// can disappear with the process. Append the location and message to a temp
+/// log before the default hook (or the abort) runs. Logging must never panic
+/// itself, otherwise a broken filesystem would turn a report into a loop.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|location| {
+                format!(
+                    "{}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("unnamed");
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|value| (*value).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        let line = format!(
+            "version={} unix_time={stamp} thread={thread_name} at {location}: {payload}\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        let log_path = std::env::temp_dir().join("hesabdari-panic.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            use std::io::Write;
+            let _ = file.write_all(line.as_bytes());
+        }
+        default_hook(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
     tauri::Builder::default()
         .manage(AppState::default())
         .setup(|app| match db::initialize(app.handle()) {

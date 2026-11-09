@@ -901,6 +901,10 @@ function closingDialogBody(preview, year) {
       <label for="closingReverseReason">دلیل برگشت <span class="req">*</span></label>
       <textarea id="closingReverseReason" class="input" rows="3" maxlength="500" placeholder="مثلاً کشف سند جاافتاده پس از بستن سال"></textarea>
     </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:8px">
+      <input type="checkbox" data-reverse-force />
+      <span>اگر برای سال بعد سند افتتاحیه صادر شده است، کهنه شدن آن را تأیید می‌کنم.</span>
+    </label>
     <div class="form-actions">
       <button type="button" class="btn btn-danger" data-reverse-closing>${icon('i-refresh')}<span>برگشت بستن سال</span></button>
     </div>` : ''}` : `
@@ -1019,15 +1023,16 @@ async function openClosingDialog(year) {
       toast('برای برگشت بستن، دلیل آن را ثبت کنید.', 'error');
       return;
     }
+    const force = Boolean(dialog.body.querySelector('[data-reverse-force]')?.checked);
     const confirmed = await confirmDialog(
       'برگشت بستن سال مالی',
-      `بستن سال مالی «${year.title}» برگشت می‌خورد و سندهای بستن آن حذف می‌شوند. ادامه می‌دهید؟`,
+      `بستن سال مالی «${year.title}» برگشت می‌خورد و سندهای بستن آن حذف می‌شوند.${force ? ' افتتاحیهٔ سال بعد نیز ممکن است کهنه شود.' : ''} ادامه می‌دهید؟`,
       'برگشت بستن',
     );
     if (!confirmed) return;
     button.disabled = true;
     try {
-      const result = await invoke('reverse_closing', { yearId: year.id, reason });
+      const result = await invoke('reverse_closing', { yearId: year.id, reason, force });
       toast(`بستن برگشت خورد؛ ${toFa(result.deletedVouchers)} سند حذف شد.`, 'ok');
       closeDialog();
       await navigate('settings', { force: true });

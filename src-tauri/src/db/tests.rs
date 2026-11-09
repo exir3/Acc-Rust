@@ -182,6 +182,164 @@ mod tests {
     }
 
     #[test]
+    fn deleting_the_starter_chart_is_not_undone_by_later_seed_runs() {
+        let db = test_database();
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM accounts", []).map_err(db_error)?;
+            conn.execute("DELETE FROM account_groups", [])
+                .map_err(db_error)?;
+            seed_default_groups(conn).map_err(db_error)?;
+            seed_default_accounts(conn).map_err(db_error)?;
+            let groups: i64 = conn
+                .query_row("SELECT COUNT(*) FROM account_groups", [], |row| row.get(0))
+                .map_err(db_error)?;
+            let accounts: i64 = conn
+                .query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))
+                .map_err(db_error)?;
+            assert_eq!(groups, 0, "deleted groups must stay deleted");
+            assert_eq!(accounts, 0, "deleted accounts must stay deleted");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn migration_folds_arabic_letters_in_existing_names() {
+        let db = test_database();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE account_groups SET name = 'گروه عربي' WHERE code = '1'",
+                [],
+            )
+            .map_err(db_error)?;
+            conn.execute(
+                "UPDATE accounts
+                    SET name = 'حساب عربي', parent_name = 'والد عربي'
+                  WHERE code = '1101'",
+                [],
+            )
+            .map_err(db_error)?;
+            conn.execute(
+                "UPDATE app_meta SET value = '13' WHERE key = 'schema_version'",
+                [],
+            )
+            .map_err(db_error)?;
+
+            apply_schema_migrations(conn)?;
+
+            let group: String = conn
+                .query_row(
+                    "SELECT name FROM account_groups WHERE code = '1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(db_error)?;
+            let (name, parent_name): (String, String) = conn
+                .query_row(
+                    "SELECT name, parent_name FROM accounts WHERE code = '1101'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(db_error)?;
+            assert_eq!(group, "گروه عربی");
+            assert_eq!(name, "حساب عربی");
+            assert_eq!(parent_name, "والد عربی");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn upgrading_an_existing_database_marks_the_starter_chart_as_seeded() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        apply_base_schema(&conn).unwrap();
+        // Run the base migration first so the schema has every column an
+        // upgraded database has, then pretend the file came from the previous
+        // release and upgrade it again.
+        apply_schema_migrations(&mut conn).unwrap();
+        conn.execute(
+            "UPDATE app_meta SET value = '13' WHERE key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+
+        apply_schema_migrations(&mut conn).unwrap();
+
+        let flags: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM app_meta
+                  WHERE key IN ('starter_groups_seeded', 'starter_accounts_seeded')
+                    AND value = '1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(flags, 2);
+    }
+
+    #[test]
+    fn pre_migration_backup_snapshots_old_files_and_keeps_three() {
+        let dir = test_temp_dir("migration-backup");
+        let path = dir.join(DB_FILE_NAME);
+        {
+            let conn = Connection::open(&path).unwrap();
+            apply_base_schema(&conn).unwrap();
+        }
+
+        let conn = Connection::open(&path).unwrap();
+        let snapshot = backup_before_migration(&conn, &path)
+            .unwrap()
+            .expect("a version 4 database needs a pre-migration snapshot");
+        assert!(snapshot.exists());
+        {
+            let copy = Connection::open(&snapshot).unwrap();
+            let version: String = copy
+                .query_row(
+                    "SELECT value FROM app_meta WHERE key = 'schema_version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(version, "4");
+        }
+
+        conn.execute(
+            "UPDATE app_meta SET value = ?1 WHERE key = 'schema_version'",
+            params![CURRENT_SCHEMA_VERSION.to_string()],
+        )
+        .unwrap();
+        assert!(backup_before_migration(&conn, &path).unwrap().is_none());
+
+        for index in 0..4 {
+            std::fs::write(
+                dir.join(format!(
+                    "before-migrate-v4-{index}-{}.sqlite3",
+                    1_000 + index
+                )),
+                b"old snapshot",
+            )
+            .unwrap();
+        }
+        prune_migration_backups(&dir).unwrap();
+        let remaining = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("before-migrate-v")
+            })
+            .count();
+        assert_eq!(remaining, 3);
+        assert!(snapshot.exists(), "the newest snapshot must be kept");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn starter_chart_exposes_effective_classification() {
         let db = test_database();
         let accounts = db.list_accounts().unwrap().accounts;
@@ -2322,7 +2480,9 @@ mod closing_workflow_tests {
             .any(|blocker| blocker.code == "already_closed"));
         assert!(after.run.is_some());
 
-        let reversed = db.reverse_closing(year.id, Some("برگشت آزمایشی")).unwrap();
+        let reversed = db
+            .reverse_closing(year.id, Some("برگشت آزمایشی"), false)
+            .unwrap();
         assert_eq!(reversed.deleted_vouchers, 2);
         assert_eq!(year_status(&db, year.id), "open");
         assert_eq!(voucher_count(&db, year.id, VOUCHER_TYPES[3]), 0);
@@ -2332,6 +2492,32 @@ mod closing_workflow_tests {
         assert!(reopened.can_execute, "{:?}", reopened.blockers);
         assert!(reopened.run.is_none());
         assert!(reopened.latest_run.is_some());
+    }
+
+    #[test]
+    fn reversing_closing_requires_force_when_the_next_year_has_an_opening_voucher() {
+        let db = memory_database();
+        let source = db
+            .create_fiscal_year("سال ۱۴۰۵", "1405/01/01", "1405/12/29", "open")
+            .unwrap();
+        let target = db
+            .create_fiscal_year("سال ۱۴۰۶", "1406/01/01", "1406/12/29", "open")
+            .unwrap();
+        save_cash_sale(&db, source.id, "1405/01/10", 1_000_000);
+        db.execute_closing(source.id, None, None, None, None, None)
+            .unwrap();
+        db.execute_carry_forward(source.id, target.id, false)
+            .unwrap();
+
+        let error = db
+            .reverse_closing(source.id, Some("اصلاح"), false)
+            .unwrap_err();
+        assert!(error.contains("افتتاحیه"), "{error}");
+
+        // The explicit confirmation is the only way to reopen the source year
+        // while the next year's opening voucher exists.
+        db.reverse_closing(source.id, Some("اصلاح"), true).unwrap();
+        assert_eq!(year_status(&db, source.id), "open");
     }
 
     #[test]
@@ -2410,12 +2596,13 @@ mod closing_workflow_tests {
             .unwrap_err();
         assert!(reopen.contains("برگشت بستن"), "{reopen}");
 
-        let reverse_final = db.reverse_closing(year.id, Some("تلاش")).unwrap_err();
+        let reverse_final = db.reverse_closing(year.id, Some("تلاش"), false).unwrap_err();
         assert!(reverse_final.contains("بازگشایی"), "{reverse_final}");
 
         db.set_fiscal_year_status(year.id, "closed", Some("اصلاح وضعیت"), true)
             .unwrap();
-        db.reverse_closing(year.id, Some("برگشت آزمایشی")).unwrap();
+        db.reverse_closing(year.id, Some("برگشت آزمایشی"), false)
+            .unwrap();
         assert_eq!(year_status(&db, year.id), "open");
 
         let final_again = db

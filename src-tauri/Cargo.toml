@@ -27,8 +27,9 @@ sha2 = "0.10"
 hmac = "0.12"
 getrandom = "0.3"
 zip = { version = "9.2", default-features = false }
-aes-gcm = "0.10.3"
+aes-gcm = { version = "0.10.3", features = ["zeroize"] }
 argon2 = "0.5.3"
+zeroize = "1"
 
 [profile.release]
 codegen-units = 1

@@ -1,6 +1,6 @@
 //! Shared SQL helpers for voucher filters, paging and single-voucher reads.
 
-use crate::db::{self, normalize_digits};
+use crate::db::{self, normalize_digits, normalize_fa_text};
 use crate::vouchers::model::{Voucher, VoucherLine, VoucherSummary, MAX_PAGE_SIZE};
 use crate::vouchers::validation::checked_sum;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -25,14 +25,7 @@ fn escape_like(input: &str) -> String {
 
 pub(crate) fn search_terms(input: &str) -> SearchTerms {
     let raw = input.trim();
-    let folded: String = normalize_digits(raw)
-        .chars()
-        .map(|ch| match ch {
-            '\u{064A}' | '\u{0649}' => '\u{06CC}',
-            '\u{0643}' => '\u{06A9}',
-            other => other,
-        })
-        .collect();
+    let folded = normalize_digits(&normalize_fa_text(raw));
     SearchTerms {
         folded: escape_like(&folded),
         raw: escape_like(raw),
@@ -41,22 +34,38 @@ pub(crate) fn search_terms(input: &str) -> SearchTerms {
 
 /// SQL predicate matching a voucher against the search placeholder `p`
 /// (`?3` or `?4`). Wildcards in the text are escaped by `search_terms`.
-fn search_clause(p: &str) -> String {
+/// `normalize_stored` folds old rows written with Arabic yeh/kaf, which cannot
+/// always be rewritten because permanent vouchers reject updates.
+fn search_clause(p: &str, normalize_stored: bool) -> String {
+    let text = |column: &str| {
+        if normalize_stored {
+            db::fa_norm_sql(column)
+        } else {
+            column.to_string()
+        }
+    };
+    let description = text("v.description");
+    let voucher_type = text("v.type");
+    let account_name = text("a2.name");
+    let account_code = text("l2.account_code");
+    let detail_name = text("d2.name");
+    let detail_code = text("COALESCE(l2.detail1_code, '')");
+    let line_description = text("l2.description");
     format!(
         "CAST(v.number AS TEXT) LIKE '%' || {p} || '%' ESCAPE '\\'
-         OR v.description LIKE '%' || {p} || '%' ESCAPE '\\'
-         OR v.type LIKE '%' || {p} || '%' ESCAPE '\\'
+         OR {description} LIKE '%' || {p} || '%' ESCAPE '\\'
+         OR {voucher_type} LIKE '%' || {p} || '%' ESCAPE '\\'
          OR EXISTS (
              SELECT 1
                FROM voucher_lines l2
                JOIN accounts a2 ON a2.code = l2.account_code
                LEFT JOIN accounts d2 ON d2.code = l2.detail1_code
               WHERE l2.voucher_id = v.id
-                AND (a2.name LIKE '%' || {p} || '%' ESCAPE '\\'
-                     OR l2.account_code LIKE '%' || {p} || '%' ESCAPE '\\'
-                     OR d2.name LIKE '%' || {p} || '%' ESCAPE '\\'
-                     OR COALESCE(l2.detail1_code, '') LIKE '%' || {p} || '%' ESCAPE '\\'
-                     OR l2.description LIKE '%' || {p} || '%' ESCAPE '\\')
+                AND ({account_name} LIKE '%' || {p} || '%' ESCAPE '\\'
+                     OR {account_code} LIKE '%' || {p} || '%' ESCAPE '\\'
+                     OR {detail_name} LIKE '%' || {p} || '%' ESCAPE '\\'
+                     OR {detail_code} LIKE '%' || {p} || '%' ESCAPE '\\'
+                     OR {line_description} LIKE '%' || {p} || '%' ESCAPE '\\')
          )"
     )
 }
@@ -64,8 +73,8 @@ fn search_clause(p: &str) -> String {
 pub(crate) fn search_predicate() -> String {
     format!(
         "(?3 = '' OR {} OR {})",
-        search_clause("?3"),
-        search_clause("?4")
+        search_clause("?3", true),
+        search_clause("?4", false)
     )
 }
 

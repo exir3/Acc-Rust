@@ -2759,6 +2759,46 @@ fn search_treats_wildcards_literally_and_folds_digits() {
 }
 
 #[test]
+fn search_folds_arabic_letters_in_permanent_descriptions() {
+    let db = db::memory_database();
+    let mut sale = cash_sale("1405/01/10", 100_000);
+    sale.description = "فروش نقدی".to_string();
+    let saved = db.save_voucher(sale).unwrap();
+    db.with_conn(|conn| {
+        // Simulate a permanent row written by an older release, before new
+        // descriptions were folded on write. Permanent rows cannot be updated
+        // by the migration, so search has to fold them in the query.
+        conn.execute(
+            "UPDATE vouchers SET description = 'فروش نقدي' WHERE id = ?1",
+            [saved.id],
+        )
+        .map_err(db::db_error)?;
+        conn.execute(
+            "UPDATE vouchers SET is_temporary = 0 WHERE id = ?1",
+            [saved.id],
+        )
+        .map_err(db::db_error)?;
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(
+        db.list_vouchers("", "", "فروش نقدی")
+            .unwrap()
+            .vouchers
+            .len(),
+        1
+    );
+    assert_eq!(
+        db.list_vouchers("", "", "فروش نقدي")
+            .unwrap()
+            .vouchers
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn list_reports_total_count_and_rejects_reversed_range() {
     let db = db::memory_database();
     db.save_voucher(cash_sale("1405/01/10", 1_000)).unwrap();
@@ -3142,7 +3182,7 @@ fn final_fiscal_year_requires_a_close_and_reopening_requires_reversal() {
         .contains("تأیید"));
     db.set_fiscal_year_status(year.id, "closed", Some("اصلاح سند اشتباه"), true)
         .unwrap();
-    db.reverse_closing(year.id, Some("اصلاح سند اشتباه"))
+    db.reverse_closing(year.id, Some("اصلاح سند اشتباه"), false)
         .unwrap();
 
     let status = db

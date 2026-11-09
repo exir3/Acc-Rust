@@ -138,6 +138,10 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
         migrate_legacy_database(&data_dir, &path, Some(&data_dir), Some(&executable_dir))?;
     }
 
+    // A brand-new file needs no restore point. Every file that already existed
+    // is snapshotted before any schema DDL touches it, and startup stops if
+    // that snapshot cannot be written.
+    let existed_before_open = path.exists();
     let mut connection =
         Connection::open(&path).map_err(|e| format!("باز کردن پایگاه داده ناموفق بود: {e}"))?;
 
@@ -161,6 +165,18 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
              PRAGMA journal_size_limit = 67108864;",
         )
         .map_err(db_error)?;
+    if existed_before_open {
+        if let Some(snapshot) = super::backup_before_migration(&connection, &path)? {
+            if cfg!(debug_assertions) {
+                eprintln!("[hesabdari] pre-migration backup: {}", snapshot.display());
+            }
+            if let Some(directory) = snapshot.parent() {
+                // Retention is best-effort; a locked old snapshot must not
+                // stop an upgrade that already has its new restore point.
+                let _ = super::prune_migration_backups(directory);
+            }
+        }
+    }
     apply_base_schema(&connection)?;
     apply_schema_migrations(&mut connection)?;
     seed_default_groups(&mut connection).map_err(db_error)?;

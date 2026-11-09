@@ -7,7 +7,8 @@ use crate::db::classification::{
     seed_starter_classifications,
 };
 use crate::db::common::{
-    db_error, normalize_digits, to_fa_digits, BASE_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION,
+    db_error, fa_norm_sql, normalize_digits, to_fa_digits, BASE_SCHEMA_VERSION,
+    CURRENT_SCHEMA_VERSION,
 };
 
 const SCHEMA: &str = r#"
@@ -236,6 +237,9 @@ pub(crate) fn apply_base_schema(conn: &Connection) -> Result<(), String> {
 
 pub(crate) const DEFAULT_SETTINGS: [(&str, &str); 2] =
     [("company_name", "شرکت نمونه"), ("fiscal_year", "۱۴۰۵")];
+
+const STARTER_GROUPS_SEEDED_KEY: &str = "starter_groups_seeded";
+const STARTER_ACCOUNTS_SEEDED_KEY: &str = "starter_accounts_seeded";
 
 /// The starter chart used on first launch, so the application can be used
 /// immediately instead of opening on an empty account list.
@@ -750,6 +754,82 @@ fn backfill_fiscal_years(conn: &Connection, create_missing_years: bool) -> Resul
     Ok(())
 }
 
+/// Brings stored Persian text to the same canonical form used by new writes.
+/// Temporary vouchers can be updated here; permanent vouchers reject changes
+/// by trigger, so their descriptions are matched through `fa_norm_sql` at
+/// search time instead of being rewritten.
+fn normalize_existing_text(conn: &Connection) -> Result<(), String> {
+    let group_name = fa_norm_sql("name");
+    conn.execute(
+        &format!("UPDATE account_groups SET name = {group_name} WHERE name <> {group_name}"),
+        [],
+    )
+    .map_err(db_error)?;
+
+    let account_name = fa_norm_sql("name");
+    let parent_name = fa_norm_sql("parent_name");
+    conn.execute(
+        &format!(
+            "UPDATE accounts
+                SET name = {account_name}, parent_name = {parent_name}
+              WHERE name <> {account_name} OR parent_name <> {parent_name}"
+        ),
+        [],
+    )
+    .map_err(db_error)?;
+
+    let company_name = fa_norm_sql("value");
+    conn.execute(
+        &format!(
+            "UPDATE settings SET value = {company_name}
+              WHERE key = 'company_name' AND value <> {company_name}"
+        ),
+        [],
+    )
+    .map_err(db_error)?;
+
+    let voucher_description = fa_norm_sql("description");
+    conn.execute(
+        &format!(
+            "UPDATE vouchers SET description = {voucher_description}
+              WHERE is_temporary = 1 AND description <> {voucher_description}"
+        ),
+        [],
+    )
+    .map_err(db_error)?;
+
+    let line_description = fa_norm_sql("description");
+    conn.execute(
+        &format!(
+            "UPDATE voucher_lines SET description = {line_description}
+              WHERE description <> {line_description}
+                AND EXISTS (
+                    SELECT 1 FROM vouchers v
+                     WHERE v.id = voucher_lines.voucher_id AND v.is_temporary = 1
+                )"
+        ),
+        [],
+    )
+    .map_err(db_error)?;
+
+    Ok(())
+}
+
+/// A database that has already been opened by an older application version
+/// must not receive the starter chart again merely because the operator deleted
+/// every account. Fresh databases (still at `BASE_SCHEMA_VERSION`) are exempt,
+/// so first-launch seeding still runs.
+fn mark_starter_chart_seeded(conn: &Connection) -> Result<(), String> {
+    for key in [STARTER_GROUPS_SEEDED_KEY, STARTER_ACCOUNTS_SEEDED_KEY] {
+        conn.execute(
+            "INSERT OR IGNORE INTO app_meta(key, value) VALUES (?1, '1')",
+            params![key],
+        )
+        .map_err(db_error)?;
+    }
+    Ok(())
+}
+
 /// Applies additive schema changes and upgrades the recorded version.
 pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), String> {
     let version_text: String = conn
@@ -903,6 +983,23 @@ pub(crate) fn apply_schema_migrations(conn: &mut Connection) -> Result<(), Strin
     // later changes add dated snapshots without touching it.
     seed_classification_history(&tx)?;
 
+    // Existing databases are upgraded with the same canonical Persian
+    // spelling used by new writes. Permanent voucher rows reject updates by
+    // trigger, so their descriptions stay byte-for-byte intact and search
+    // folds them through `fa_norm_sql` instead.
+    if version < CURRENT_SCHEMA_VERSION {
+        normalize_existing_text(&tx)?;
+    }
+
+    // A database that predates the seed markers already has its starter chart
+    // (or the operator deliberately removed it). Mark both charts as seeded
+    // before the version bump so a later launch never resurrects a deleted
+    // chart. A fresh database is still at `BASE_SCHEMA_VERSION` and seeds
+    // normally through `seed_default_*`.
+    if version > BASE_SCHEMA_VERSION && version < CURRENT_SCHEMA_VERSION {
+        mark_starter_chart_seeded(&tx)?;
+    }
+
     if version < CURRENT_SCHEMA_VERSION {
         tx.execute(
             "UPDATE app_meta SET value = ?1 WHERE key = 'schema_version'",
@@ -917,19 +1014,44 @@ fn classification_error(message: String) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(message)))
 }
 
+fn meta_flag(conn: &Connection, key: &str) -> rusqlite::Result<bool> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_meta WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(value.as_deref() == Some("1"))
+}
+
+fn set_meta_flag(conn: &Connection, key: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO app_meta (key, value) VALUES (?1, '1')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn seed_default_groups(conn: &mut Connection) -> rusqlite::Result<()> {
-    let tx = conn.transaction()?;
-    let count: i64 = tx.query_row("SELECT COUNT(*) FROM account_groups", [], |row| row.get(0))?;
-    if count > 0 {
+    if meta_flag(conn, STARTER_GROUPS_SEEDED_KEY)? {
         return Ok(());
     }
-
-    let mut stmt =
-        tx.prepare("INSERT OR IGNORE INTO account_groups (code, name, type) VALUES (?1, ?2, ?3)")?;
-    for (code, name, group_type) in DEFAULT_GROUPS {
-        stmt.execute(params![code, name, group_type])?;
+    let tx = conn.transaction()?;
+    let count: i64 = tx.query_row("SELECT COUNT(*) FROM account_groups", [], |row| row.get(0))?;
+    if count == 0 {
+        let mut stmt = tx.prepare(
+            "INSERT OR IGNORE INTO account_groups (code, name, type) VALUES (?1, ?2, ?3)",
+        )?;
+        for (code, name, group_type) in DEFAULT_GROUPS {
+            stmt.execute(params![code, name, group_type])?;
+        }
+        drop(stmt);
     }
-    drop(stmt);
+    // The flag records the decision even when the table was not empty: from
+    // now on an empty chart means the operator deleted it, not a first launch.
+    set_meta_flag(&tx, STARTER_GROUPS_SEEDED_KEY)?;
     tx.commit()?;
     Ok(())
 }
@@ -949,9 +1071,10 @@ fn has_classification_columns(conn: &Connection) -> rusqlite::Result<bool> {
 
 pub(crate) fn seed_default_accounts(conn: &mut Connection) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
+    let starter_seeded = meta_flag(&tx, STARTER_ACCOUNTS_SEEDED_KEY)?;
     let count: i64 = tx.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
     let classified = has_classification_columns(&tx)?;
-    if count == 0 {
+    if !starter_seeded && count == 0 {
         for (code, name, level, group_code, nature, parent_code, _postable) in DEFAULT_ACCOUNTS {
             let group_exists: bool = tx
                 .query_row(
@@ -1006,6 +1129,9 @@ pub(crate) fn seed_default_accounts(conn: &mut Connection) -> rusqlite::Result<(
             seed_starter_classifications(&tx).map_err(classification_error)?;
         }
     }
+    // Record the seeding decision even when accounts already existed before
+    // the flag was introduced, so deleting them later is not undone.
+    set_meta_flag(&tx, STARTER_ACCOUNTS_SEEDED_KEY)?;
     // Required by the closing workflow; provisioning is idempotent and never
     // invents a role for an existing account.
     if classified {

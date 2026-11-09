@@ -1017,6 +1017,79 @@ pub(crate) fn cleanup_stale_plaintext_temps(database_path: &Path) -> Result<usiz
     Ok(removed)
 }
 
+const MIGRATION_BACKUP_PREFIX: &str = "before-migrate-v";
+
+/// Reads the schema version without assuming `app_meta` exists. `None` means
+/// the file predates the metadata table (or the marker is missing), which is
+/// still a migration input and must be snapshotted.
+fn stored_schema_version(conn: &Connection) -> Result<Option<i64>, String> {
+    let has_meta: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_meta')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_error)?;
+    if !has_meta {
+        return Ok(None);
+    }
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db_error)?;
+    Ok(value.and_then(|text| text.trim().parse::<i64>().ok()))
+}
+
+/// Takes a consistent snapshot before a schema migration changes the live
+/// database. Returns `None` when the file is already at the current version;
+/// a file without a version marker is treated as a legacy migration input and
+/// is still snapshotted. The caller decides whether the file existed before
+/// this open, so a brand-new database is never backed up here.
+///
+/// `VACUUM INTO` writes one self-contained file including everything visible
+/// through the WAL, so the snapshot is exactly the pre-migration state.
+pub(crate) fn backup_before_migration(
+    conn: &Connection,
+    database_path: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let version = stored_schema_version(conn)?;
+    if version.is_some_and(|value| value >= CURRENT_SCHEMA_VERSION) {
+        return Ok(None);
+    }
+    let directory = database_path
+        .parent()
+        .ok_or_else(|| "مسیر پوشه پایگاه داده برای پشتیبان پیش از مهاجرت پیدا نشد.".to_string())?;
+    let label = version
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "legacy".to_string());
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let destination = directory.join(format!("{MIGRATION_BACKUP_PREFIX}{label}-{stamp}.sqlite3"));
+    conn.execute(
+        "VACUUM INTO ?1",
+        params![destination.to_string_lossy().into_owned()],
+    )
+    .map_err(|error| {
+        format!(
+            "ساخت پشتیبان پیش از ارتقای پایگاه داده ناموفق بود؛ برای جلوگیری از تغییر بدون نسخهٔ بازگشت، اجرای برنامه متوقف شد: {error}"
+        )
+    })?;
+    Ok(Some(destination))
+}
+
+/// Keeps the newest pre-migration snapshots next to the database.
+pub(crate) fn prune_migration_backups(directory: &Path) -> Result<usize, String> {
+    prune_matching_files(directory, MIGRATION_BACKUP_RETENTION, |name| {
+        name.starts_with(MIGRATION_BACKUP_PREFIX) && name.ends_with(".sqlite3")
+    })
+}
+
 fn same_path(left: &Path, right: &Path) -> bool {
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
@@ -1199,3 +1272,4 @@ const BACKUP_RETENTION: usize = 30;
 const RESTORE_SAFETY_RETENTION: usize = 5;
 const PRE_DELETE_RETENTION: usize = 10;
 const LEGACY_MIGRATION_SNAPSHOT_RETENTION: usize = 10;
+const MIGRATION_BACKUP_RETENTION: usize = 3;
