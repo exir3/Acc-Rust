@@ -28,7 +28,7 @@ hmac = "0.12"
 getrandom = "0.3"
 zip = { version = "9.2", default-features = false }
 aes-gcm = { version = "0.10.3", features = ["zeroize"] }
-argon2 = "0.5.3"
+argon2 = "0.6.0"
 zeroize = "1"
 
 [profile.release]
