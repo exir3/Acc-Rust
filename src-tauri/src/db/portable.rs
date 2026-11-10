@@ -195,7 +195,7 @@ fn encrypt_backup_file_with_options(
             let nonce = chunk_nonce(&nonce, index);
             let encrypted = cipher
                 .encrypt(
-                    Nonce::from_slice(&nonce),
+                    &Nonce::from(nonce),
                     Payload {
                         msg: &buffer[..plaintext_chunk_len],
                         aad: &aad,
@@ -349,7 +349,7 @@ fn decrypt_v1(
     let cipher =
         Aes256Gcm::new_from_slice(key).map_err(|_| "ساخت رمزگشا ناموفق بود.".to_string())?;
     let plaintext = cipher.decrypt(
-        Nonce::from_slice(&parsed.nonce),
+        &Nonce::from(parsed.nonce),
         Payload {
             msg: &bytes[HEADER_LEN..],
             aad: header,
@@ -412,7 +412,7 @@ fn decrypt_v2(
             let nonce = chunk_nonce(&parsed.nonce, index);
             let plaintext = cipher
                 .decrypt(
-                    Nonce::from_slice(&nonce),
+                    &Nonce::from(nonce),
                     Payload {
                         msg: &encrypted,
                         aad: &aad,

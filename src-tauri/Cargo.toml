@@ -20,15 +20,15 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.17"
 jalali-calendar = "0.1.2"
-rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
+rusqlite = { version = "0.41.1", features = ["bundled", "backup"] }
 calamine = "0.38"
 rust_xlsxwriter = "0.102"
-sha2 = "0.10"
-hmac = "0.12"
+sha2 = "0.11.1"
+hmac = "0.13.0"
 getrandom = "0.3"
 zip = { version = "9.2", default-features = false }
-aes-gcm = { version = "0.10.3", features = ["zeroize"] }
-argon2 = "0.5.3"
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+argon2 = "0.6.0"
 zeroize = "1"
 
 [profile.release]

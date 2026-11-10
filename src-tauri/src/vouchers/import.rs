@@ -76,7 +76,10 @@ impl Sha256PayloadHasher {
     }
 
     fn finish(self) -> String {
-        format!("{PAYLOAD_HASH_PREFIX}{:x}", self.hasher.finalize())
+        format!(
+            "{PAYLOAD_HASH_PREFIX}{}",
+            db::to_hex(self.hasher.finalize().as_slice())
+        )
     }
 }
 
