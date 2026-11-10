@@ -3052,6 +3052,101 @@ fn bulk_import_replays_a_completed_batch_without_duplicates() {
 }
 
 #[test]
+fn bulk_import_restores_vouchers_after_the_batch_was_deleted() {
+    let db = db::memory_database();
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "restore.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
+        accounts: Vec::new(),
+        vouchers: vec![{
+            let mut imported = cash_sale("1405/01/10", 1_000);
+            imported.number = Some(1);
+            imported
+        }],
+    };
+
+    assert_eq!(db.import_vouchers(import.clone(), false).unwrap(), 1);
+    let saved = db.list_vouchers("", "", "").unwrap().vouchers.remove(0);
+    db.delete_voucher(saved.id, Some(&saved.updated_at))
+        .unwrap();
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 0);
+
+    // The old import batch row must not turn this into a false success: the
+    // vouchers were deleted, so the same payload has to be imported again.
+    assert_eq!(db.import_vouchers(import, false).unwrap(), 1);
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+    let batch_count: i64 = db
+        .with_conn(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM import_batches", [], |row| row.get(0))
+                .map_err(db::db_error)
+        })
+        .unwrap();
+    assert_eq!(batch_count, 1);
+}
+
+#[test]
+fn bulk_import_rejects_a_partially_deleted_batch() {
+    let db = db::memory_database();
+    let mut first = cash_sale("1405/01/10", 1_000);
+    first.number = Some(1);
+    let mut second = cash_sale("1405/01/11", 2_000);
+    second.number = Some(2);
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "partial.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
+        accounts: Vec::new(),
+        vouchers: vec![first, second],
+    };
+
+    assert_eq!(db.import_vouchers(import.clone(), false).unwrap(), 2);
+    let listed = db.list_vouchers("", "", "").unwrap();
+    let first_saved = listed
+        .vouchers
+        .iter()
+        .find(|voucher| voucher.number == 1)
+        .expect("first imported voucher");
+    db.delete_voucher(first_saved.id, Some(&first_saved.updated_at))
+        .unwrap();
+
+    let error = db.import_vouchers(import, false).unwrap_err();
+    assert!(error.contains("بخشی از اسناد"), "{error}");
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+}
+
+#[test]
+fn bulk_import_does_not_replay_a_changed_voucher() {
+    let db = db::memory_database();
+    let import = crate::excel::BulkVoucherImport {
+        file_name: "changed.xlsx".to_string(),
+        sheet_name: "اسناد".to_string(),
+        date_warning_count: 0,
+        date_warnings: Vec::new(),
+        accounts: Vec::new(),
+        vouchers: vec![{
+            let mut imported = cash_sale("1405/01/10", 1_000);
+            imported.number = Some(1);
+            imported
+        }],
+    };
+
+    assert_eq!(db.import_vouchers(import.clone(), false).unwrap(), 1);
+    let saved = db.list_vouchers("", "", "").unwrap().vouchers.remove(0);
+    let mut edited = cash_sale("1405/01/10", 1_000);
+    edited.id = Some(saved.id);
+    edited.number = Some(saved.number);
+    edited.description = "شرح ویرایش‌شده".to_string();
+    db.save_voucher(edited).unwrap();
+
+    let error = db.import_vouchers(import, false).unwrap_err();
+    assert!(error.contains("همخوانی ندارد"), "{error}");
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
+}
+
+#[test]
 fn import_payload_hash_is_versioned_sha256_and_detects_small_changes() {
     let import = crate::excel::BulkVoucherImport {
         file_name: "fingerprint.xlsx".to_string(),
@@ -3090,13 +3185,12 @@ fn legacy_fnv_import_batch_is_still_treated_as_a_replay() {
             imported
         }],
     };
+    assert_eq!(db.import_vouchers(import.clone(), false).unwrap(), 1);
     let legacy_hash = super::import::legacy_import_payload_hash(&import);
     db.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO import_batches
-                (payload_hash, file_name, sheet_name, voucher_count, imported_numbers)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![legacy_hash, "legacy-replay.xlsx", "اسناد", 1_i64, "1"],
+            "UPDATE import_batches SET payload_hash = ?1",
+            rusqlite::params![legacy_hash],
         )
         .map_err(db::db_error)?;
         Ok(())
@@ -3104,7 +3198,7 @@ fn legacy_fnv_import_batch_is_still_treated_as_a_replay() {
     .unwrap();
 
     assert_eq!(db.import_vouchers(import, false).unwrap(), 1);
-    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 0);
+    assert_eq!(db.list_vouchers("", "", "").unwrap().total_count, 1);
 }
 
 #[test]

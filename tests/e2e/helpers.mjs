@@ -24,7 +24,7 @@ export async function openAccountDefinitionPage(page, options = {}) {
   await installMock(page, options);
   await page.goto('/account-definition.html');
   await expect(page.locator('#adGridBody .ad-row').first()).toBeVisible();
-  await expect(page.locator('#adBreadcrumb [data-root]')).toBeVisible();
+  await expect(page.locator('#adSearch')).toBeVisible();
 }
 
 export async function openAccountGroupsPage(page, options = {}) {

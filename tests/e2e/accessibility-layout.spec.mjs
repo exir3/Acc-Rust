@@ -86,10 +86,12 @@ test('keyboard moves selection through the account grid and drills in', async ({
 
   // Enter drills into the selected account; Backspace returns to the root.
   await page.keyboard.press('Enter');
-  await expect(page.locator('#adBreadcrumb [aria-current="location"]')).toBeVisible();
-  await expect(page.locator('#adBreadcrumb [data-back]')).toBeVisible();
+  await expect(page.locator('#adGridBody .ad-row', { hasText: 'معین دارای تفصیلی' })).toBeVisible();
+  await expect(page.locator('#adGridBody .ad-row[data-id="1"]')).toHaveCount(0);
+  await expect(page.locator('#adBack')).toBeEnabled();
   await page.keyboard.press('Backspace');
-  await expect(page.locator('#adBreadcrumb [data-goto]')).toHaveCount(0);
+  await expect(page.locator('#adGridBody .ad-row')).toHaveCount(2);
+  await expect(page.locator('#adBack')).toBeDisabled();
 });
 
 test('confirmation dialog traps focus and returns it to the trigger', async ({ page }) => {

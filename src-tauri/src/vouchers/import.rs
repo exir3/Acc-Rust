@@ -650,16 +650,152 @@ impl Database {
             let tx = conn.transaction().map_err(db::db_error)?;
             let previous = tx
                 .query_row(
-                    "SELECT voucher_count FROM import_batches WHERE payload_hash IN (?1, ?2)",
+                    "SELECT voucher_count, imported_numbers
+                       FROM import_batches
+                      WHERE payload_hash IN (?1, ?2)",
                     params![&payload_hash, &legacy_payload_hash],
-                    |row| row.get::<_, i64>(0),
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()
                 .map_err(db::db_error)?;
-            if let Some(count) = previous {
-                let count = usize::try_from(count)
+            if let Some((previous_count, previous_numbers)) = previous {
+                let count = usize::try_from(previous_count)
                     .map_err(|_| "تعداد سندهای دسته ورودی معتبر نیست.".to_string())?;
-                return Ok(count);
+                let recorded_numbers = previous_numbers
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::parse::<i64>)
+                    .collect::<Result<Vec<_>, _>>()
+                    .ok()
+                    .filter(|numbers| !numbers.is_empty());
+                if let Some(recorded_numbers) = recorded_numbers {
+                    if recorded_numbers.len() != count || recorded_numbers.len() != prepared.len() {
+                        // The stored progress cannot describe this payload
+                        // any more; discard the marker and rebuild it below.
+                        tx.execute(
+                            "DELETE FROM import_batches WHERE payload_hash IN (?1, ?2)",
+                            params![&payload_hash, &legacy_payload_hash],
+                        )
+                        .map_err(db::db_error)?;
+                    } else {
+                        // A replay is only safe while the vouchers recorded by
+                        // the batch still exist with the same content. Without
+                        // this check, deleting imported vouchers and importing
+                        // the same workbook again reported success without
+                        // restoring anything.
+                        let mut existing = 0usize;
+                        let mut first_mismatch = None;
+                        {
+                            let mut find_voucher = tx
+                                .prepare(
+                                    "SELECT id, date, type, description
+                                       FROM vouchers WHERE number = ?1",
+                                )
+                                .map_err(db::db_error)?;
+                            let mut find_lines = tx
+                                .prepare(
+                                    "SELECT description, debit, credit
+                                       FROM voucher_lines
+                                      WHERE voucher_id = ?1
+                                      ORDER BY row_no, id",
+                                )
+                                .map_err(db::db_error)?;
+                            for (index, stored_number) in recorded_numbers.iter().enumerate() {
+                                let found = find_voucher
+                                    .query_row(params![stored_number], |row| {
+                                        Ok((
+                                            row.get::<_, i64>(0)?,
+                                            row.get::<_, String>(1)?,
+                                            row.get::<_, String>(2)?,
+                                            row.get::<_, String>(3)?,
+                                        ))
+                                    })
+                                    .optional()
+                                    .map_err(db::db_error)?;
+                                let Some((voucher_id, date, voucher_type, description)) = found
+                                else {
+                                    continue;
+                                };
+                                existing += 1;
+                                let (
+                                    _,
+                                    expected_date,
+                                    expected_type,
+                                    expected_description,
+                                    expected_lines,
+                                ) = &prepared[index];
+                                let mut matches = date == *expected_date
+                                    && voucher_type == *expected_type
+                                    && description == *expected_description;
+                                if matches {
+                                    let mut line_count = 0usize;
+                                    let rows = find_lines
+                                        .query_map(params![voucher_id], |row| {
+                                            Ok((
+                                                row.get::<_, String>(0)?,
+                                                row.get::<_, i64>(1)?,
+                                                row.get::<_, i64>(2)?,
+                                            ))
+                                        })
+                                        .map_err(db::db_error)?;
+                                    for row in rows {
+                                        let (line_description, debit, credit) =
+                                            row.map_err(db::db_error)?;
+                                        let Some(expected) = expected_lines.get(line_count) else {
+                                            matches = false;
+                                            break;
+                                        };
+                                        if line_description != expected.description
+                                            || debit != expected.debit
+                                            || credit != expected.credit
+                                        {
+                                            matches = false;
+                                            break;
+                                        }
+                                        line_count += 1;
+                                    }
+                                    if line_count != expected_lines.len() {
+                                        matches = false;
+                                    }
+                                }
+                                if !matches {
+                                    first_mismatch = Some(*stored_number);
+                                }
+                            }
+                        }
+                        if existing == count && first_mismatch.is_none() {
+                            return Ok(count);
+                        }
+                        if let Some(number) = first_mismatch {
+                            return Err(format!(
+                                "سند شماره {} در پایگاه داده با محتوای همین فایل همخوانی ندارد؛ برای جلوگیری از ورود تکراری، ورود انجام نشد.",
+                                db::to_fa_digits(number)
+                            ));
+                        }
+                        if existing > 0 {
+                            return Err(format!(
+                                "بخشی از اسناد این ورود پیش‌تر حذف شده است ({} از {} سند موجود است). برای ورود دوباره، ابتدا همهٔ اسناد باقی‌ماندهٔ این ورود را حذف کنید و سپس فایل را دوباره وارد کنید.",
+                                db::to_fa_digits(existing),
+                                db::to_fa_digits(count)
+                            ));
+                        }
+                        // None of the recorded vouchers exist any more: the
+                        // batch marker is stale because its vouchers and maybe
+                        // their accounts were deleted after the import. Drop
+                        // the marker and import the workbook again below.
+                        tx.execute(
+                            "DELETE FROM import_batches WHERE payload_hash IN (?1, ?2)",
+                            params![&payload_hash, &legacy_payload_hash],
+                        )
+                        .map_err(db::db_error)?;
+                    }
+                } else {
+                    // Batches written before the number list was populated
+                    // cannot be verified; keep the historical replay
+                    // behaviour for them.
+                    return Ok(count);
+                }
             }
             if is_cancelled() {
                 // Dropping the transaction rolls back; nothing is committed.

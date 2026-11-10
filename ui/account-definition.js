@@ -1,7 +1,7 @@
 /* ============================================================
    تعریف حساب‌های کل، معین و تفصیلی — standalone window controller
-   Drill-down (کل ← معین ← تفصیلی ۱) with an always-visible
-   account-details form, modelled on the WebApp popup.
+   Drill-down (کل ← معین ← تفصیلی ۱) with the account-details
+   form shown in its own modal, modelled on the WebApp popup.
    ============================================================ */
 (() => {
   'use strict';
@@ -450,11 +450,19 @@
 
   function showError(message) {
     state.error = String(message ?? '');
+    const editing = isEditing();
     const bar = $('#adError');
     const text = $('#adErrorText');
-    if (!bar || !text) return;
-    text.textContent = state.error;
-    bar.hidden = !state.error;
+    if (bar && text) {
+      text.textContent = state.error;
+      bar.hidden = editing || !state.error;
+    }
+    const formBar = $('#adFormError');
+    const formText = $('#adFormErrorText');
+    if (formBar && formText) {
+      formText.textContent = state.error;
+      formBar.hidden = !editing || !state.error;
+    }
   }
 
   function setFieldError(control, message) {
@@ -496,6 +504,8 @@
     state.error = '';
     const bar = $('#adError');
     if (bar) bar.hidden = true;
+    const formBar = $('#adFormError');
+    if (formBar) formBar.hidden = true;
     clearFieldErrors();
   }
 
@@ -515,57 +525,33 @@
 
   function renderAll() {
     syncSearchControls();
-    renderBreadcrumb();
     renderGrid();
     renderForm();
+    syncFormModal();
     renderToolbar();
   }
 
-  function renderBreadcrumb() {
-    const nav = $('#adBreadcrumb');
-    if (!nav) return;
-    const chain = drillChain();
+  function syncFormModal() {
+    const modal = $('#adFormModal');
+    if (!modal) return;
+
     const editing = isEditing();
+    modal.hidden = !editing;
+    if (!editing) return;
+
+    const title = $('#adFormTitle');
+    if (title) title.textContent = state.mode === 'edit' ? 'اصلاح حساب' : 'تعریف حساب جدید';
+
     const busy = isBusy();
-    const notReady = state.loading || !state.loaded;
+    const saveBtn = $('#adSave');
+    const cancelBtn = $('#adCancel');
+    const closeBtn = $('#adFormClose');
+    if (saveBtn) saveBtn.disabled = busy;
+    if (cancelBtn) cancelBtn.disabled = busy;
+    if (closeBtn) closeBtn.disabled = busy;
 
-    const parts = [];
-    const rootDisabled = editing || busy || notReady || state.drillPath.length === 0;
-    parts.push(
-      `<button type="button" class="ad-btn" data-root`
-      + `${rootDisabled ? ' disabled' : ''}>حساب‌های کل</button>`,
-    );
-
-    chain.forEach((account, index) => {
-      const current = index === chain.length - 1;
-      parts.push('<span class="ad-sep" aria-hidden="true">‹</span>');
-      parts.push(
-        `<button type="button" class="ad-btn" data-goto="${esc(account.code)}"`
-        + `${editing || busy || notReady ? ' disabled' : ''}`
-        + `${current ? ' aria-current="location"' : ''}>`
-        + `${esc(toFaDigits(account.code))} - ${esc(account.name)}</button>`,
-      );
-    });
-
-    if (state.drillPath.length > 0) {
-      parts.push('<span class="ad-sep" aria-hidden="true">‹</span>');
-      parts.push(
-        `<button type="button" class="ad-btn" data-back`
-        + `${editing || busy || notReady ? ' disabled' : ''}>بازگشت به سطح بالاتر</button>`,
-      );
-    }
-
-    parts.push('<span class="ad-breadcrumb-spacer"></span>');
-    parts.push(
-      `<button type="button" class="ad-btn" data-reload`
-      + `${editing || busy || state.loading ? ' disabled' : ''} title="بارگذاری مجدد">`
-      + '<svg class="ico" aria-hidden="true"><use href="#ad-i-refresh" /></svg>'
-      + '<span>بارگذاری مجدد</span></button>',
-    );
-
-    // All fragments above escape their dynamic values.
-    // eslint-disable-next-line no-unsanitized/property -- static navigation fragments with escaped labels
-    nav.innerHTML = parts.join('');
+    const saveLabel = $('#adSaveLabel');
+    if (saveLabel) saveLabel.textContent = state.saving ? 'در حال ذخیره…' : 'ذخیره (F2)';
   }
 
   function renderGrid() {
@@ -801,16 +787,17 @@
     const selected = selectedAccount();
     const parent = currentParent();
 
+    const backBtn = $('#adBack');
     const newBtn = $('#adNew');
     const editBtn = $('#adEdit');
     const deleteBtn = $('#adDelete');
     const deleteAllBtn = $('#adDeleteAll');
     const exportBtn = $('#adExport');
     const importBtn = $('#adImport');
-    const editActions = $('#adEditActions');
-    const saveBtn = $('#adSave');
-    const cancelBtn = $('#adCancel');
 
+    if (backBtn) {
+      backBtn.disabled = editing || busy || !ready || state.drillPath.length === 0;
+    }
     if (newBtn) {
       newBtn.disabled = editing || busy || !ready || state.groups.length === 0
         || currentLevel() > MAX_LEVEL;
@@ -830,12 +817,6 @@
     if (importBtn) {
       importBtn.disabled = editing || busy || !ready || state.groups.length === 0;
     }
-    if (editActions) editActions.hidden = !editing;
-    if (saveBtn) saveBtn.disabled = busy;
-    if (cancelBtn) cancelBtn.disabled = busy;
-
-    const saveLabel = $('#adSaveLabel');
-    if (saveLabel) saveLabel.textContent = state.saving ? 'در حال ذخیره…' : 'ذخیره (F2)';
 
     const deleteAllLabel = $('#adDeleteAllLabel');
     if (deleteAllLabel) {
@@ -848,7 +829,7 @@
     const importLabel = $('#adImportLabel');
     if (importLabel) importLabel.textContent = state.importing ? 'در حال ثبت…' : 'ورودی اکسل';
 
-    // The parent is implicit in the breadcrumb; the hint is only visual.
+    // The current parent is implicit in the drilled level; the hint is visual.
     if (newBtn && parent && currentLevel() > MAX_LEVEL) {
       newBtn.title = 'در ساختار فعلی، بعد از سطح تفصیلی ۱ امکان تعریف سطح دیگری وجود ندارد.';
     } else if (newBtn) {
@@ -1773,6 +1754,11 @@
       return;
     }
 
+    if (isEditing() && event.key === 'Tab') {
+      trapFocus(event, $('#adFormModal'));
+      return;
+    }
+
     if (event.key === 'Escape') {
       event.preventDefault();
       if (searchActive()) {
@@ -1848,30 +1834,6 @@
   /* ── Event binding ───────────────────────────────────────────── */
 
   function bindEvents() {
-    const nav = $('#adBreadcrumb');
-    nav?.addEventListener('click', (event) => {
-      const button = event.target.closest('button');
-      if (!button || button.disabled) return;
-      if (button.hasAttribute('data-root')) {
-        navigateTo([]);
-        return;
-      }
-      if (button.hasAttribute('data-back')) {
-        goBack();
-        return;
-      }
-      if (button.hasAttribute('data-reload')) {
-        void loadData();
-        return;
-      }
-      if (button.hasAttribute('data-goto')) {
-        const code = button.dataset.goto;
-        const chain = drillChain();
-        const index = chain.findIndex((account) => account.code === code);
-        if (index >= 0) navigateTo(chain.slice(0, index + 1).map((account) => account.code));
-      }
-    });
-
     const gridBody = $('#adGridBody');
     gridBody?.addEventListener('click', (event) => {
       const row = event.target.closest('.ad-row');
@@ -1880,7 +1842,7 @@
       if (!account) return;
 
       // In search mode a single click resolves the result to its place in the
-      // tree, so the breadcrumb and the visible list stay consistent.
+      // tree, so the visible list stays consistent with the drilled level.
       if (searchActive()) {
         activateSearchResult(account);
         return;
@@ -1954,12 +1916,17 @@
       renderForm();
     });
 
+    $('#adBack')?.addEventListener('click', goBack);
     $('#adNew')?.addEventListener('click', startNew);
     $('#adEdit')?.addEventListener('click', startEdit);
     $('#adDelete')?.addEventListener('click', deleteSelected);
     $('#adDeleteAll')?.addEventListener('click', deleteAll);
     $('#adSave')?.addEventListener('click', () => { void save(); });
     $('#adCancel')?.addEventListener('click', requestCancelEdit);
+    $('#adFormClose')?.addEventListener('click', requestCancelEdit);
+    $('#adFormModal')?.addEventListener('click', (event) => {
+      if (event.target === $('#adFormModal')) requestCancelEdit();
+    });
     $('#adExport')?.addEventListener('click', () => { void exportExcel(); });
     $('#adImport')?.addEventListener('click', importExcel);
     $('#adErrorClose')?.addEventListener('click', clearError);

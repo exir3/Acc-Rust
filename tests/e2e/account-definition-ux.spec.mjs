@@ -5,7 +5,7 @@ test('cancelling an edited account asks before discarding the changes', async ({
   await openAccountDefinitionPage(page);
 
   await page.locator('#adNew').click();
-  await expect(page.locator('#adEditActions')).toBeVisible();
+  await expect(page.locator('#adFormModal')).toBeVisible();
   await page.locator('#adName').fill('حساب لغو‌شده');
 
   // «خیر» keeps the form and the typed name.
@@ -15,7 +15,7 @@ test('cancelling an edited account asks before discarding the changes', async ({
   await expect(page.locator('#adConfirmTitle')).toHaveText('لغو ویرایش');
   await page.locator('#adConfirmNo').click();
   await expect(confirm).toBeHidden();
-  await expect(page.locator('#adEditActions')).toBeVisible();
+  await expect(page.locator('#adFormModal')).toBeVisible();
   await expect(page.locator('#adName')).toHaveValue('حساب لغو‌شده');
 
   // Escape follows the same path, and confirming returns to view mode.
@@ -23,7 +23,7 @@ test('cancelling an edited account asks before discarding the changes', async ({
   await expect(confirm).toBeVisible();
   await page.locator('#adConfirmYes').click();
   await expect(confirm).toBeHidden();
-  await expect(page.locator('#adEditActions')).toBeHidden();
+  await expect(page.locator('#adFormModal')).toBeHidden();
   await expect(page.locator('#adName')).toHaveValue('کل دارای معین');
 
   const accountCount = await page.evaluate(() => window.__E2E__.backend.accounts.length);
@@ -46,20 +46,18 @@ test('cross-level search opens a result in its tree position and restore returns
   // Activating a result moves the drill path to the account's parent level.
   await resultRow.click();
   await expect(search).toHaveValue('');
-  await expect(page.locator('#adBreadcrumb [data-goto="100001"]'))
-    .toHaveAttribute('aria-current', 'location');
-  await expect(page.locator('#adBreadcrumb')).toContainText('کل دارای معین');
-  await expect(page.locator('#adBreadcrumb')).toContainText('معین دارای تفصیلی');
+  await expect(page.locator('#adGridBody .ad-row')).toHaveCount(2);
   await expect(page.locator('#adGridBody .ad-row', { hasText: 'تفصیلی یک' }))
     .toHaveClass(/selected/);
+  await expect(page.locator('#adGridBody .ad-row', { hasText: 'کل دارای معین' }))
+    .toHaveCount(0);
 
   // A new search starts from this level; clearing it restores that level.
   await search.fill('بدون معین');
   await expect(page.locator('#adGridBody .ad-row[data-id="2"]')).toBeVisible();
   await page.locator('#adSearchClear').click();
   await expect(search).toHaveValue('');
-  await expect(page.locator('#adBreadcrumb [data-goto="100001"]'))
-    .toHaveAttribute('aria-current', 'location');
+  await expect(page.locator('#adGridBody .ad-row')).toHaveCount(2);
   await expect(page.locator('#adGridBody .ad-row', { hasText: 'تفصیلی یک' }))
     .toHaveClass(/selected/);
 
@@ -68,8 +66,9 @@ test('cross-level search opens a result in its tree position and restore returns
   await expect(page.locator('#adGridBody .ad-row')).toHaveCount(7);
   await search.press('Escape');
   await expect(search).toHaveValue('');
-  await expect(page.locator('#adBreadcrumb [data-goto="100001"]'))
-    .toHaveAttribute('aria-current', 'location');
+  await expect(page.locator('#adGridBody .ad-row')).toHaveCount(2);
+  await expect(page.locator('#adGridBody .ad-row', { hasText: 'تفصیلی یک' }))
+    .toHaveClass(/selected/);
 });
 
 test('saving an account marks and focuses the invalid field', async ({ page }) => {
@@ -85,7 +84,8 @@ test('saving an account marks and focuses the invalid field', async ({ page }) =
   await expect(page.locator('.ad-field-name .ad-field-error'))
     .toHaveText('نام حساب الزامی است.');
   await expect(page.locator('#adCode')).not.toHaveClass(/is-invalid/);
-  await expect(page.locator('#adErrorText')).toContainText('کد و نام حساب');
+  await expect(page.locator('#adFormErrorText')).toContainText('کد و نام حساب');
+  await expect(page.locator('#adError')).toBeHidden();
 
   // Typing in the field clears its own error, and the save then succeeds.
   await name.fill('کل اعتبارسنجی');

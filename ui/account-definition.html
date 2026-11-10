@@ -37,28 +37,14 @@
       <circle cx="8" cy="5.2" r=".9" fill="currentColor" />
       <path d="M8 7.4v4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
     </symbol>
-    <symbol id="ad-i-refresh" viewBox="0 0 16 16">
-      <path d="M13.1 8a5.1 5.1 0 1 1-1.5-3.6" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" />
-      <path d="M13.4 2.7v3.1h-3.1" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-    </symbol>
-    <symbol id="ad-i-chevron" viewBox="0 0 16 16">
-      <path d="M10 3.6 5.6 8 10 12.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+    <symbol id="ad-i-back" viewBox="0 0 16 16">
+      <path d="M6 3.6 10.4 8 6 12.4" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
     </symbol>
   </svg>
 
   <div class="ad-app" id="adApp">
     <main class="ad-shell" aria-label="تعریف حساب‌های کل، معین و تفصیلی">
-      <!-- ── Error bar (desktop ErrorProvider style) ───────────────── -->
-      <div class="ad-error" id="adError" role="alert" aria-live="assertive" hidden>
-        <svg class="ico ad-error-ico" aria-hidden="true"><use href="#ad-i-alert" /></svg>
-        <span class="ad-error-text" id="adErrorText"></span>
-        <button type="button" class="ad-error-close" id="adErrorClose" title="بستن پیام" aria-label="بستن پیام خطا">✕</button>
-      </div>
-
-      <!-- ── Drill-down breadcrumb ─────────────────────────────────── -->
-      <nav class="ad-breadcrumb" id="adBreadcrumb" aria-label="مسیر حساب‌ها"></nav>
-
-      <!-- ── Direct account search ─────────────────────────────────── -->
+      <!-- ── Direct account search (first element under the title bar) ─ -->
       <div class="ad-searchbar" role="search">
         <label class="ad-search-label" for="adSearch">جستجوی حساب:</label>
         <input id="adSearch" class="ad-input ad-search-input" type="search"
@@ -66,6 +52,13 @@
                aria-label="جستجوی حساب در همه سطوح" />
         <button type="button" class="ad-btn" id="adSearchClear" disabled>پاک کردن</button>
         <span class="ad-search-status" id="adSearchStatus" role="status" aria-live="polite"></span>
+      </div>
+
+      <!-- ── Error bar (desktop ErrorProvider style) ───────────────── -->
+      <div class="ad-error" id="adError" role="alert" aria-live="assertive" hidden>
+        <svg class="ico ad-error-ico" aria-hidden="true"><use href="#ad-i-alert" /></svg>
+        <span class="ad-error-text" id="adErrorText"></span>
+        <button type="button" class="ad-error-close" id="adErrorClose" title="بستن پیام" aria-label="بستن پیام خطا">✕</button>
       </div>
 
       <!-- ── Accounts grid ─────────────────────────────────────────── -->
@@ -80,9 +73,56 @@
         </div>
         <div class="ad-grid-body" id="adGridBody" role="rowgroup" aria-live="polite"></div>
       </div>
+    </main>
 
-      <!-- ── Account details ───────────────────────────────────────── -->
-      <fieldset class="ad-groupbox ad-groupbox-form">
+    <!-- ── Dialog button panel (desktop style) ──────────────────────── -->
+    <footer class="ad-toolbar">
+      <div class="ad-toolbar-group">
+        <button type="button" class="ad-btn" id="adBack" title="بازگشت به سطح بالاتر (Backspace)" disabled>
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-back" /></svg>
+          <span>سطح بالاتر</span>
+        </button>
+        <button type="button" class="ad-btn" id="adNew" title="تعریف حساب جدید (در سطح جاری)">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-plus" /></svg>
+          <span>جدید</span>
+        </button>
+        <button type="button" class="ad-btn" id="adEdit" title="اصلاح حساب انتخاب‌شده (F3)">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-edit" /></svg>
+          <span>اصلاح</span>
+        </button>
+        <button type="button" class="ad-btn" id="adDelete" title="حذف حساب انتخاب‌شده (Delete)">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-trash" /></svg>
+          <span>حذف</span>
+        </button>
+        <button type="button" class="ad-btn" id="adDeleteAll" title="حذف همه حساب‌ها">
+          <svg class="ico" aria-hidden="true"><use href="#ad-i-trash" /></svg>
+          <span id="adDeleteAllLabel">حذف همه</span>
+        </button>
+      </div>
+
+      <div class="ad-toolbar-group">
+        <button type="button" class="ad-btn" id="adExport" title="خروجی اکسل">
+          <span id="adExportLabel">خروجی اکسل</span>
+        </button>
+        <button type="button" class="ad-btn" id="adImport" title="ورودی اکسل">
+          <span id="adImportLabel">ورودی اکسل</span>
+        </button>
+      </div>
+
+      <span class="ad-spacer"></span>
+    </footer>
+  </div>
+
+  <!-- ── Account form dialog ──────────────────────────────────────── -->
+  <div class="ad-modal" id="adFormModal" hidden>
+    <div class="ad-formbox" id="adFormBox" role="dialog" aria-modal="true"
+         aria-labelledby="adFormTitle">
+      <div class="ad-formbox-head">
+        <span class="ad-formbox-title" id="adFormTitle">تعریف حساب جدید</span>
+        <button type="button" class="ad-formbox-close" id="adFormClose"
+                title="بستن فرم" aria-label="بستن فرم">✕</button>
+      </div>
+      <div class="ad-formbox-body">
         <form id="adForm" class="ad-form" novalidate autocomplete="off">
           <div class="ad-form-row">
             <div class="ad-field ad-field-code">
@@ -149,43 +189,13 @@
             </div>
             <div class="ad-effective" id="adEffective" hidden></div>
           </div>
+          <div class="ad-error ad-form-error" id="adFormError" role="alert" aria-live="assertive" hidden>
+            <svg class="ico ad-error-ico" aria-hidden="true"><use href="#ad-i-alert" /></svg>
+            <span class="ad-error-text" id="adFormErrorText"></span>
+          </div>
         </form>
-      </fieldset>
-    </main>
-
-    <!-- ── Dialog button panel (desktop style) ──────────────────────── -->
-    <footer class="ad-toolbar">
-      <div class="ad-toolbar-group">
-        <button type="button" class="ad-btn" id="adNew" title="تعریف حساب جدید (در سطح جاری)">
-          <svg class="ico" aria-hidden="true"><use href="#ad-i-plus" /></svg>
-          <span>جدید</span>
-        </button>
-        <button type="button" class="ad-btn" id="adEdit" title="اصلاح حساب انتخاب‌شده (F3)">
-          <svg class="ico" aria-hidden="true"><use href="#ad-i-edit" /></svg>
-          <span>اصلاح</span>
-        </button>
-        <button type="button" class="ad-btn" id="adDelete" title="حذف حساب انتخاب‌شده (Delete)">
-          <svg class="ico" aria-hidden="true"><use href="#ad-i-trash" /></svg>
-          <span>حذف</span>
-        </button>
-        <button type="button" class="ad-btn" id="adDeleteAll" title="حذف همه حساب‌ها">
-          <svg class="ico" aria-hidden="true"><use href="#ad-i-trash" /></svg>
-          <span id="adDeleteAllLabel">حذف همه</span>
-        </button>
       </div>
-
-      <div class="ad-toolbar-group">
-        <button type="button" class="ad-btn" id="adExport" title="خروجی اکسل">
-          <span id="adExportLabel">خروجی اکسل</span>
-        </button>
-        <button type="button" class="ad-btn" id="adImport" title="ورودی اکسل">
-          <span id="adImportLabel">ورودی اکسل</span>
-        </button>
-      </div>
-
-      <span class="ad-spacer"></span>
-
-      <div class="ad-toolbar-group" id="adEditActions" hidden>
+      <footer class="ad-formbox-footer">
         <button type="button" class="ad-btn ad-btn-save" id="adSave" title="ذخیره تغییرات (F2)">
           <svg class="ico" aria-hidden="true"><use href="#ad-i-save" /></svg>
           <span id="adSaveLabel">ذخیره (F2)</span>
@@ -194,8 +204,8 @@
           <svg class="ico" aria-hidden="true"><use href="#ad-i-close" /></svg>
           <span>انصراف</span>
         </button>
-      </div>
-    </footer>
+      </footer>
+    </div>
   </div>
 
   <!-- ── Confirmation dialog (inside this native window) ───────────── -->
