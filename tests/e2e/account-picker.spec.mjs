@@ -27,7 +27,7 @@ test('F2 drills into children and the back button returns to the root level', as
   await expect(pickerRows(page)).toHaveCount(2);
 });
 
-test('double-click walks کل ← معین ← تفصیلی and fills both account columns', async ({ page }) => {
+test('double-click walks کل ← معین ← تفصیلی and puts the detail code in the account column', async ({ page }) => {
   await openVoucherPage(page);
   const row = page.locator('#voucherRows tr').first();
   await row.locator('.vf-code-input').click();
@@ -45,9 +45,10 @@ test('double-click walks کل ← معین ← تفصیلی and fills both accou
   await pickerRow(page, 'تفصیلی یک').dblclick();
   await expect(page.locator('#accountPickerModal')).toBeHidden();
 
-  // Choosing a detail from the base picker must keep the pair valid.
-  await expect(row.locator('.vf-code-input')).toHaveValue('100001');
-  await expect(row.locator('.vf-detail1-input')).toHaveValue('100001001');
+  // The picked detail code fills the account column; the تفصیلی ۲ column
+  // stays at zero.
+  await expect(row.locator('.vf-code-input')).toHaveValue('100001001');
+  await expect(row.locator('.vf-detail2')).toHaveText('0');
 });
 
 test('F6 shows a flat کل/معین list and back leaves that mode first', async ({ page }) => {
@@ -80,5 +81,5 @@ test('search is independent of the drill level and Enter selects the match', asy
   await page.keyboard.press('Enter');
   await expect(page.locator('#accountPickerModal')).toBeHidden();
   await expect(row.locator('.vf-code-input')).toHaveValue('200001');
-  await expect(row.locator('.vf-detail1-input')).toHaveValue('');
+  await expect(row.locator('.vf-detail2')).toHaveText('0');
 });

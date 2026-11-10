@@ -36,20 +36,36 @@ function voucherAlreadyUsesAccount(code) {
   const target = digitsOnly(code);
   return (state.voucher?.lines || []).some(
     (savedLine) => digitsOnly(savedLine.accountCode) === target
+      || digitsOnly(savedLine.detail1Code || '') === target
   );
+}
+
+// The grid's «کد حساب» column shows the full code the operator picked: a
+// کل/معین code or a تفصیلی code. A تفصیلی is never posted directly; it is
+// persisted as its parent معین plus detail1Code.
+function accountPostingPair(account) {
+  if (!account) return null;
+  if (Number(account.level) === 3) {
+    const parent = accountForCode(account.parentCode);
+    if (!parent || Number(parent.level) !== 2) return null;
+    return { base: parent, detail: account };
+  }
+  return { base: account, detail: null };
 }
 
 function accountAllowedForNewLine(account, row = null) {
   if (!account) return false;
+  const pair = accountPostingPair(account);
+  if (!pair) return false;
   // Only the exact saved row linked to this account may use an inactive or
-  // legacy (level-4) account. A new row, or a row whose account changed, must
-  // pass the normal active/postable checks.
+  // legacy account. A new row, or a row whose account changed, must pass the
+  // normal active/postable checks.
   const savedRow = !!row && !!row.dataset.lineId
     && row.dataset.savedAccount === digitsOnly(account.code);
   // An inactive ancestor makes every descendant unusable for a new line,
   // even when the leaf itself still says it is active.
   const activeOk = savedRow || accountChainActive(account);
-  const postableOk = account.isPostable || (Number(account.level) > 3 && savedRow);
+  const postableOk = savedRow || pair.base.isPostable;
   return activeOk && postableOk;
 }
 

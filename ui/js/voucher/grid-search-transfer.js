@@ -13,7 +13,6 @@ function applyVoucherGridSearch() {
     const account = accountForCode(code);
     const haystack = normalizeSearch([
       code, account ? account.name : '',
-      row.querySelector('.vf-detail1-input')?.value || '',
       row.querySelector('.vf-desc-input')?.value || '',
       row.querySelector('.vf-debit-input')?.value || '',
       row.querySelector('.vf-credit-input')?.value || '',
@@ -48,12 +47,11 @@ async function copyVoucherRow() {
   const row = focusedVoucherRow();
   if (!row || !rowHasValue(row)) { toast('ابتدا یک ردیف دارای اطلاعات را انتخاب کنید.', 'info'); return; }
   const code = digitsOnly(row.querySelector('.vf-code-input')?.value || '');
-  const detail1 = digitsOnly(row.querySelector('.vf-detail1-input')?.value || '');
   const description = row.querySelector('.vf-desc-input')?.value || '';
   const debit = digitsOnly(row.querySelector('.vf-debit-input')?.value || '');
   const credit = digitsOnly(row.querySelector('.vf-credit-input')?.value || '');
   const rowNumber = gridRows().filter(rowHasValue).indexOf(row) + 1;
-  const line = [rowNumber, code, detail1, description, debit, credit].join('\t');
+  const line = [rowNumber, code, description, debit, credit].join('\t');
   try { await writeClipboardText(line); state.activeRow = row; toast('ردیف جاری در کلیپ‌بورد کپی شد.', 'ok'); }
   catch (error) { toast(errorText(error), 'error'); }
 }
@@ -145,8 +143,9 @@ async function pasteVoucherRows() {
       else tbody.insertAdjacentHTML('afterbegin', voucherRowTemplate());
       const row = anchor ? anchor.nextElementSibling : tbody.firstElementChild;
       if (!row) break;
-      row.querySelector('.vf-code-input').value = line.accountCode;
-      row.querySelector('.vf-detail1-input').value = line.detail1Code || '';
+      // A pasted detail code takes the single account column; saving splits it
+      // back into its parent معین and detail pair.
+      row.querySelector('.vf-code-input').value = line.detail1Code || line.accountCode;
       row.querySelector('.vf-desc-input').value = line.description;
       row.querySelector('.vf-debit-input').value = line.debit ? formatAmount(line.debit) : '';
       row.querySelector('.vf-credit-input').value = line.credit ? formatAmount(line.credit) : '';

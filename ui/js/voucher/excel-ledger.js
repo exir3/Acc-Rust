@@ -76,7 +76,10 @@ async function openAccountLedger() {
     return;
   }
 
-  const account = accountForCode(code);
+  const selected = accountForCode(code);
+  const account = selected && Number(selected.level) === 3
+    ? accountForCode(selected.parentCode)
+    : selected;
   if (!account) {
     toast(`حساب با کد ${vfFa(code)} یافت نشد.`, 'error');
     return;

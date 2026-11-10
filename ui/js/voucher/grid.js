@@ -6,8 +6,8 @@ function voucherRowTemplate() {
   return `
     <tr>
       <td class="vf-rowno"></td>
-      <td><input class="vf-code-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="کد حساب پایه" title="برای انتخاب حساب Space یا F4 را بزنید" /></td>
-      <td class="vf-detail1"><input class="vf-detail1-input" type="text" dir="rtl" readonly autocomplete="off" aria-label="تفصیلی ۱" title="برای انتخاب تفصیلی Space یا F4 را بزنید" /></td>
+      <td><input class="vf-code-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="کد حساب" title="برای انتخاب حساب Space یا F4 را بزنید" /></td>
+      <td class="vf-detail2" aria-label="تفصیلی ۲">0</td>
       <td><input class="vf-desc-input" type="text" dir="rtl" maxlength="${MAX_LINE_DESCRIPTION}" autocomplete="off" aria-label="شرح" /></td>
       <td><input class="vf-amount-input vf-debit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بدهکار" /></td>
       <td><input class="vf-amount-input vf-credit-input" type="text" dir="ltr" inputmode="numeric" autocomplete="off" aria-label="بستانکار" /></td>
@@ -67,7 +67,7 @@ function syncVoucherRowCount() {
   const tbody = $('#voucherRows');
   if (!wrap || !tbody) return;
 
-  const headHeight = wrap.querySelector('thead')?.offsetHeight || 37;
+  const headHeight = wrap.querySelector('thead')?.offsetHeight || 35;
   const rowHeight = tbody.firstElementChild?.offsetHeight || 37;
   const visibleCount = Math.ceil((wrap.clientHeight - headHeight) / rowHeight);
 
@@ -150,42 +150,24 @@ function updateRowAccount(row, final = false) {
   const input = row.querySelector('.vf-code-input');
   const code = digitsOnly(input?.value || '');
   const account = accountForCode(code);
-  const detailInput = row.querySelector('.vf-detail1-input');
-  let detailCode = digitsOnly(detailInput?.value || '');
-  let detail = detailCode ? accountForCode(detailCode) : null;
 
-  // A saved row keeps its stable id only while the complete base/detail pair
-  // remains unchanged. A changed pair is treated as a new posting.
-  if (detailCode && (!detail || Number(detail.level) !== 3
-      || digitsOnly(detail.parentCode) !== code || Number(account?.level) !== 2)) {
-    if (detailInput) detailInput.value = '';
-    detailCode = '';
-    detail = null;
-  }
-  if (row.dataset.lineId && (row.dataset.savedAccount !== code
-      || digitsOnly(row.dataset.savedDetail1 || '') !== detailCode)) {
+  // A saved row keeps its stable id only while the code shown for it stays the
+  // same. The column shows the full picked code, so a saved detail row keeps
+  // its id while its detail code remains in the cell.
+  if (row.dataset.lineId && row.dataset.savedAccount !== code) {
     delete row.dataset.lineId;
     delete row.dataset.savedAccount;
     delete row.dataset.savedDetail1;
   }
 
   if (input) {
+    const allowed = accountAllowedForNewLine(account, row);
     input.title = account
-      ? `${account.code} — ${account.name}${accountAllowedForNewLine(account, row) ? '' : !accountChainActive(account) ? ' (غیرفعال)' : ' (قابل ثبت نیست)'}`
-      : 'برای انتخاب حساب پایه Space یا F4 را بزنید';
-    if (accountAllowedForNewLine(account, row)) input.classList.remove('is-invalid');
+      ? `${account.code} — ${account.name}${allowed ? '' : !accountChainActive(account) ? ' (غیرفعال)' : ' (قابل ثبت نیست)'}`
+      : 'برای انتخاب حساب Space یا F4 را بزنید';
+    if (allowed) input.classList.remove('is-invalid');
     else if (!code) input.classList.remove('is-invalid');
     else if (final) input.classList.add('is-invalid');
-  }
-  if (detailInput) {
-    const validDetail = !!detail && (accountChainActive(detail) ||
-      (row.dataset.lineId && row.dataset.savedDetail1 === detailCode));
-    detailInput.title = detail
-      ? `${detail.code} — ${detail.name}${validDetail ? '' : ' (غیرفعال یا نامعتبر)'}`
-      : account && Number(account.level) === 2
-        ? 'برای انتخاب تفصیلی سطح ۳ از Space یا F4 استفاده کنید؛ انتخاب تفصیلی اختیاری است.'
-        : 'تفصیلی فقط برای حساب معین قابل انتخاب است.';
-    detailInput.classList.toggle('is-invalid', !!detailCode && !validDetail);
   }
   return account;
 }
@@ -203,23 +185,21 @@ function updateLedger(row) {
   if (!code) return;
   const account = accountForCode(code);
   if (!account) {
-    values[0].textContent = vfFa(code);
-    values[0].title = vfFa(code);
+    values[0].textContent = '—';
     return;
   }
 
   const hierarchy = accountHierarchy(account);
+  // The footer shows account titles only; the code stays in the grid column.
   const renderLevel = (levels) => hierarchy
     .filter((item) => levels.includes(Number(item.level)))
-    .map((item) => `${vfFa(item.code)} — ${item.name}`)
+    .map((item) => item.name)
     .join(' / ') || '—';
-  const selectedDetailCode = digitsOnly(row.querySelector('.vf-detail1-input')?.value || '');
-  const selectedDetail = selectedDetailCode ? accountForCode(selectedDetailCode) : null;
-  const detailLabel = selectedDetail ? `${vfFa(selectedDetail.code)} — ${selectedDetail.name}` : '—';
+  const detail = Number(account.level) === 3 ? account : null;
   // Row 1 mirrors the reference «کل / معین» field (class and subsidiary);
-  // row 2 is the level-3 detail. The third row is decorative in the
+  // row 2 is the selected تفصیلی. The third row is decorative in the
   // reference and stays empty here as well.
-  const headings = [renderLevel([1, 2]), detailLabel];
+  const headings = [renderLevel([1, 2]), detail ? detail.name : '—'];
   values.forEach((el, index) => {
     const value = headings[index] || '';
     el.textContent = value;
@@ -234,7 +214,7 @@ function refreshFormState() {
   const yearBlocked = !locked && !state.voucher && !!activeYear && activeYear.status !== 'open';
   $('.voucher-form')?.classList.toggle('is-locked', locked);
   gridRows().forEach((row) => {
-    row.querySelectorAll('.vf-code-input, .vf-detail1-input, .vf-desc-input, .vf-debit-input, .vf-credit-input').forEach((input) => {
+    row.querySelectorAll('.vf-code-input, .vf-desc-input, .vf-debit-input, .vf-credit-input').forEach((input) => {
       input.readOnly = locked;
       input.setAttribute('aria-readonly', locked ? 'true' : 'false');
     });

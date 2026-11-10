@@ -48,20 +48,18 @@ function repeatRow() {
     return;
   }
 
-  // Mirror the reference «تکرار سطر بالا»: copy account, detail and
-  // description from the row above into a new row placed above the active
-  // row. Amounts are deliberately not copied so a repeat never unbalances
-  // the voucher on its own.
+  // Mirror the reference «تکرار سطر بالا»: copy account and description from
+  // the row above into a new row placed above the active row. Amounts are
+  // deliberately not copied so a repeat never unbalances the voucher on its
+  // own.
   const source = {
     code: above.querySelector('.vf-code-input').value,
-    detail1: above.querySelector('.vf-detail1-input').value,
     description: above.querySelector('.vf-desc-input').value,
   };
 
   row.insertAdjacentHTML('beforebegin', voucherRowTemplate());
   const copy = row.previousElementSibling;
   copy.querySelector('.vf-code-input').value = source.code;
-  copy.querySelector('.vf-detail1-input').value = source.detail1;
   copy.querySelector('.vf-desc-input').value = source.description;
   updateRowAccount(copy);
   markDirty();

@@ -102,8 +102,10 @@ test('creates, saves, reopens and deletes a temporary voucher', async ({ page })
   await expect(page.locator('#vfDocStatusText')).toContainText('سند شماره ۱ ذخیره‌شده — موقت');
 
   const first = page.locator('#voucherRows tr').first();
-  await expect(first.locator('.vf-code-input')).toHaveValue('100001');
-  await expect(first.locator('.vf-detail1-input')).toHaveValue('100001001');
+  // A saved detail row reopens with its detail code in the single account
+  // column, while «تفصیلی ۲» shows zero.
+  await expect(first.locator('.vf-code-input')).toHaveValue('100001001');
+  await expect(first.locator('.vf-detail2')).toHaveText('0');
   await expect(first.locator('.vf-debit-input')).toHaveValue('1,000');
   await expect(page.locator('#vfTotalDebit')).toHaveText('۱,۰۰۰');
 
@@ -134,7 +136,6 @@ test('a permanent voucher becomes read-only and cannot be deleted', async ({ pag
 
   const first = page.locator('#voucherRows tr').first();
   await expect(first.locator('.vf-code-input')).toHaveAttribute('readonly', '');
-  await expect(first.locator('.vf-detail1-input')).toHaveAttribute('readonly', '');
   await expect(first.locator('.vf-debit-input')).toHaveAttribute('readonly', '');
   await expect(page.locator('#vfDocDate')).toHaveAttribute('readonly', '');
   await expect(page.locator('[data-action="delete-voucher"]')).toBeDisabled();

@@ -13,6 +13,7 @@ export default {
   'accountPathTo': 'writable',
   'accountPickerCore': 'writable',
   'accountPickerOpen': 'writable',
+  'accountPostingPair': 'writable',
   'ACTIVE_FISCAL_YEAR_KEY': 'writable',
   'addRow': 'writable',
   'amountBigInt': 'writable',

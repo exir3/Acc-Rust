@@ -19,9 +19,7 @@ function filterAccountPicker(term) {
   const row = apTarget?.closest?.('tr') || null;
   const baseCode = digitsOnly(row?.querySelector('.vf-code-input')?.value || '');
   const savedException = (account) => accountChainActive(account) ||
-    (apMode === 'detail'
-      ? digitsOnly(row?.dataset.savedDetail1 || '') === digitsOnly(account.code)
-      : voucherAlreadyUsesAccount(account.code));
+    voucherAlreadyUsesAccount(account.code);
   const options = {
     mode: apMode,
     baseCode,
@@ -108,7 +106,7 @@ function renderAccountPickerRows(resetIndex = true) {
     const row = document.createElement('div');
     row.className = 'ap-row';
     if (i === apIndex) row.classList.add('selected');
-    if (apMode !== 'detail' && !account.isPostable) row.classList.add('not-postable');
+    if (Number(account.level) < 3 && !account.isPostable) row.classList.add('not-postable');
     const effectivelyActive = accountChainActive(account);
     if (!effectivelyActive) row.classList.add('inactive');
     row.setAttribute('role', 'row');
@@ -117,11 +115,9 @@ function renderAccountPickerRows(resetIndex = true) {
     row.setAttribute('aria-selected', i === apIndex ? 'true' : 'false');
     row.title = !effectivelyActive
       ? 'این حساب یا یکی از والدین آن غیرفعال است و فقط برای ردیف‌های ذخیره‌شدهٔ همین سند قابل استفاده است'
-      : apMode === 'detail'
+      : account.isPostable || Number(account.level) === 3
         ? `${account.code} — ${account.name}`
-        : account.isPostable
-          ? `${account.code} — ${account.name}`
-          : 'این حساب پایه قابل ثبت نیست؛ یک حساب کل یا معین فعال انتخاب کنید';
+        : 'این حساب پایه قابل ثبت نیست؛ یک حساب کل یا معین فعال انتخاب کنید';
 
     row.append(
       apCell(vfFa(i + 1), 'rownum center'),
@@ -180,19 +176,14 @@ function openAccountPicker(input) {
   }
 
   apTarget = input || null;
-  apMode = input?.classList.contains('vf-detail1-input') ? 'detail' : 'base';
+  apMode = 'base';
   const search = $('#accountPickerSearch');
-  const row = input?.closest?.('tr');
   const code = input ? digitsOnly(input.value) : '';
-  if (apMode === 'detail' && !digitsOnly(row?.querySelector('.vf-code-input')?.value || '')) {
-    toast('ابتدا حساب پایه (کل یا معین) را انتخاب کنید.', 'info');
-    return;
-  }
 
   // Open on the level that contains the current account so the list starts
   // as its siblings, not as a flat list of every account.
   const current = code ? accountForCode(code) : null;
-  state.accountPickerPath = apMode === 'base' && current
+  state.accountPickerPath = current
     ? accountPickerCore.ancestors(current, state.accounts)
     : [];
   state.accountPickerShowAll = false;
@@ -255,59 +246,36 @@ function chooseAccountPickerRow() {
   }
   const account = apVisible[apIndex];
   if (!account || !apTarget) return;
-  const target = apTarget;
-  const row = target.closest('tr');
-  const baseInput = row?.querySelector('.vf-code-input');
-  const baseCode = digitsOnly(baseInput?.value || '');
-  let selectedCode = account.code;
+  const row = apTarget.closest('tr');
+  const codeInput = row?.querySelector('.vf-code-input');
+  if (!codeInput) {
+    toast('ردیف سند برای انتخاب حساب آماده نیست.', 'error');
+    return;
+  }
 
-  if (apMode === 'detail') {
-    if (Number(account.level) !== 3 || digitsOnly(account.parentCode) !== baseCode) {
-      toast('تفصیلی انتخاب‌شده فرزند مستقیم حساب معین این ردیف نیست.', 'error');
-      return;
-    }
-    const savedSameDetail = !!row?.dataset.lineId
-      && digitsOnly(row.dataset.savedDetail1 || '') === digitsOnly(account.code);
-    if (!accountChainActive(account) && !savedSameDetail) {
-      toast('حساب تفصیلی یا یکی از والدین آن غیرفعال است و برای ردیف جدید قابل استفاده نیست.', 'error');
-      return;
-    }
-  } else if (Number(account.level) === 3) {
-    // Drilling into a معین shows its details; choosing one fills both the
-    // base and detail columns so the saved row keeps a valid pair.
+  const level = Number(account.level);
+  const savedSameAccount = !!row?.dataset.lineId
+    && digitsOnly(row.dataset.savedAccount || '') === digitsOnly(account.code);
+
+  if (level === 3) {
     const parent = accountForCode(account.parentCode);
-    const detailInput = row?.querySelector('.vf-detail1-input');
-    const savedSameDetail = !!row?.dataset.lineId
-      && digitsOnly(row.dataset.savedDetail1 || '') === digitsOnly(account.code);
     if (!parent || Number(parent.level) !== 2 || !accountAllowedForNewLine(parent, row)) {
       toast('حساب معین والد این تفصیلی برای ثبت سند معتبر نیست.', 'error');
       return;
     }
-    if (!accountChainActive(account) && !savedSameDetail) {
+    if (!accountChainActive(account) && !savedSameAccount) {
       toast('حساب تفصیلی یا یکی از والدین آن غیرفعال است و برای ردیف جدید قابل استفاده نیست.', 'error');
       return;
     }
-    if (!baseInput || !detailInput) {
-      toast('ردیف سند برای انتخاب تفصیلی آماده نیست.', 'error');
-      return;
-    }
-    baseInput.value = parent.code;
-    detailInput.value = account.code;
-    selectedCode = parent.code;
-  } else {
-    if (![1, 2].includes(Number(account.level)) || !accountAllowedForNewLine(account, row)) {
-      toast('برای ثبت سند، یک حساب کل یا معین فعال انتخاب کنید.', 'error');
-      return;
-    }
-    if (baseInput && digitsOnly(baseInput.value) !== digitsOnly(account.code)) {
-      baseInput.value = account.code;
-      const detailInput = row?.querySelector('.vf-detail1-input');
-      if (detailInput) detailInput.value = '';
-    }
+  } else if (![1, 2].includes(level) || !accountAllowedForNewLine(account, row)) {
+    toast('برای ثبت سند، یک حساب کل یا معین فعال انتخاب کنید.', 'error');
+    return;
   }
 
-  target.value = selectedCode;
-  target.dispatchEvent(new Event('input', { bubbles: true }));
+  // The account column shows the full picked code. When a تفصیلی is chosen,
+  // collectDraft persists its parent معین plus the detail code.
+  codeInput.value = account.code;
+  codeInput.dispatchEvent(new Event('input', { bubbles: true }));
   updateRowAccount(row, true);
   updateLedger(row);
   closeAccountPicker(true);

@@ -45,11 +45,13 @@ function fillGrid(lines) {
       // legacy) account.
       if (line.id != null) {
         row.dataset.lineId = String(line.id);
-        row.dataset.savedAccount = digitsOnly(line.accountCode || '');
+        // The grid shows one full code per row. A saved detail line shows its
+        // level-3 code in the account column and keeps the id while that code
+        // stays unchanged.
+        row.dataset.savedAccount = digitsOnly(line.detail1Code || line.accountCode || '');
         row.dataset.savedDetail1 = digitsOnly(line.detail1Code || '');
       }
-      row.querySelector('.vf-code-input').value = line.accountCode || '';
-      row.querySelector('.vf-detail1-input').value = line.detail1Code || '';
+      row.querySelector('.vf-code-input').value = line.detail1Code || line.accountCode || '';
       row.querySelector('.vf-desc-input').value = line.description || '';
       if (Number(line.debit) > 0) {
         row.querySelector('.vf-debit-input').value = formatAmount(line.debit);
@@ -147,8 +149,12 @@ function loadVoucher(voucher) {
 function collectDraft() {
   const lines = [];
   for (const row of gridRows()) {
-    const accountCode = digitsOnly(row.querySelector('.vf-code-input')?.value || '');
-    const detail1Code = digitsOnly(row.querySelector('.vf-detail1-input')?.value || '');
+    const displayCode = digitsOnly(row.querySelector('.vf-code-input')?.value || '');
+    // A تفصیلی code typed or picked in the account column is persisted in the
+    // canonical base-account + detail1 pair the backend expects.
+    const pair = accountPostingPair(accountForCode(displayCode));
+    const accountCode = pair ? digitsOnly(pair.base.code) : displayCode;
+    const detail1Code = pair?.detail ? digitsOnly(pair.detail.code) : '';
     const description = (row.querySelector('.vf-desc-input')?.value || '').trim();
     const debitValue = parseAmountInput(row.querySelector('.vf-debit-input')?.value || '');
     const creditValue = parseAmountInput(row.querySelector('.vf-credit-input')?.value || '');

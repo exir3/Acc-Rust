@@ -11,7 +11,7 @@ function bindVoucherGrid() {
     if (!row) return;
     state.activeRow = row;
     const input = ev.target;
-    updateRowAccount(row, input.classList.contains('vf-code-input') || input.classList.contains('vf-detail1-input'));
+    updateRowAccount(row, input.classList.contains('vf-code-input'));
     updateLedger(row);
     updateTotals();
   });
@@ -22,7 +22,7 @@ function bindVoucherGrid() {
       const amount = parseAmountInput(input.value);
       if (amount !== null) input.value = formatAmount(amount);
     }
-    if (input.classList && (input.classList.contains('vf-code-input') || input.classList.contains('vf-detail1-input'))) {
+    if (input.classList && input.classList.contains('vf-code-input')) {
       updateRowAccount(input.closest('tr'), true);
     }
   });
@@ -102,7 +102,7 @@ function bindVoucherGrid() {
       openSavedDescriptions(descriptionInput.closest('tr'));
       return;
     }
-    const input = ev.target.closest('.vf-code-input, .vf-detail1-input');
+    const input = ev.target.closest('.vf-code-input');
     if (input) {
       ev.preventDefault();
       openAccountPicker(input);
@@ -114,7 +114,7 @@ function bindVoucherGrid() {
     if (!input.matches || !input.matches('input')) return;
 
     const isSpace = ev.code === 'Space' || ev.key === ' ' || ev.key === 'Spacebar';
-    if ((isSpace || ev.key === 'F4') && (input.classList.contains('vf-code-input') || input.classList.contains('vf-detail1-input'))) {
+    if ((isSpace || ev.key === 'F4') && input.classList.contains('vf-code-input')) {
       ev.preventDefault();
       openAccountPicker(input);
       return;
@@ -149,12 +149,11 @@ function bindVoucherGrid() {
   }
 }
 
-// Enter walks the row: base account → detail-1 → description → debit → credit.
+// Enter walks the row: account code → description → debit → credit.
 function moveGridFocus(input, row, step) {
   if (!row) return;
   const cells = [
     row.querySelector('.vf-code-input'),
-    row.querySelector('.vf-detail1-input'),
     row.querySelector('.vf-desc-input'),
     row.querySelector('.vf-debit-input'),
     row.querySelector('.vf-credit-input'),
