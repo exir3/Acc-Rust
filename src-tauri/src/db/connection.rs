@@ -106,7 +106,21 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
             .app_data_dir()
             .map_err(|error| format!("مسیر داده‌های برنامه در دسترس نیست: {error}"))?,
     };
-    std::fs::create_dir_all(&data_dir)
+    initialize_at(&data_dir, Some(&executable_dir), override_dir.is_some())
+}
+
+/// Opens the database in an explicit data directory.
+///
+/// Desktop startup passes the Tauri app-data directory and the executable
+/// directory used by the one-time legacy import. The local web server uses the
+/// same function with `legacy_executable_dir = None`, so both modes keep the
+/// same schema, migrations and storage rules.
+pub fn initialize_at(
+    data_dir: &Path,
+    legacy_executable_dir: Option<&Path>,
+    skip_legacy_import: bool,
+) -> Result<(Connection, PathBuf), String> {
+    std::fs::create_dir_all(data_dir)
         .map_err(|e| format!("ساخت پوشه پایگاه داده ناموفق بود: {e}"))?;
 
     let path = data_dir.join(DB_FILE_NAME);
@@ -134,8 +148,8 @@ pub fn initialize(app: &AppHandle) -> Result<(Connection, PathBuf), String> {
     // the active database to the writable per-user application data directory.
     // The smoke-test override starts from an empty folder on purpose, so it
     // must not import anything from the developer machine.
-    if override_dir.is_none() {
-        migrate_legacy_database(&data_dir, &path, Some(&data_dir), Some(&executable_dir))?;
+    if !skip_legacy_import {
+        migrate_legacy_database(data_dir, &path, Some(data_dir), legacy_executable_dir)?;
     }
 
     // A brand-new file needs no restore point. Every file that already existed

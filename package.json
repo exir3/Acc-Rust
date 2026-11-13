@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
+    "dev:web": "cargo run --manifest-path src-tauri/Cargo.toml --features web --bin hesabdari-web",
     "build": "tauri build",
+    "build:web": "cargo build --manifest-path src-tauri/Cargo.toml --features web --release --bin hesabdari-web",
     "tauri": "tauri",
     "check:js": "node scripts/check-js.mjs",
     "lint:js": "eslint ui scripts tests playwright.config.mjs eslint.config.js",

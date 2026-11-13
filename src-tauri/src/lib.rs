@@ -8,6 +8,8 @@ pub mod db;
 pub mod excel;
 pub mod report;
 pub mod vouchers;
+#[cfg(feature = "web")]
+pub mod web;
 
 mod commands;
 mod limits;

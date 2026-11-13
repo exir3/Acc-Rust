@@ -35,7 +35,7 @@ pub(crate) use backup::{
     prune_migration_backups, prune_restore_safety_files,
 };
 pub use common::{normalize_digits, DB_FILE_NAME};
-pub use connection::initialize;
+pub use connection::{initialize, initialize_at};
 pub use model::{
     Account, AccountGroup, AccountGroupClassificationImpact, AccountGroupImpactAccount,
     AccountGroupList, AccountList, AuditLogEntry, AuditLogList, BulkAccountDeleteFailure,
