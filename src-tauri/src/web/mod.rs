@@ -2,9 +2,10 @@
 //!
 //! The desktop app and this browser mode share the same SQLite schema and the
 //! same Rust storage layer. The browser gets a small JSON command endpoint
-//! that mirrors the part of the Tauri command surface needed by the first
-//! local-web slice: settings, the chart of accounts, fiscal years, the voucher
-//! list and the trial balance.
+//! that mirrors the part of the Tauri command surface needed by the local-web
+//! slices so far: settings, the chart of accounts, fiscal years, the voucher
+//! list and trial balance, and the voucher form including save, permanent,
+//! delete and line transfer.
 //!
 //! The listener is bound to `127.0.0.1` only. There is no authentication and no
 //! remote access; the server is meant for the same Windows session as the
@@ -24,7 +25,7 @@ use serde_json::{json, Map, Value};
 use tower_http::services::ServeDir;
 
 use crate::db;
-use crate::vouchers::{self, ReportScope};
+use crate::vouchers::{self, ReportScope, VoucherInput, VoucherTransferInput};
 
 const DEFAULT_PORT: u16 = 4174;
 
@@ -97,6 +98,71 @@ struct UpdateFiscalYearArgs {
     status: String,
     reason: Option<String>,
     confirm: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DateArgs {
+    date: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VoucherNumberArgs {
+    number: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AdjacentVoucherArgs {
+    number: i64,
+    direction: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenVoucherArgs {
+    number: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveVoucherArgs {
+    input: VoucherInput,
+    expected_updated_at: Option<String>,
+    idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VoucherIdArgs {
+    id: i64,
+    expected_updated_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransferVoucherArgs {
+    input: VoucherTransferInput,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateAccountArgs {
+    code: String,
+    name: String,
+    level: i64,
+    group_code: String,
+    nature: String,
+    #[serde(default)]
+    parent_code: String,
+    #[serde(default)]
+    is_postable: bool,
+    is_active: Option<bool>,
+    fs_line: Option<String>,
+    contra_of: Option<String>,
+    contra_kind: Option<String>,
+    opposite_fs_line: Option<String>,
+    split_by_sign: Option<bool>,
+    system_role: Option<String>,
 }
 
 /// Starts the loopback server and blocks until it stops.
@@ -274,7 +340,10 @@ fn dispatch(
             to_value(database.voucher_count()?)
         }
         "list_vouchers" => {
-            require_window(window, &["main", "trial-balance", "voucher-list"])?;
+            require_window(
+                window,
+                &["main", "voucher", "trial-balance", "voucher-list"],
+            )?;
             let args: ListVouchersArgs = parse_args(args)?;
             let list = database.list_vouchers_page(
                 &args.from,
@@ -284,6 +353,83 @@ fn dispatch(
                 args.limit.or(Some(vouchers::DEFAULT_VOUCHER_PAGE_SIZE)),
             )?;
             to_value(list)
+        }
+        "validate_voucher_date" => {
+            require_window(window, &["main", "voucher", "bulk-voucher-delete"])?;
+            let args: DateArgs = parse_args(args)?;
+            to_value(vouchers::validate_voucher_date(&args.date)?)
+        }
+        "next_voucher_number" => {
+            require_window(window, &["main", "voucher"])?;
+            to_value(database.next_voucher_number()?)
+        }
+        "adjacent_voucher_number" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: AdjacentVoucherArgs = parse_args(args)?;
+            to_value(database.adjacent_voucher_number(args.number, &args.direction)?)
+        }
+        "get_voucher" => {
+            require_window(window, &["main", "voucher", "voucher-list"])?;
+            let args: VoucherNumberArgs = parse_args(args)?;
+            to_value(database.get_voucher(args.number)?)
+        }
+        "save_voucher" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: SaveVoucherArgs = parse_args(args)?;
+            let saved = database.save_voucher_idempotent(
+                args.input,
+                args.expected_updated_at.as_deref(),
+                args.idempotency_key.as_deref(),
+            )?;
+            to_value(saved)
+        }
+        "set_voucher_permanent" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: VoucherIdArgs = parse_args(args)?;
+            let permanent =
+                database.set_voucher_permanent(args.id, args.expected_updated_at.as_deref())?;
+            to_value(permanent)
+        }
+        "delete_voucher" => {
+            require_window(window, &["main", "voucher", "voucher-list"])?;
+            let args: VoucherIdArgs = parse_args(args)?;
+            database.delete_voucher(args.id, args.expected_updated_at.as_deref())?;
+            to_value(())
+        }
+        "transfer_voucher_lines" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: TransferVoucherArgs = parse_args(args)?;
+            to_value(database.transfer_voucher_lines(args.input)?)
+        }
+        "create_account" => {
+            require_window(
+                window,
+                &["main", "voucher", "account-groups", "account-definition"],
+            )?;
+            let args: CreateAccountArgs = parse_args(args)?;
+            let account = db::NewAccount::new(
+                &args.code,
+                &args.name,
+                args.level,
+                &args.group_code,
+                &args.nature,
+                &args.parent_code,
+                args.is_postable,
+            )
+            .with_active(args.is_active.unwrap_or(true))
+            .with_fs_line(args.fs_line.as_deref().unwrap_or(""))
+            .with_classification(
+                args.contra_of.as_deref().unwrap_or(""),
+                args.contra_kind.as_deref().unwrap_or(""),
+                args.opposite_fs_line.as_deref().unwrap_or(""),
+                args.split_by_sign.unwrap_or(false),
+                args.system_role.as_deref().unwrap_or(""),
+            );
+            let created = database
+                .create_accounts_atomic(vec![account])?
+                .pop()
+                .ok_or_else(|| "ساخت حساب انجام نشد.".to_string())?;
+            to_value(created)
         }
         "get_trial_balance" => {
             require_window(window, &["main", "trial-balance", "voucher-list"])?;
@@ -299,6 +445,15 @@ fn dispatch(
                 scope,
             )?;
             to_value(report)
+        }
+        "open_voucher_window" => {
+            require_window(window, &["main", "voucher-list"])?;
+            let args: OpenVoucherArgs = parse_args(args)?;
+            let url = match args.number.filter(|number| *number > 0) {
+                Some(number) => format!("/voucher.html?number={number}"),
+                None => "/voucher.html".to_string(),
+            };
+            Ok(web_window(&url, "voucher"))
         }
         "open_trial_balance_window" => {
             require_window(window, &["main"])?;
@@ -568,6 +723,240 @@ mod tests {
     }
 
     #[test]
+    fn voucher_form_saves_reads_updates_transfers_and_deletes() {
+        let database = crate::db::memory_database();
+
+        let next = call(&database, "next_voucher_number", Value::Null).unwrap();
+        assert_eq!(next, json!(1));
+
+        let normalized = dispatch(
+            &database,
+            "validate_voucher_date",
+            json!({ "date": "۱۴۱۰/۱/۵" }),
+            "voucher",
+        )
+        .unwrap();
+        assert_eq!(normalized, json!("1410/01/05"));
+
+        let first = dispatch(
+            &database,
+            "save_voucher",
+            json!({
+                "input": {
+                    "id": null,
+                    "number": 1,
+                    "date": "1410/01/05",
+                    "voucherType": vouchers::VOUCHER_TYPES[0],
+                    "description": "سند آزمون وب",
+                    "fiscalYearId": null,
+                    "lines": [
+                        {
+                            "id": null,
+                            "accountCode": "110101",
+                            "detail1Code": null,
+                            "description": "صندوق",
+                            "debit": 1500,
+                            "credit": 0,
+                        },
+                        {
+                            "id": null,
+                            "accountCode": "410101",
+                            "detail1Code": null,
+                            "description": "فروش",
+                            "debit": 0,
+                            "credit": 1500,
+                        },
+                    ],
+                },
+                "expectedUpdatedAt": null,
+                "idempotencyKey": "web-save-1",
+            }),
+            "voucher",
+        )
+        .unwrap();
+        assert_eq!(first["number"], json!(1));
+        assert_eq!(first["totalDebit"], json!(1500));
+        assert_eq!(first["isTemporary"], json!(true));
+
+        let fetched =
+            dispatch(&database, "get_voucher", json!({ "number": 1 }), "voucher").unwrap();
+        assert_eq!(fetched["description"], "سند آزمون وب");
+
+        let edited = dispatch(
+            &database,
+            "save_voucher",
+            json!({
+                "input": {
+                    "id": first["id"],
+                    "number": first["number"],
+                    "date": first["date"],
+                    "voucherType": first["type"],
+                    "description": "سند ویرایش‌شده",
+                    "fiscalYearId": null,
+                    "lines": first["lines"].clone(),
+                },
+                "expectedUpdatedAt": first["updatedAt"],
+                "idempotencyKey": "web-save-2",
+            }),
+            "voucher",
+        )
+        .unwrap();
+        assert_eq!(edited["description"], "سند ویرایش‌شده");
+        assert_eq!(edited["number"], json!(1));
+
+        let permanent = call(
+            &database,
+            "set_voucher_permanent",
+            json!({ "id": edited["id"], "expectedUpdatedAt": edited["updatedAt"] }),
+        )
+        .unwrap();
+        assert_eq!(permanent["isTemporary"], json!(false));
+
+        let second = dispatch(
+            &database,
+            "save_voucher",
+            json!({
+                "input": {
+                    "id": null,
+                    "number": 2,
+                    "date": "1410/02/01",
+                    "voucherType": vouchers::VOUCHER_TYPES[0],
+                    "description": "سند مقصد انتقال",
+                    "fiscalYearId": null,
+                    "lines": [
+                        {
+                            "id": null,
+                            "accountCode": "110101",
+                            "detail1Code": null,
+                            "description": "صندوق",
+                            "debit": 2000,
+                            "credit": 0,
+                        },
+                        {
+                            "id": null,
+                            "accountCode": "410101",
+                            "detail1Code": null,
+                            "description": "فروش",
+                            "debit": 0,
+                            "credit": 2000,
+                        },
+                    ],
+                },
+                "expectedUpdatedAt": null,
+                "idempotencyKey": "web-save-3",
+            }),
+            "voucher",
+        )
+        .unwrap();
+        assert_eq!(second["isTemporary"], json!(true));
+
+        let source_lines: Vec<i64> = edited["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line["id"].as_i64().unwrap())
+            .collect();
+        let transferred = dispatch(
+            &database,
+            "transfer_voucher_lines",
+            json!({
+                "input": {
+                    "sourceVoucherId": first["id"],
+                    "sourceVoucherNumber": first["number"],
+                    "targetVoucherNumber": second["number"],
+                    "lineIds": source_lines,
+                    "mode": "copy",
+                },
+            }),
+            "voucher",
+        )
+        .unwrap();
+        assert_eq!(transferred["createdTarget"], json!(false));
+        assert_eq!(transferred["target"]["lines"].as_array().unwrap().len(), 4);
+
+        let list = dispatch(
+            &database,
+            "list_vouchers",
+            json!({
+                "from": "1410/01/01",
+                "to": "1410/12/29",
+                "search": "",
+                "offset": 0,
+                "limit": 50,
+            }),
+            "voucher",
+        )
+        .unwrap();
+        assert_eq!(list["totalCount"], json!(2));
+
+        // A permanent voucher is locked and cannot be deleted.
+        assert!(call(
+            &database,
+            "delete_voucher",
+            json!({ "id": permanent["id"], "expectedUpdatedAt": permanent["updatedAt"] }),
+        )
+        .is_err());
+
+        call(
+            &database,
+            "delete_voucher",
+            json!({
+                "id": second["id"],
+                "expectedUpdatedAt": transferred["target"]["updatedAt"],
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            call(&database, "get_voucher", json!({ "number": 2 })).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            call(&database, "get_voucher_count", Value::Null).unwrap(),
+            json!(1)
+        );
+    }
+
+    #[test]
+    fn quick_account_creation_is_limited_to_account_aware_windows() {
+        let database = crate::db::memory_database();
+
+        let account = dispatch(
+            &database,
+            "create_account",
+            json!({
+                "code": "110103",
+                "name": "حساب آزمون وب",
+                "level": 2,
+                "groupCode": "1",
+                "nature": "debtor",
+                "parentCode": "1101",
+                "isPostable": true,
+                "isActive": true,
+            }),
+            "voucher",
+        )
+        .unwrap();
+        assert_eq!(account["code"], "110103");
+        assert_eq!(account["name"], "حساب آزمون وب");
+
+        assert!(dispatch(
+            &database,
+            "create_account",
+            json!({
+                "code": "110104",
+                "name": "حساب غیرمجاز",
+                "level": 2,
+                "groupCode": "1",
+                "nature": "debtor",
+                "parentCode": "1101",
+                "isPostable": true,
+            }),
+            "trial-balance",
+        )
+        .is_err());
+    }
+
+    #[test]
     fn window_commands_return_browser_urls() {
         let database = crate::db::memory_database();
 
@@ -578,13 +967,34 @@ mod tests {
         let groups = call(&database, "open_account_groups_window", Value::Null).unwrap();
         assert_eq!(groups["webOpen"], "/account-groups.html");
         assert_eq!(groups["webName"], "account-groups");
+
+        let voucher = call(&database, "open_voucher_window", json!({ "number": 7 })).unwrap();
+        assert_eq!(voucher["webOpen"], "/voucher.html?number=7");
+        assert_eq!(voucher["webName"], "voucher");
+
+        let new_voucher = dispatch(
+            &database,
+            "open_voucher_window",
+            json!({ "number": null }),
+            "voucher-list",
+        )
+        .unwrap();
+        assert_eq!(new_voucher["webOpen"], "/voucher.html");
+
+        assert!(dispatch(
+            &database,
+            "open_voucher_window",
+            json!({ "number": 7 }),
+            "trial-balance",
+        )
+        .is_err());
     }
 
     #[test]
     fn unknown_commands_and_foreign_windows_are_rejected() {
         let database = crate::db::memory_database();
 
-        assert!(call(&database, "save_voucher", Value::Null).is_err());
+        assert!(call(&database, "save_voucher_excel", Value::Null).is_err());
         assert!(dispatch(
             &database,
             "create_fiscal_year",

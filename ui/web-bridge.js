@@ -15,11 +15,35 @@
   if (requestedPopup === 'voucher-list') window.__IS_VOUCHER_LIST_POPUP__ = true;
 
   const label = pageLabel(requestedPopup);
+  const isVoucherPage = label === 'voucher';
   const channel = typeof BroadcastChannel === 'function'
     ? new BroadcastChannel('hesabdari-web-events')
     : null;
   const eventListeners = new Map();
   const closeListeners = new Set();
+
+  let voucherRequestTaken = false;
+  let pendingVoucherRequest = null;
+  let hasPendingVoucherRequest = false;
+  let probeSequence = 0;
+  let activeProbe = null;
+
+  if (isVoucherPage && params.has('number')) {
+    const requestedNumber = Number(params.get('number'));
+    if (Number.isInteger(requestedNumber) && requestedNumber > 0) {
+      pendingVoucherRequest = requestedNumber;
+      hasPendingVoucherRequest = true;
+    }
+    // Keep the address bar clean so a refresh starts a fresh form instead of
+    // replaying a request the form already consumed.
+    params.delete('number');
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+    );
+  }
 
   // Browser popup blockers accept window.open only during the click itself.
   // Window commands therefore open a blank tab synchronously and navigate it
@@ -27,6 +51,7 @@
   const windowCommands = {
     open_trial_balance_window: { name: 'trial-balance', width: 1200, height: 820 },
     open_voucher_list_window: { name: 'voucher-list', width: 1280, height: 860 },
+    open_voucher_window: { name: 'voucher', width: 1240, height: 800 },
     open_account_groups_window: { name: 'account-groups', width: 960, height: 760 },
     open_account_definition_window: { name: 'account-definition', width: 1040, height: 800 },
   };
@@ -90,10 +115,73 @@
     return Promise.resolve();
   }
 
+  function broadcast(name, payload) {
+    if (channel) channel.postMessage({ event: name, payload });
+  }
+
+  function takeVoucherRequest() {
+    if (!isVoucherPage) return null;
+    voucherRequestTaken = true;
+    if (!hasPendingVoucherRequest) return null;
+    hasPendingVoucherRequest = false;
+    const value = pendingVoucherRequest;
+    pendingVoucherRequest = null;
+    return value;
+  }
+
+  function requestedVoucherNumber(args) {
+    const number = Number(args && args.number);
+    return Number.isInteger(number) && number > 0 ? number : null;
+  }
+
+  // A live voucher tab answers right away; when none does, the caller opens a
+  // new tab without unloading a form that may hold unsaved data.
+  function probeVoucherTab() {
+    if (!channel) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const id = String(++probeSequence);
+      let settled = false;
+      let timer = 0;
+      const finish = (alive) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (activeProbe && activeProbe.id === id) activeProbe = null;
+        resolve(alive);
+      };
+      timer = setTimeout(() => finish(false), 150);
+      activeProbe = { id, finish };
+      channel.postMessage({ event: 'voucher-presence-probe', payload: { id } });
+    });
+  }
+
   if (channel) {
     channel.addEventListener('message', (message) => {
       const data = message.data;
       if (!data || typeof data.event !== 'string') return;
+
+      if (data.event === 'voucher-presence') {
+        if (activeProbe && data.payload && data.payload.id === activeProbe.id) {
+          activeProbe.finish(true);
+        }
+        return;
+      }
+      if (data.event === 'voucher-presence-probe') {
+        if (isVoucherPage) {
+          channel.postMessage({
+            event: 'voucher-presence',
+            payload: { id: data.payload ? data.payload.id : null },
+          });
+        }
+        return;
+      }
+      if (data.event === 'voucher-request' && isVoucherPage && !voucherRequestTaken) {
+        // The request can arrive while the form is still booting; keep it for
+        // the first take_voucher_request call and also deliver it to any
+        // listener that is already bound.
+        pendingVoucherRequest = data.payload ?? null;
+        hasPendingVoucherRequest = true;
+      }
       deliverEvent(data.event, data.payload);
     });
   }
@@ -107,15 +195,22 @@
   }
 
   async function invoke(command, args) {
+    if (command === 'take_voucher_request') return takeVoucherRequest();
+
     const target = windowCommands[command];
+    const opensVoucher = command === 'open_voucher_window';
     let blank = null;
+    let reuseVoucherTab = false;
     if (target) {
-      blank = openWindow('', target.name, popupFeatures(target));
-      if (blank) {
-        try {
-          blank.document.title = 'در حال بازکردن…';
-        } catch (_) {
-          // The placeholder can already be gone.
+      if (opensVoucher) reuseVoucherTab = await probeVoucherTab();
+      if (!reuseVoucherTab) {
+        blank = openWindow('', target.name, popupFeatures(target));
+        if (blank) {
+          try {
+            blank.document.title = 'در حال بازکردن…';
+          } catch (_) {
+            // The placeholder can already be gone.
+          }
         }
       }
     }
@@ -136,6 +231,18 @@
 
       const data = payload.data ?? null;
       if (data && typeof data.webOpen === 'string') {
+        if (reuseVoucherTab) {
+          const existing = openWindow('', data.webName, popupFeatures(target));
+          if (existing) {
+            try {
+              existing.focus();
+            } catch (_) {
+              // Focus can be denied; the request still reaches the tab.
+            }
+          }
+          broadcast('voucher-request', requestedVoucherNumber(args));
+          return null;
+        }
         const features = popupFeatures(target || null);
         const popupWindow = blank || openWindow('', data.webName, features);
         if (popupWindow && !popupWindow.closed) {
@@ -145,6 +252,12 @@
           if (!fallback) window.location.assign(data.webOpen);
         }
         return null;
+      }
+      if (command === 'save_voucher' || command === 'set_voucher_permanent'
+          || command === 'delete_voucher' || command === 'transfer_voucher_lines') {
+        broadcast('vouchers-changed');
+      } else if (command === 'create_account') {
+        broadcast('accounts-changed');
       }
       return data;
     } catch (error) {

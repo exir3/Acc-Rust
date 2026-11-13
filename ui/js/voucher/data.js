@@ -91,6 +91,9 @@ async function handleVoucherRequest(number) {
   } finally {
     state.busy = false;
     handlingVoucherRequest = false;
+    // loadVoucher refreshed the form while busy was still true, which disabled
+    // the mutating controls. Refresh once more now that the request is done.
+    refreshFormState();
     if (hasQueuedVoucherRequest) void drainVoucherRequest();
   }
 }
