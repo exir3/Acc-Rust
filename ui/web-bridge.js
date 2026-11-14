@@ -335,9 +335,11 @@
         return null;
       }
       if (command === 'save_voucher' || command === 'set_voucher_permanent'
-          || command === 'delete_voucher' || command === 'transfer_voucher_lines') {
+          || command === 'delete_voucher' || command === 'transfer_voucher_lines'
+          || command === 'execute_closing' || command === 'reverse_closing'
+          || command === 'execute_carry_forward') {
         broadcast('vouchers-changed');
-      } else if (command === 'create_account') {
+      } else if (command === 'create_account' || command === 'assign_closing_roles') {
         broadcast('accounts-changed');
       } else if (command === 'restore_database_file') {
         // Other tabs must drop their stale chart, voucher lists and reports.

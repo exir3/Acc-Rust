@@ -3,10 +3,11 @@
 //! The desktop app and this browser mode share the same SQLite schema and the
 //! same Rust storage layer. The browser gets a small JSON command endpoint
 //! that mirrors the part of the Tauri command surface needed by the local-web
-//! slices so far: settings, the chart of accounts, fiscal years, the voucher
-//! list, the voucher form including save, permanent, delete and line transfer,
-//! the main and supplementary report pages, their print previews, and the
-//! browser backup/restore transfer endpoints.
+//! slices so far: settings, the chart of accounts, fiscal years including
+//! year-end closing and carry forward, the voucher list, the voucher form
+//! including save, permanent, delete and line transfer, the main and
+//! supplementary report pages, their print previews, and the browser
+//! backup/restore transfer endpoints.
 //!
 //! The listener is bound to `127.0.0.1` only. There is no authentication and no
 //! remote access; the server is meant for the same Windows session as the
@@ -269,6 +270,64 @@ struct UpdateFiscalYearArgs {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetFiscalYearStatusArgs {
+    id: i64,
+    status: String,
+    reason: Option<String>,
+    confirm: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FiscalYearIdArgs {
+    id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClosingPreviewArgs {
+    year_id: i64,
+    as_of_date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClosingRolesArgs {
+    year_id: i64,
+    income_summary_code: Option<String>,
+    retained_earnings_code: Option<String>,
+    closing_balance_code: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExecuteClosingArgs {
+    year_id: i64,
+    as_of_date: Option<String>,
+    income_summary_code: Option<String>,
+    retained_earnings_code: Option<String>,
+    closing_balance_code: Option<String>,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReverseClosingArgs {
+    year_id: i64,
+    reason: Option<String>,
+    force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CarryForwardArgs {
+    source_year_id: i64,
+    target_year_id: i64,
+    force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 struct DateArgs {
     date: String,
 }
@@ -515,6 +574,73 @@ fn dispatch(
                 args.confirm.unwrap_or(false),
             )?;
             to_value(year)
+        }
+        "set_fiscal_year_status" => {
+            require_window(window, &["main"])?;
+            let args: SetFiscalYearStatusArgs = parse_args(args)?;
+            let year = database.set_fiscal_year_status(
+                args.id,
+                &args.status,
+                args.reason.as_deref(),
+                args.confirm.unwrap_or(false),
+            )?;
+            to_value(year)
+        }
+        "delete_fiscal_year" => {
+            require_window(window, &["main"])?;
+            let args: FiscalYearIdArgs = parse_args(args)?;
+            database.delete_fiscal_year(args.id)?;
+            Ok(Value::Null)
+        }
+        "get_closing_preview" => {
+            require_window(window, &["main"])?;
+            let args: ClosingPreviewArgs = parse_args(args)?;
+            to_value(database.get_closing_preview(args.year_id, args.as_of_date.as_deref())?)
+        }
+        "assign_closing_roles" => {
+            require_window(window, &["main"])?;
+            let args: ClosingRolesArgs = parse_args(args)?;
+            to_value(database.assign_closing_roles(
+                args.year_id,
+                args.income_summary_code.as_deref(),
+                args.retained_earnings_code.as_deref(),
+                args.closing_balance_code.as_deref(),
+            )?)
+        }
+        "execute_closing" => {
+            require_window(window, &["main"])?;
+            let args: ExecuteClosingArgs = parse_args(args)?;
+            to_value(database.execute_closing(
+                args.year_id,
+                args.as_of_date.as_deref(),
+                args.income_summary_code.as_deref(),
+                args.retained_earnings_code.as_deref(),
+                args.closing_balance_code.as_deref(),
+                args.reason.as_deref(),
+            )?)
+        }
+        "reverse_closing" => {
+            require_window(window, &["main"])?;
+            let args: ReverseClosingArgs = parse_args(args)?;
+            to_value(database.reverse_closing(
+                args.year_id,
+                args.reason.as_deref(),
+                args.force.unwrap_or(false),
+            )?)
+        }
+        "get_carry_forward_preview" => {
+            require_window(window, &["main"])?;
+            let args: CarryForwardArgs = parse_args(args)?;
+            to_value(database.get_carry_forward_preview(args.source_year_id, args.target_year_id)?)
+        }
+        "execute_carry_forward" => {
+            require_window(window, &["main"])?;
+            let args: CarryForwardArgs = parse_args(args)?;
+            to_value(database.execute_carry_forward(
+                args.source_year_id,
+                args.target_year_id,
+                args.force.unwrap_or(false),
+            )?)
         }
         "get_voucher_count" => {
             require_window(window, &["main", "trial-balance", "voucher-list"])?;
@@ -1469,6 +1595,155 @@ mod tests {
         )
         .unwrap();
         assert_eq!(updated["title"], "سال مالی آزمون وب ۲");
+
+        let closed = call(
+            &database,
+            "set_fiscal_year_status",
+            json!({ "id": updated["id"], "status": "closed", "reason": null, "confirm": true }),
+        )
+        .unwrap();
+        assert_eq!(closed["status"], "closed");
+
+        let reopened = call(
+            &database,
+            "set_fiscal_year_status",
+            json!({ "id": updated["id"], "status": "open", "reason": null, "confirm": true }),
+        )
+        .unwrap();
+        assert_eq!(reopened["status"], "open");
+
+        call(
+            &database,
+            "delete_fiscal_year",
+            json!({ "id": reopened["id"] }),
+        )
+        .unwrap();
+        let after_delete = call(&database, "list_fiscal_years", Value::Null).unwrap();
+        assert_eq!(
+            after_delete["years"].as_array().unwrap().len(),
+            before_count
+        );
+    }
+
+    #[test]
+    fn closing_and_carry_forward_run_through_the_browser_commands() {
+        let database = crate::db::memory_database();
+        let year = call(
+            &database,
+            "create_fiscal_year",
+            json!({
+                "title": "سال مالی بستن وب",
+                "startDate": "1410/01/01",
+                "endDate": "1410/12/29",
+                "status": "open",
+            }),
+        )
+        .unwrap();
+        let year_id = year["id"].as_i64().unwrap();
+        let saved = save_cash_sale(&database, 1, "1410/01/05", 1500);
+        call(
+            &database,
+            "set_voucher_permanent",
+            json!({ "id": saved["id"], "expectedUpdatedAt": saved["updatedAt"] }),
+        )
+        .unwrap();
+
+        let preview = call(
+            &database,
+            "get_closing_preview",
+            json!({ "yearId": year_id }),
+        )
+        .unwrap();
+        assert_eq!(preview["canExecute"], true, "{preview}");
+        assert_eq!(preview["netIncome"], 1500);
+        assert!(!preview["tempLines"].as_array().unwrap().is_empty());
+
+        let roles = call(
+            &database,
+            "assign_closing_roles",
+            json!({
+                "yearId": year_id,
+                "incomeSummaryCode": null,
+                "retainedEarningsCode": null,
+                "closingBalanceCode": null,
+            }),
+        )
+        .unwrap();
+        assert!(roles["incomeSummary"]["code"].is_string());
+        assert!(roles["retainedEarnings"]["code"].is_string());
+
+        let closing_args = json!({
+            "yearId": year_id,
+            "asOfDate": null,
+            "incomeSummaryCode": null,
+            "retainedEarningsCode": null,
+            "closingBalanceCode": null,
+            "reason": "بستن آزمون وب",
+        });
+        let result = call(&database, "execute_closing", closing_args.clone()).unwrap();
+        assert_eq!(result["netIncome"], 1500);
+        assert!(result["tempVoucher"]["number"].is_i64());
+        assert!(result["closingVoucher"]["number"].is_i64());
+
+        let closed = call(&database, "list_fiscal_years", Value::Null).unwrap();
+        let closed_year = closed["years"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == json!(year_id))
+            .unwrap();
+        assert_eq!(closed_year["status"], "closed");
+
+        let reversed = call(
+            &database,
+            "reverse_closing",
+            json!({ "yearId": year_id, "reason": "برگشت آزمون وب", "force": false }),
+        )
+        .unwrap();
+        assert_eq!(reversed["deletedVouchers"], 2);
+
+        // Carry forward needs an executed close; close again, then plan and run it.
+        let target = call(
+            &database,
+            "create_fiscal_year",
+            json!({
+                "title": "سال مالی انتقال وب",
+                "startDate": "1411/01/01",
+                "endDate": "1411/12/29",
+                "status": "open",
+            }),
+        )
+        .unwrap();
+        let target_id = target["id"].as_i64().unwrap();
+        call(&database, "execute_closing", closing_args).unwrap();
+
+        let plan = call(
+            &database,
+            "get_carry_forward_preview",
+            json!({ "sourceYearId": year_id, "targetYearId": target_id }),
+        )
+        .unwrap();
+        assert!(plan["errors"].as_array().unwrap().is_empty(), "{plan}");
+        assert_eq!(plan["totals"]["debit"], 1500);
+        assert_eq!(plan["totals"]["credit"], 1500);
+
+        let opening = call(
+            &database,
+            "execute_carry_forward",
+            json!({ "sourceYearId": year_id, "targetYearId": target_id, "force": false }),
+        )
+        .unwrap();
+        assert!(opening["voucherNumber"].is_i64());
+        assert_eq!(opening["accountCount"], 2);
+
+        // Closing commands stay limited to the main window.
+        assert!(dispatch(
+            &database,
+            "get_closing_preview",
+            json!({ "yearId": year_id }),
+            "voucher",
+        )
+        .is_err());
     }
 
     #[test]
