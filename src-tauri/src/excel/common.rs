@@ -96,6 +96,21 @@ pub(crate) fn ensure_sheet_dimensions(
 
 /* ── Shared helpers ─────────────────────────────────────────── */
 
+/// Adds the `.xlsx` extension unless the path already names an Excel workbook.
+/// The desktop save dialog and the local web host both write through this so a
+/// missing extension never produces a file the import dialog cannot find.
+pub(crate) fn with_xlsx_extension(path: &Path) -> std::path::PathBuf {
+    let mut path = path.to_path_buf();
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx"))
+    {
+        path.set_extension("xlsx");
+    }
+    path
+}
+
 pub(crate) fn xlsx_error(error: XlsxError) -> String {
     format!("ساخت فایل اکسل ناموفق بود: {error}")
 }

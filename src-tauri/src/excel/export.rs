@@ -7,12 +7,42 @@ use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksh
 
 /* ── Export ─────────────────────────────────────────────────── */
 
+/// Default workbook name shown by the desktop save dialog and used by the
+/// local web host when it creates a download.
+pub(crate) fn voucher_export_file_name(input: &VoucherInput) -> String {
+    let number = input.number.unwrap_or(0);
+    let file_label = if number > 0 {
+        number.to_string()
+    } else {
+        "جدید".to_string()
+    };
+    format!("سند-{file_label}.xlsx")
+}
+
 /// Asks for a path and writes the voucher as an `.xlsx` file.
 /// `Ok(None)` means the user closed the save dialog.
 pub fn export_voucher(
     input: &VoucherInput,
     accounts: &[db::Account],
 ) -> Result<Option<String>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("خروجی اکسل سند حسابداری")
+        .set_file_name(voucher_export_file_name(input))
+        .add_filter("Excel", &["xlsx"])
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    export_voucher_to(input, accounts, &path).map(Some)
+}
+
+/// Writes the voucher to `path` without opening a dialog. `path` receives the
+/// `.xlsx` extension when it has none.
+pub fn export_voucher_to(
+    input: &VoucherInput,
+    accounts: &[db::Account],
+    path: &std::path::Path,
+) -> Result<String, String> {
     if input.lines.len() > MAX_IMPORT_LINES {
         return Err(format!(
             "تعداد ردیف‌های خروجی نمی‌تواند بیشتر از {} باشد.",
@@ -49,29 +79,7 @@ pub fn export_voucher(
             .ok_or_else(|| "جمع بستانکار خروجی اکسل از محدوده عددی مجاز بیشتر است.".to_string())?;
     }
     validate_export_balance(checked_debit, checked_credit)?;
-    let number = input.number.unwrap_or(0);
-    let file_label = if number > 0 {
-        number.to_string()
-    } else {
-        "جدید".to_string()
-    };
-    let default_name = format!("سند-{file_label}.xlsx");
-
-    let Some(mut path) = rfd::FileDialog::new()
-        .set_title("خروجی اکسل سند حسابداری")
-        .set_file_name(&default_name)
-        .add_filter("Excel", &["xlsx"])
-        .save_file()
-    else {
-        return Ok(None);
-    };
-    if !path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx"))
-    {
-        path.set_extension("xlsx");
-    }
+    let path = with_xlsx_extension(path);
 
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
@@ -80,7 +88,7 @@ pub fn export_voucher(
 
     write_sheet(worksheet, input, accounts)?;
     workbook.save(&path).map_err(xlsx_error)?;
-    Ok(Some(path.to_string_lossy().to_string()))
+    Ok(path.to_string_lossy().to_string())
 }
 
 pub(crate) fn write_sheet(

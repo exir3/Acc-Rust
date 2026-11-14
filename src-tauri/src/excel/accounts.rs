@@ -176,8 +176,26 @@ pub(crate) fn account_nature(raw: &str, fallback: &str) -> Result<String, String
     }
 }
 
-/// Export the chart in the same 11-column hierarchy layout used by WebApp.
+/// Asks for a path and exports the chart as an `.xlsx` workbook.
+/// `Ok(None)` means the user closed the save dialog.
 pub fn export_accounts(database: &db::Database) -> Result<Option<AccountExportResult>, String> {
+    let Some(path) = rfd::FileDialog::new()
+        .set_title("خروجی اکسل فهرست حساب‌ها")
+        .set_file_name("لیست-حساب‌ها.xlsx")
+        .add_filter("Excel", &["xlsx"])
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    export_accounts_to(database, &path).map(Some)
+}
+
+/// Writes the chart to `path` without opening a dialog. The local web host uses
+/// this to produce a file it can hand to the browser.
+pub fn export_accounts_to(
+    database: &db::Database,
+    path: &Path,
+) -> Result<AccountExportResult, String> {
     let accounts = database.list_accounts()?.accounts;
     let skipped_codes: Vec<String> = accounts
         .iter()
@@ -189,22 +207,7 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<AccountExportRe
         .cloned()
         .map(|account| (account.code.clone(), account))
         .collect();
-
-    let Some(mut path) = rfd::FileDialog::new()
-        .set_title("خروجی اکسل فهرست حساب‌ها")
-        .set_file_name("لیست-حساب‌ها.xlsx")
-        .add_filter("Excel", &["xlsx"])
-        .save_file()
-    else {
-        return Ok(None);
-    };
-    if !path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx"))
-    {
-        path.set_extension("xlsx");
-    }
+    let path = with_xlsx_extension(path);
 
     let headers = [
         "کد گروه",
@@ -294,10 +297,10 @@ pub fn export_accounts(database: &db::Database) -> Result<Option<AccountExportRe
     }
     worksheet.set_freeze_panes(1, 0).map_err(xlsx_error)?;
     workbook.save(&path).map_err(xlsx_error)?;
-    Ok(Some(AccountExportResult {
+    Ok(AccountExportResult {
         path: path.to_string_lossy().to_string(),
         skipped_codes,
-    }))
+    })
 }
 
 fn account_import_path() -> Option<std::path::PathBuf> {

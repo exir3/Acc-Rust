@@ -1038,9 +1038,15 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
         return Ok(None);
     };
 
-    ensure_excel_file_size(&path)?;
+    import_voucher_from_path(&path).map(Some)
+}
+
+/// Parses a voucher workbook already present on disk. The local web host uses
+/// this after the browser uploads the chosen file.
+pub(crate) fn import_voucher_from_path(path: &Path) -> Result<Vec<VoucherLineInput>, String> {
+    ensure_excel_file_size(path)?;
     let mut workbook =
-        open_workbook_auto(&path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
+        open_workbook_auto(path).map_err(|error| format!("فایل اکسل باز نشد: {error}"))?;
     let range = match workbook.worksheet_range_at(0) {
         Some(Ok(range)) => range,
         Some(Err(error)) => return Err(format!("خواندن کاربرگ اکسل ناموفق بود: {error}")),
@@ -1156,11 +1162,10 @@ pub fn import_voucher() -> Result<Option<Vec<VoucherLineInput>>, String> {
     if lines.is_empty() {
         return Err(format!(
             "در فایل «{}» هیچ ردیف سندی با کد حساب پیدا نشد.",
-            Path::new(&path)
-                .file_name()
+            path.file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("اکسل")
         ));
     }
-    Ok(Some(lines))
+    Ok(lines)
 }

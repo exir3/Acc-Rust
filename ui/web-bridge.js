@@ -211,11 +211,11 @@
   // The browser cannot use the desktop file dialog for restore, so the bridge
   // picks a file locally and uploads it to the loopback server. The server
   // keeps only a token and hash; the UI never supplies a path.
-  function pickRestoreFile() {
+  function pickFile(accept) {
     return new Promise((resolve) => {
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = '.hacc,.sqlite3,.db,application/octet-stream';
+      input.accept = accept;
       input.style.display = 'none';
       document.body.appendChild(input);
       let settled = false;
@@ -233,14 +233,24 @@
     });
   }
 
-  async function uploadRestoreBackup() {
-    const file = await pickRestoreFile();
-    if (!file) return null;
-    const response = await fetch('/api/restore/upload', {
+  function pickRestoreFile() {
+    return pickFile('.hacc,.sqlite3,.db,application/octet-stream');
+  }
+
+  function pickExcelFile() {
+    return pickFile(
+      '.xlsx,.xlsm,.xls,.xlsb,.ods,'
+      + 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,'
+      + 'application/vnd.ms-excel,application/vnd.oasis.opendocument.spreadsheet',
+    );
+  }
+
+  async function uploadFile(url, file) {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/octet-stream',
-        'X-File-Name': encodeURIComponent(file.name || 'backup'),
+        'X-File-Name': encodeURIComponent(file.name || 'file'),
       },
       body: file,
     });
@@ -248,15 +258,29 @@
     if (!response.ok || !payload || payload.ok !== true) {
       const message = payload && typeof payload.error === 'string'
         ? payload.error
-        : 'بارگذاری فایل پشتیبان ناموفق بود.';
+        : 'بارگذاری فایل ناموفق بود.';
       throw new Error(message);
     }
     return payload.data ?? null;
   }
 
-  // The server writes the backup in the data folder and returns a one-time
-  // link. The browser downloads that link; the UI still receives a path.
-  function downloadBackup(data) {
+  async function uploadRestoreBackup() {
+    const file = await pickRestoreFile();
+    if (!file) return null;
+    return uploadFile('/api/restore/upload', file);
+  }
+
+  // Excel commands receive an upload token instead of a path. The workbook is
+  // parsed by the same Rust code the desktop app uses.
+  async function uploadExcelWorkbook() {
+    const file = await pickExcelFile();
+    if (!file) return null;
+    return uploadFile('/api/excel/upload', file);
+  }
+
+  // The server writes the export in the data folder and returns a one-time
+  // link. The browser downloads that link; the UI receives a display path.
+  function downloadFile(data) {
     const link = document.createElement('a');
     link.href = data.webDownload;
     if (data.fileName) link.download = data.fileName;
@@ -265,9 +289,22 @@
     link.remove();
   }
 
+  const excelUploadCommands = new Set([
+    'preview_account_excel_import',
+    'import_voucher_excel',
+    'analyze_bulk_voucher_excel',
+  ]);
+
   async function invoke(command, args) {
     if (command === 'take_voucher_request') return takeVoucherRequest();
     if (command === 'choose_restore_backup') return uploadRestoreBackup();
+
+    let requestInput = args || {};
+    if (excelUploadCommands.has(command)) {
+      const upload = await uploadExcelWorkbook();
+      if (!upload) return null;
+      requestInput = { ...requestInput, uploadToken: upload.token };
+    }
 
     const target = windowCommands[command];
     const opensVoucher = command === 'open_voucher_window';
@@ -291,8 +328,8 @@
       // The preview tab receives its document token in the URL; the server only
       // hands the stored HTML to a window whose label is a print preview.
       const requestArgs = command === 'get_print_doc'
-        ? { ...(args || {}), token: params.get('doc') || '' }
-        : (args || {});
+        ? { ...requestInput, token: params.get('doc') || '' }
+        : requestInput;
       const response = await fetch('/api/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -307,8 +344,15 @@
       }
 
       const data = payload.data ?? null;
+      if (command === 'export_account_excel' && data && typeof data.webDownload === 'string') {
+        downloadFile(data);
+        return {
+          path: data.path || data.fileName || '',
+          skippedCodes: Array.isArray(data.skippedCodes) ? data.skippedCodes : [],
+        };
+      }
       if (data && typeof data.webDownload === 'string') {
-        downloadBackup(data);
+        downloadFile(data);
         return data.path || data.fileName || null;
       }
       if (data && typeof data.webOpen === 'string') {
@@ -337,9 +381,12 @@
       if (command === 'save_voucher' || command === 'set_voucher_permanent'
           || command === 'delete_voucher' || command === 'transfer_voucher_lines'
           || command === 'execute_closing' || command === 'reverse_closing'
-          || command === 'execute_carry_forward') {
+          || command === 'execute_carry_forward'
+          || command === 'commit_bulk_voucher_excel') {
+        if (command === 'commit_bulk_voucher_excel') broadcast('accounts-changed');
         broadcast('vouchers-changed');
-      } else if (command === 'create_account' || command === 'assign_closing_roles') {
+      } else if (command === 'create_account' || command === 'assign_closing_roles'
+          || command === 'import_account_excel') {
         broadcast('accounts-changed');
       } else if (command === 'restore_database_file') {
         // Other tabs must drop their stale chart, voucher lists and reports.

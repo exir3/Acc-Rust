@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -34,6 +34,7 @@ use tower_http::services::ServeDir;
 use crate::commands::print::{ensure_printable, report_scope};
 use crate::commands::state::report_meta_for;
 use crate::db;
+use crate::excel;
 use crate::report::{self, PrintDoc};
 use crate::vouchers::{self, ReportScope, VoucherInput, VoucherTransferInput};
 
@@ -49,6 +50,10 @@ const MAX_STORED_PRINT_DOCS: usize = 16;
 const DOWNLOAD_TTL: Duration = Duration::from_secs(10 * 60);
 const UPLOAD_TTL: Duration = Duration::from_secs(15 * 60);
 const MAX_RESTORE_BYTES: usize = 512 * 1024 * 1024;
+/// Excel workbooks are capped well below the backup limit because the parser
+/// already rejects anything larger than 32 MB; the upload limit mirrors it.
+const MAX_EXCEL_BYTES: usize = 32 * 1024 * 1024;
+const EXCEL_EXTENSIONS: &[&str] = &["xlsx", "xlsm", "xls", "xlsb", "ods"];
 
 #[derive(Clone)]
 struct WebState {
@@ -57,15 +62,28 @@ struct WebState {
     transfers: Transfers,
 }
 
+/// State shared by every request. Besides the one-time download and upload
+/// maps, it keeps the parsed Excel sessions between preview and confirmation,
+/// exactly like the desktop `AppState` slots.
 #[derive(Clone, Default)]
 struct Transfers {
     downloads: Arc<Mutex<HashMap<String, DownloadEntry>>>,
     uploads: Arc<Mutex<HashMap<String, UploadEntry>>>,
+    excel_uploads: Arc<Mutex<HashMap<String, ExcelUploadEntry>>>,
     restore_in_progress: Arc<Mutex<bool>>,
+    sessions: Arc<Sessions>,
+}
+
+#[derive(Default)]
+struct Sessions {
+    account_import_preview: Mutex<Option<excel::AccountImportSession>>,
+    bulk_voucher_import: Mutex<Option<excel::BulkVoucherImport>>,
+    bulk_import_cancel: AtomicBool,
 }
 
 struct DownloadEntry {
     path: PathBuf,
+    file_name: Option<String>,
     created_at: SystemTime,
 }
 
@@ -73,6 +91,12 @@ struct UploadEntry {
     path: PathBuf,
     encrypted: bool,
     file_sha256: String,
+    created_at: SystemTime,
+}
+
+struct ExcelUploadEntry {
+    path: PathBuf,
+    file_name: String,
     created_at: SystemTime,
 }
 
@@ -392,6 +416,51 @@ struct CreateAccountArgs {
     system_role: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveSettingsArgs {
+    company_name: String,
+    #[serde(default)]
+    fiscal_year: String,
+}
+
+/// Both single-voucher and account imports receive a short-lived upload token
+/// instead of a server path chosen by the page.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExcelUploadArgs {
+    upload_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkAnalyzeArgs {
+    upload_token: String,
+    date_system: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportVoucherArgs {
+    input: VoucherInput,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportAccountArgs {
+    preview_token: String,
+    mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitBulkArgs {
+    #[serde(default)]
+    renumber_conflicts: bool,
+    group_overrides: Option<Vec<excel::GroupMappingOverride>>,
+    confirm_inferred_groups: Option<bool>,
+}
+
 /// Starts the loopback server and blocks until it stops.
 pub fn run() -> Result<(), String> {
     let data_dir = data_dir_from_env()?;
@@ -420,9 +489,14 @@ async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), Stri
         .route("/api/health", get(health))
         .route("/api/command", post(command))
         .route("/api/backup/{token}", get(download_backup))
+        .route("/api/excel/{token}", get(download_excel))
         .route(
             "/api/restore/upload",
             post(upload_restore).layer(DefaultBodyLimit::max(MAX_RESTORE_BYTES)),
+        )
+        .route(
+            "/api/excel/upload",
+            post(upload_excel).layer(DefaultBodyLimit::max(MAX_EXCEL_BYTES)),
         )
         .fallback_service(ServeDir::new(&ui_dir).append_index_html_on_directories(true))
         .with_state(state);
@@ -510,6 +584,11 @@ fn dispatch(
                 &["main", "trial-balance", "voucher-list", "voucher"],
             )?;
             to_value(database.get_settings()?)
+        }
+        "save_settings" => {
+            require_window(window, &["main"])?;
+            let args: SaveSettingsArgs = parse_args(args)?;
+            to_value(database.save_settings(&args.company_name, &args.fiscal_year)?)
         }
         "list_account_groups" => {
             require_window(
@@ -737,6 +816,145 @@ fn dispatch(
                 .pop()
                 .ok_or_else(|| "ساخت حساب انجام نشد.".to_string())?;
             to_value(created)
+        }
+        "export_account_excel" => {
+            require_window(window, &["main", "account-groups", "account-definition"])?;
+            let (path, file_name) = excel_export_path(database, "لیست-حساب‌ها.xlsx")?;
+            let result = excel::export_accounts_to(database, &path)?;
+            let mut value = excel_download(transfers, PathBuf::from(&result.path), file_name)?;
+            value["skippedCodes"] = to_value(result.skipped_codes)?;
+            Ok(value)
+        }
+        "preview_account_excel_import" => {
+            require_window(window, &["main", "account-groups", "account-definition"])?;
+            let args: ExcelUploadArgs = parse_args(args)?;
+            let upload = pending_excel_upload(&transfers.excel_uploads, &args.upload_token)?;
+            let (preview, session) = excel::preview_accounts_at(database, &upload.path)?;
+            *lock(&transfers.sessions.account_import_preview) = Some(session);
+            to_value(preview)
+        }
+        "import_account_excel" => {
+            require_window(window, &["main", "account-groups", "account-definition"])?;
+            let args: ImportAccountArgs = parse_args(args)?;
+            // Consume the session only when the token matches, so a stale token
+            // cannot apply a plan that was never previewed in this process.
+            let session = {
+                let mut guard = lock(&transfers.sessions.account_import_preview);
+                match guard.as_ref() {
+                    Some(session) if session.token == args.preview_token => guard.take(),
+                    _ => None,
+                }
+            };
+            let Some(session) = session else {
+                return Err(
+                    "پیش‌نمایش ورود اکسل معتبر نیست یا منقضی شده است؛ دوباره پیش‌نمایش بگیرید."
+                        .to_string(),
+                );
+            };
+            let upload_path = session.canonical_path.clone();
+            let result = excel::import_accounts(database, session, &args.mode);
+            remove_excel_upload(&transfers.excel_uploads, &upload_path);
+            to_value(result?)
+        }
+        "export_voucher_excel" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: ExportVoucherArgs = parse_args(args)?;
+            database.validate_voucher_accounts(args.input.id, &args.input.lines)?;
+            let accounts = database.list_accounts()?.accounts;
+            let (path, file_name) =
+                excel_export_path(database, &excel::voucher_export_file_name(&args.input))?;
+            let saved = excel::export_voucher_to(&args.input, &accounts, &path)?;
+            excel_download(transfers, PathBuf::from(saved), file_name)
+        }
+        "import_voucher_excel" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: ExcelUploadArgs = parse_args(args)?;
+            let upload = pending_excel_upload(&transfers.excel_uploads, &args.upload_token)?;
+            let parsed = excel::import_voucher_from_path(&upload.path);
+            remove_excel_upload(&transfers.excel_uploads, &upload.path);
+            to_value(parsed?)
+        }
+        "analyze_bulk_voucher_excel" => {
+            require_window(window, &["main"])?;
+            let args: BulkAnalyzeArgs = parse_args(args)?;
+            let date_system = excel::DateSystem::parse(args.date_system.as_deref())?;
+            *lock(&transfers.sessions.bulk_voucher_import) = None;
+            transfers
+                .sessions
+                .bulk_import_cancel
+                .store(false, Ordering::Relaxed);
+            let upload = pending_excel_upload(&transfers.excel_uploads, &args.upload_token)?;
+            let sessions = transfers.sessions.clone();
+            let parsed = excel::parse_bulk_vouchers_with_progress(
+                &upload.path,
+                date_system,
+                &mut |_, _| {},
+                &|| sessions.bulk_import_cancel.load(Ordering::Relaxed),
+            );
+            // The parsed import is held in memory; the uploaded workbook is no
+            // longer needed once analysis succeeds or fails.
+            remove_excel_upload(&transfers.excel_uploads, &upload.path);
+            let import = parsed?;
+            let preview = database.preview_bulk_import(&import)?;
+            *lock(&transfers.sessions.bulk_voucher_import) = Some(import);
+            to_value(preview)
+        }
+        "cancel_bulk_voucher_import" => {
+            require_window(window, &["main"])?;
+            transfers
+                .sessions
+                .bulk_import_cancel
+                .store(true, Ordering::Relaxed);
+            Ok(Value::Null)
+        }
+        "commit_bulk_voucher_excel" => {
+            require_window(window, &["main"])?;
+            let args: CommitBulkArgs = parse_args(args)?;
+            let import = lock(&transfers.sessions.bulk_voucher_import)
+                .clone()
+                .ok_or_else(|| "ابتدا فایل اکسل را انتخاب و تحلیل کنید.".to_string())?;
+            let group_overrides = args.group_overrides.unwrap_or_default();
+            // A guessed group must be explicitly confirmed by the operator.
+            // Every inferred account needs a final mapping, even when the value
+            // is unchanged, so no mapping can be left unconfirmed.
+            let inferred_codes: std::collections::HashSet<String> = import
+                .accounts
+                .iter()
+                .filter(|account| account.group_is_inferred)
+                .map(|account| crate::db::normalize_code(&account.code))
+                .collect();
+            if !inferred_codes.is_empty() {
+                if !args.confirm_inferred_groups.unwrap_or(false) {
+                    return Err(
+                        "گروه حساب‌های حدس‌زده‌شده باید پیش از ثبت بررسی و تأیید شود.".to_string()
+                    );
+                }
+                let provided: std::collections::HashSet<String> = group_overrides
+                    .iter()
+                    .map(|mapping| crate::db::normalize_code(&mapping.account_code))
+                    .collect();
+                if let Some(missing) = inferred_codes.iter().find(|code| !provided.contains(*code))
+                {
+                    return Err(format!(
+                        "نگاشت گروه حساب {} تأیید نشده است؛ همه نگاشت‌های حدسی را بررسی کنید.",
+                        crate::db::to_fa_digits(missing)
+                    ));
+                }
+            }
+            transfers
+                .sessions
+                .bulk_import_cancel
+                .store(false, Ordering::Relaxed);
+            let sessions = transfers.sessions.clone();
+            let imported_count = database.import_vouchers_with_progress(
+                import,
+                args.renumber_conflicts,
+                &group_overrides,
+                &mut |_, _| {},
+                &|| sessions.bulk_import_cancel.load(Ordering::Relaxed),
+            )?;
+            *lock(&transfers.sessions.bulk_voucher_import) = None;
+            to_value(imported_count)
         }
         "get_trial_balance" => {
             require_window(window, &["main", "trial-balance", "voucher-list"])?;
@@ -1155,6 +1373,7 @@ fn backup_download(
             token.clone(),
             DownloadEntry {
                 path: path.clone(),
+                file_name: Some(file_name.clone()),
                 created_at: SystemTime::now(),
             },
         );
@@ -1163,6 +1382,55 @@ fn backup_download(
         "path": path.to_string_lossy(),
         "fileName": file_name,
         "webDownload": format!("/api/backup/{token}"),
+    }))
+}
+
+/// Creates a uniquely named workbook in the data folder. The name shown to the
+/// browser stays clean while the file on disk never collides with a parallel
+/// export or a download that is still in flight.
+fn excel_export_path(
+    database: &db::Database,
+    base_name: &str,
+) -> Result<(PathBuf, String), String> {
+    let database_path = PathBuf::from(database.path_string());
+    let directory = database_path
+        .parent()
+        .ok_or_else(|| "مسیر پوشه پایگاه داده پیدا نشد.".to_string())?
+        .join("exports");
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("ساخت پوشه خروجی اکسل ناموفق بود: {error}"))?;
+    let token = db::random_hex(8)?;
+    Ok((
+        directory.join(format!("export-{token}.xlsx")),
+        base_name.to_string(),
+    ))
+}
+
+/// Hands a freshly written workbook to the browser through a one-time link.
+/// The returned `path` is the download name because the browser, not the
+/// server, chooses the final folder.
+fn excel_download(
+    transfers: &Transfers,
+    path: PathBuf,
+    file_name: String,
+) -> Result<Value, String> {
+    let token = format!("excel-{}", db::random_hex(16)?);
+    {
+        let mut downloads = lock(&transfers.downloads);
+        prune_downloads(&mut downloads);
+        downloads.insert(
+            token.clone(),
+            DownloadEntry {
+                path,
+                file_name: Some(file_name.clone()),
+                created_at: SystemTime::now(),
+            },
+        );
+    }
+    Ok(json!({
+        "path": file_name,
+        "fileName": file_name,
+        "webDownload": format!("/api/excel/{token}"),
     }))
 }
 
@@ -1187,6 +1455,43 @@ fn prune_uploads(entries: &mut HashMap<String, UploadEntry>) {
         }
         fresh
     });
+}
+
+fn prune_excel_uploads(entries: &mut HashMap<String, ExcelUploadEntry>) {
+    let now = SystemTime::now();
+    entries.retain(|_, entry| {
+        let fresh = now
+            .duration_since(entry.created_at)
+            .map(|age| age <= UPLOAD_TTL)
+            .unwrap_or(false);
+        if !fresh {
+            let _ = std::fs::remove_file(&entry.path);
+        }
+        fresh
+    });
+}
+
+fn pending_excel_upload(
+    uploads: &Mutex<HashMap<String, ExcelUploadEntry>>,
+    token: &str,
+) -> Result<ExcelUploadEntry, String> {
+    let mut entries = lock(uploads);
+    prune_excel_uploads(&mut entries);
+    let entry = entries
+        .get(token)
+        .filter(|entry| entry.path.exists())
+        .ok_or_else(|| "فایل اکسل انتخاب‌شده منقضی شده است؛ دوباره انتخاب کنید.".to_string())?;
+    Ok(ExcelUploadEntry {
+        path: entry.path.clone(),
+        file_name: entry.file_name.clone(),
+        created_at: entry.created_at,
+    })
+}
+
+fn remove_excel_upload(uploads: &Mutex<HashMap<String, ExcelUploadEntry>>, path: &Path) {
+    let mut entries = lock(uploads);
+    entries.retain(|_, entry| entry.path != path);
+    let _ = std::fs::remove_file(path);
 }
 
 fn pending_upload(
@@ -1280,22 +1585,50 @@ async fn download_backup(
     State(state): State<WebState>,
     UrlPath(token): UrlPath<String>,
 ) -> Response {
+    serve_download(
+        &state.transfers,
+        &token,
+        "پشتیبان درخواستی در دسترس نیست؛ دوباره پشتیبان بگیرید.",
+        "فایل پشتیبان پیدا نشد.",
+    )
+    .await
+}
+
+async fn download_excel(
+    State(state): State<WebState>,
+    UrlPath(token): UrlPath<String>,
+) -> Response {
+    serve_download(
+        &state.transfers,
+        &token,
+        "فایل اکسل درخواستی در دسترس نیست؛ دوباره خروجی بگیرید.",
+        "فایل اکسل پیدا نشد.",
+    )
+    .await
+}
+
+async fn serve_download(
+    transfers: &Transfers,
+    token: &str,
+    missing: &str,
+    unreadable: &str,
+) -> Response {
     let entry = {
-        let mut downloads = lock(&state.transfers.downloads);
+        let mut downloads = lock(&transfers.downloads);
         prune_downloads(&mut downloads);
-        downloads.get(&token).map(|entry| entry.path.clone())
+        downloads
+            .get(token)
+            .map(|entry| (entry.path.clone(), entry.file_name.clone()))
     };
-    let Some(path) = entry else {
-        return transfer_error(
-            StatusCode::NOT_FOUND,
-            "پشتیبان درخواستی در دسترس نیست؛ دوباره پشتیبان بگیرید.",
-        );
+    let Some((path, file_name)) = entry else {
+        return transfer_error(StatusCode::NOT_FOUND, missing);
     };
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("hesabdari-backup")
-        .to_string();
+    let file_name = file_name.unwrap_or_else(|| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("hesabdari-export")
+            .to_string()
+    });
     match tokio::task::spawn_blocking(move || std::fs::read(&path)).await {
         Ok(Ok(bytes)) => {
             let mut response = Response::new(Body::from(bytes));
@@ -1307,15 +1640,31 @@ async fn download_backup(
                 CACHE_CONTROL,
                 axum::http::HeaderValue::from_static("no-store"),
             );
-            if let Ok(value) =
-                axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{file_name}\""))
-            {
+            if let Some(value) = content_disposition(&file_name) {
                 response.headers_mut().insert(CONTENT_DISPOSITION, value);
             }
             response
         }
-        _ => transfer_error(StatusCode::NOT_FOUND, "فایل پشتیبان پیدا نشد."),
+        _ => transfer_error(StatusCode::NOT_FOUND, unreadable),
     }
+}
+
+/// Builds an RFC 6266 attachment header. Persian file names are percent-encoded
+/// in `filename*`; a plain ASCII fallback keeps older browsers working.
+fn content_disposition(file_name: &str) -> Option<axum::http::HeaderValue> {
+    let mut encoded = String::new();
+    for byte in file_name.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(*byte as char);
+            }
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    axum::http::HeaderValue::from_str(&format!(
+        "attachment; filename=\"export.bin\"; filename*=UTF-8''{encoded}"
+    ))
+    .ok()
 }
 
 async fn upload_restore(
@@ -1410,6 +1759,101 @@ async fn upload_restore(
 
 fn transfer_error(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "ok": false, "error": message }))).into_response()
+}
+
+/// Receives a workbook chosen in the browser. Only the extension and size are
+/// checked here; the Excel parser performs its own archive and dimension
+/// validation before reading any data.
+async fn upload_excel(State(state): State<WebState>, headers: HeaderMap, body: Bytes) -> Response {
+    if body.is_empty() {
+        return transfer_error(StatusCode::BAD_REQUEST, "فایل اکسل خالی است.");
+    }
+    let file_name = headers
+        .get("x-file-name")
+        .and_then(|value| value.to_str().ok())
+        .map(decode_file_name)
+        .map(|value| sanitize_upload_name(&value))
+        .unwrap_or_else(|| "workbook.xlsx".to_string());
+    let extension = Path::new(&file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !EXCEL_EXTENSIONS.contains(&extension.as_str()) {
+        return transfer_error(
+            StatusCode::BAD_REQUEST,
+            "پسوند فایل اکسل باید یکی از xlsx، xlsm، xls، xlsb یا ods باشد.",
+        );
+    }
+    let database_path = PathBuf::from(state.database.path_string());
+    let Some(parent) = database_path.parent() else {
+        return transfer_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "مسیر پوشه پایگاه داده پیدا نشد.",
+        );
+    };
+    let directory = parent.join("excel-uploads");
+    let Ok(token) = db::random_hex(16) else {
+        return transfer_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ساخت شناسهٔ فایل اکسل ناموفق بود.",
+        );
+    };
+    let path = directory.join(format!("excel-{token}.{extension}"));
+    let bytes = body.to_vec();
+    let target = path.clone();
+    let stored = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("ساخت پوشهٔ فایل‌های اکسل ناموفق بود: {error}"))?;
+        // Uploads left behind by a closed tab must not accumulate.
+        if let Ok(items) = std::fs::read_dir(&directory) {
+            for item in items.flatten() {
+                let stale = item
+                    .metadata()
+                    .ok()
+                    .and_then(|meta| meta.modified().ok())
+                    .and_then(|modified| modified.elapsed().ok())
+                    .map(|age| age > UPLOAD_TTL)
+                    .unwrap_or(false);
+                if stale {
+                    let _ = std::fs::remove_file(item.path());
+                }
+            }
+        }
+        std::fs::write(&target, &bytes)
+            .map_err(|error| format!("ذخیرهٔ فایل اکسل ناموفق بود: {error}"))
+    })
+    .await;
+    match stored {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return transfer_error(StatusCode::BAD_REQUEST, &error),
+        Err(error) => {
+            return transfer_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("ذخیرهٔ فایل اکسل ناموفق بود: {error}"),
+            )
+        }
+    }
+    {
+        let mut uploads = lock(&state.transfers.excel_uploads);
+        prune_excel_uploads(&mut uploads);
+        uploads.insert(
+            token.clone(),
+            ExcelUploadEntry {
+                path,
+                file_name: file_name.clone(),
+                created_at: SystemTime::now(),
+            },
+        );
+    }
+    Json(json!({
+        "ok": true,
+        "data": {
+            "token": token,
+            "fileName": file_name,
+        },
+    }))
+    .into_response()
 }
 
 fn data_dir_from_env() -> Result<PathBuf, String> {
@@ -2017,6 +2461,307 @@ mod tests {
             "voucher",
         )
         .unwrap()
+    }
+
+    fn add_excel_upload(transfers: &Transfers, token: &str, path: PathBuf, file_name: &str) {
+        lock(&transfers.excel_uploads).insert(
+            token.to_string(),
+            ExcelUploadEntry {
+                path,
+                file_name: file_name.to_string(),
+                created_at: SystemTime::now(),
+            },
+        );
+    }
+
+    fn excel_download_path(transfers: &Transfers, download: &Value) -> PathBuf {
+        let url = download["webDownload"].as_str().expect("webDownload");
+        let token = url.strip_prefix("/api/excel/").expect("excel download url");
+        lock(&transfers.downloads)
+            .get(token)
+            .expect("download entry")
+            .path
+            .clone()
+    }
+
+    fn write_bulk_workbook(path: &Path) {
+        let mut workbook = rust_xlsxwriter::Workbook::new();
+        let sheet = workbook.add_worksheet();
+        let headers = [
+            "شماره سند",
+            "تاریخ",
+            "نوع سند",
+            "شرح سند",
+            "کد گروه",
+            "کد کل",
+            "عنوان کل",
+            "ماهیت کل",
+            "کد معین",
+            "عنوان معین",
+            "ماهیت معین",
+            "بدهکار",
+            "بستانکار",
+        ];
+        for (column, header) in headers.iter().enumerate() {
+            sheet
+                .write_string(0, column as u16, *header)
+                .expect("header");
+        }
+        let rows = [
+            [
+                "500",
+                "1410/02/01",
+                "",
+                "ورود دسته‌جمعی وب",
+                "1",
+                "95",
+                "کل آزمون وب",
+                "بدهکار",
+                "9501",
+                "معین آزمون وب",
+                "بدهکار",
+                "1000",
+                "0",
+            ],
+            [
+                "500",
+                "1410/02/01",
+                "",
+                "ورود دسته‌جمعی وب",
+                "7",
+                "45",
+                "کل درآمد آزمون وب",
+                "بستانکار",
+                "4501",
+                "معین درآمد آزمون وب",
+                "بستانکار",
+                "0",
+                "1000",
+            ],
+        ];
+        for (index, row) in rows.iter().enumerate() {
+            for (column, value) in row.iter().enumerate() {
+                sheet
+                    .write_string(index as u32 + 1, column as u16, *value)
+                    .expect("cell");
+            }
+        }
+        workbook.save(path).expect("save workbook");
+    }
+
+    #[test]
+    fn settings_are_editable_through_the_browser_command() {
+        let database = crate::db::memory_database();
+        let saved = call(
+            &database,
+            "save_settings",
+            json!({ "companyName": "شرکت آزمون وب", "fiscalYear": "۱۴۱۰" }),
+        )
+        .unwrap();
+        assert_eq!(saved["companyName"], "شرکت آزمون وب");
+        let current = call(&database, "get_settings", Value::Null).unwrap();
+        assert_eq!(current["companyName"], "شرکت آزمون وب");
+        assert!(dispatch(
+            &database,
+            "save_settings",
+            json!({ "companyName": "غیرمجاز", "fiscalYear": "۱۴۱۰" }),
+            "voucher",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn excel_export_upload_and_bulk_import_run_through_the_browser_commands() {
+        let directory = crate::db::test_temp_dir("web-excel");
+        let database_path = directory.join(crate::db::DB_FILE_NAME);
+        let database = crate::db::file_database(&database_path);
+        let print_docs = Mutex::new(HashMap::new());
+        let transfers = Transfers::default();
+        let saved = save_cash_sale(&database, 1, "1410/01/05", 1500);
+
+        let exported = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "export_voucher_excel",
+            json!({
+                "input": {
+                    "id": saved["id"],
+                    "number": saved["number"],
+                    "date": "1410/01/05",
+                    "voucherType": vouchers::VOUCHER_TYPES[0],
+                    "description": "فروش نقدی",
+                    "fiscalYearId": null,
+                    "lines": [
+                        {
+                            "id": saved["lines"][0]["id"],
+                            "accountCode": "110101",
+                            "detail1Code": null,
+                            "description": "صندوق",
+                            "debit": 1500,
+                            "credit": 0,
+                        },
+                        {
+                            "id": saved["lines"][1]["id"],
+                            "accountCode": "410101",
+                            "detail1Code": null,
+                            "description": "فروش",
+                            "debit": 0,
+                            "credit": 1500,
+                        },
+                    ],
+                },
+            }),
+            "voucher",
+        )
+        .unwrap();
+        assert!(exported["fileName"].as_str().unwrap().ends_with(".xlsx"));
+        let voucher_path = excel_download_path(&transfers, &exported);
+        assert!(voucher_path.exists());
+
+        // The exported workbook can be read back through the browser command.
+        add_excel_upload(&transfers, "voucher-upload", voucher_path, "سند.xlsx");
+        let imported = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "import_voucher_excel",
+            json!({ "uploadToken": "voucher-upload" }),
+            "voucher",
+        )
+        .unwrap();
+        let lines = imported.as_array().unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["accountCode"], "110101");
+        assert!(!lock(&transfers.excel_uploads).contains_key("voucher-upload"));
+
+        let accounts_export = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "export_account_excel",
+            Value::Null,
+            "account-definition",
+        )
+        .unwrap();
+        assert!(accounts_export["skippedCodes"].is_array());
+        assert!(excel_download_path(&transfers, &accounts_export).exists());
+        assert!(super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "export_account_excel",
+            Value::Null,
+            "voucher",
+        )
+        .is_err());
+
+        // A workbook with one new level-1 account previews and then imports.
+        let account_workbook = directory.join("accounts-upload.xlsx");
+        {
+            let mut workbook = rust_xlsxwriter::Workbook::new();
+            let sheet = workbook.add_worksheet();
+            for (column, header) in ["کد گروه", "کد کل", "عنوان کل"].iter().enumerate()
+            {
+                sheet
+                    .write_string(0, column as u16, *header)
+                    .expect("header");
+            }
+            sheet.write_string(1, 0, "1").unwrap();
+            sheet.write_string(1, 1, "1998").unwrap();
+            sheet.write_string(1, 2, "حساب اکسل وب").unwrap();
+            workbook.save(&account_workbook).unwrap();
+        }
+        add_excel_upload(
+            &transfers,
+            "accounts-upload",
+            account_workbook,
+            "accounts.xlsx",
+        );
+        let preview = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "preview_account_excel_import",
+            json!({ "uploadToken": "accounts-upload" }),
+            "account-definition",
+        )
+        .unwrap();
+        assert_eq!(preview["createdCount"], 1);
+        assert_eq!(preview["atomicReady"], true);
+        let preview_token = preview["previewToken"].as_str().unwrap().to_string();
+        let result = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "import_account_excel",
+            json!({ "previewToken": preview_token, "mode": "atomic" }),
+            "account-definition",
+        )
+        .unwrap();
+        assert_eq!(result["createdCount"], 1);
+        assert!(database
+            .list_accounts()
+            .unwrap()
+            .accounts
+            .iter()
+            .any(|account| account.code == "1998"));
+        // A session token is consumed by the first successful import.
+        assert!(super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "import_account_excel",
+            json!({ "previewToken": preview_token, "mode": "atomic" }),
+            "account-definition",
+        )
+        .is_err());
+
+        // Bulk analysis keeps the parsed import for the commit command.
+        let bulk_workbook = directory.join("bulk-upload.xlsx");
+        write_bulk_workbook(&bulk_workbook);
+        add_excel_upload(&transfers, "bulk-upload", bulk_workbook, "bulk.xlsx");
+        let bulk_preview = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "analyze_bulk_voucher_excel",
+            json!({ "uploadToken": "bulk-upload", "dateSystem": "jalali" }),
+            "main",
+        )
+        .unwrap();
+        assert_eq!(bulk_preview["voucherCount"], 1);
+        let committed = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "commit_bulk_voucher_excel",
+            json!({
+                "renumberConflicts": false,
+                "groupOverrides": [],
+                "confirmInferredGroups": true,
+            }),
+            "main",
+        )
+        .unwrap();
+        assert_eq!(committed, 1);
+        assert_eq!(database.voucher_count().unwrap(), 2);
+        // The parsed import is cleared after a successful commit.
+        assert!(super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "commit_bulk_voucher_excel",
+            json!({
+                "renumberConflicts": false,
+                "groupOverrides": [],
+                "confirmInferredGroups": true,
+            }),
+            "main",
+        )
+        .is_err());
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
