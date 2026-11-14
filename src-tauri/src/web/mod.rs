@@ -1260,6 +1260,13 @@ fn dispatch(
             require_window(window, &["main"])?;
             Ok(web_window("/account-definition.html", "account-definition"))
         }
+        "open_bulk_voucher_delete_window" => {
+            require_window(window, &["main"])?;
+            Ok(web_window(
+                "/bulk-voucher-delete.html",
+                "bulk-voucher-delete",
+            ))
+        }
         _ => Err(format!(
             "دستور «{name}» در نسخه وب محلی هنوز پشتیبانی نمی‌شود."
         )),
@@ -3232,6 +3239,10 @@ mod tests {
         let groups = call(&database, "open_account_groups_window", Value::Null).unwrap();
         assert_eq!(groups["webOpen"], "/account-groups.html");
         assert_eq!(groups["webName"], "account-groups");
+
+        let bulk = call(&database, "open_bulk_voucher_delete_window", Value::Null).unwrap();
+        assert_eq!(bulk["webOpen"], "/bulk-voucher-delete.html");
+        assert_eq!(bulk["webName"], "bulk-voucher-delete");
 
         let voucher = call(&database, "open_voucher_window", json!({ "number": 7 })).unwrap();
         assert_eq!(voucher["webOpen"], "/voucher.html?number=7");

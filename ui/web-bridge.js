@@ -50,24 +50,61 @@
   }
 
   // Browser popup blockers accept window.open only during the click itself.
-  // Window commands therefore open a blank tab synchronously and navigate it
-  // after the server confirms the URL.
+  // When the in-page window layer is unavailable (or the page was loaded
+  // without web-window.js), window commands fall back to a blank popup that
+  // is navigated after the server confirms the URL.
   const windowCommands = {
-    open_trial_balance_window: { name: 'trial-balance', width: 1200, height: 820 },
-    open_voucher_list_window: { name: 'voucher-list', width: 1280, height: 860 },
-    open_voucher_window: { name: 'voucher', width: 1240, height: 800 },
-    open_account_groups_window: { name: 'account-groups', width: 960, height: 760 },
-    open_account_definition_window: { name: 'account-definition', width: 1040, height: 800 },
-    open_voucher_preview: { name: 'print-preview', width: 900, height: 980 },
-    open_ledger_preview: { name: 'print-preview', width: 900, height: 980 },
-    open_journal_preview: { name: 'print-preview', width: 900, height: 980 },
-    open_trial_balance_preview: { name: 'print-preview', width: 900, height: 980 },
-    open_income_statement_preview: { name: 'print-preview', width: 900, height: 980 },
-    open_balance_sheet_preview: { name: 'print-preview', width: 900, height: 980 },
-    open_equity_changes_preview: { name: 'print-preview', width: 900, height: 980 },
-    open_cogs_preview: { name: 'print-preview', width: 900, height: 980 },
-    open_profit_appropriation_preview: { name: 'print-preview', width: 900, height: 980 },
-    open_cash_flow_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_trial_balance_window: {
+      name: 'trial-balance', title: 'تراز آزمایشی', width: 1200, height: 820,
+    },
+    open_voucher_list_window: {
+      name: 'voucher-list', title: 'لیست اسناد حسابداری', width: 1280, height: 860,
+    },
+    open_voucher_window: {
+      name: 'voucher', title: 'صدور سند حسابداری', width: 1240, height: 800,
+    },
+    open_account_groups_window: {
+      name: 'account-groups', title: 'تعریف گروه حساب‌ها', width: 960, height: 760,
+    },
+    open_account_definition_window: {
+      name: 'account-definition',
+      title: 'تعریف حساب‌های کل، معین و تفصیلی',
+      width: 1040,
+      height: 800,
+    },
+    open_bulk_voucher_delete_window: {
+      name: 'bulk-voucher-delete', title: 'حذف دسته‌جمعی اسناد', width: 960, height: 760,
+    },
+    open_voucher_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
+    open_ledger_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
+    open_journal_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
+    open_trial_balance_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
+    open_income_statement_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
+    open_balance_sheet_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
+    open_equity_changes_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
+    open_cogs_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
+    open_profit_appropriation_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
+    open_cash_flow_preview: {
+      name: 'print-preview', title: 'پیش‌نمایش چاپ', width: 900, height: 980,
+    },
   };
 
   function pageLabel(popupName) {
@@ -79,6 +116,14 @@
     if (path.endsWith('/bulk-voucher-delete.html')) return 'bulk-voucher-delete';
     if (path.endsWith('/print.html')) return 'print-preview-web';
     return 'main';
+  }
+
+  // The in-page window layer is created by web-window.js. Pages that run
+  // inside one of its frames receive the client API and forward their window
+  // commands to the page that owns the windows.
+  function webWindowApi() {
+    const api = window.__HESABDARI_WEB_WINDOWS__;
+    return api && typeof api.open === 'function' ? api : null;
   }
 
   function popupFeatures(command) {
@@ -308,9 +353,10 @@
 
     const target = windowCommands[command];
     const opensVoucher = command === 'open_voucher_window';
+    const inPageWindows = webWindowApi();
     let blank = null;
     let reuseVoucherTab = false;
-    if (target) {
+    if (target && !inPageWindows) {
       if (opensVoucher) reuseVoucherTab = await probeVoucherTab();
       if (!reuseVoucherTab) {
         blank = openWindow('', target.name, popupFeatures(target));
@@ -356,6 +402,19 @@
         return data.path || data.fileName || null;
       }
       if (data && typeof data.webOpen === 'string') {
+        if (inPageWindows) {
+          inPageWindows.open({
+            name: data.webName || (target ? target.name : 'window'),
+            url: data.webOpen,
+            title: target ? target.title : 'نرم‌افزار حسابداری',
+            width: target ? target.width : undefined,
+            height: target ? target.height : undefined,
+          });
+          // A form already open receives the requested voucher number through
+          // the same broadcast the desktop window uses.
+          if (opensVoucher) broadcast('voucher-request', requestedVoucherNumber(args));
+          return null;
+        }
         if (reuseVoucherTab) {
           const existing = openWindow('', data.webName, popupFeatures(target));
           if (existing) {
@@ -415,7 +474,7 @@
     });
   }
 
-  async function closeWindow() {
+  async function closeListenersAllow() {
     let prevented = false;
     const request = {
       preventDefault: () => {
@@ -432,7 +491,23 @@
       }
     }
     await Promise.allSettled(pending);
-    if (prevented) return;
+    return !prevented;
+  }
+
+  // The window title bar asks the form whether it may close. A dirty form
+  // can stop the request and show its own confirmation inside the frame.
+  const closingWindows = webWindowApi();
+  if (closingWindows && typeof closingWindows.setCloseGuard === 'function') {
+    closingWindows.setCloseGuard(() => closeListenersAllow());
+  }
+
+  async function closeWindow() {
+    if (!(await closeListenersAllow())) return;
+    const inPageWindows = webWindowApi();
+    if (inPageWindows && typeof inPageWindows.closeSelf === 'function') {
+      inPageWindows.closeSelf();
+      return;
+    }
     window.close();
   }
 
@@ -441,7 +516,12 @@
       label,
       close: () => closeWindow(),
       setFocus: () => {
-        window.focus();
+        const inPageWindows = webWindowApi();
+        if (inPageWindows && typeof inPageWindows.focusSelf === 'function') {
+          inPageWindows.focusSelf();
+        } else {
+          window.focus();
+        }
         return Promise.resolve();
       },
       onCloseRequested: (handler) => registerCloseHandler(handler),
