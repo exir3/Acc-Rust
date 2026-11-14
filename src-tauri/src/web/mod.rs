@@ -60,6 +60,8 @@ struct WebState {
     database: Arc<db::Database>,
     print_docs: Arc<Mutex<HashMap<String, PrintDoc>>>,
     transfers: Transfers,
+    ui_dir: PathBuf,
+    build: String,
 }
 
 /// State shared by every request. Besides the one-time download and upload
@@ -475,17 +477,113 @@ pub fn run() -> Result<(), String> {
     runtime.block_on(serve(data_dir, ui_dir, port))
 }
 
+/// The UI is read from disk on every request, so a browser must not reuse an
+/// old copy after the app is rebuilt. This is a loopback page for one user;
+/// fresh files are worth more than any cache hit.
+async fn disable_caching(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+async fn serve_page(State(state): State<WebState>, uri: axum::http::Uri) -> Response {
+    let requested = uri.path();
+    let file = if requested == "/" {
+        "index.html"
+    } else {
+        requested.trim_start_matches('/')
+    };
+    if file.contains('/') || file.contains('\\') || file.contains("..") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let contents = match tokio::fs::read_to_string(state.ui_dir.join(file)).await {
+        Ok(contents) => contents,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let html = version_assets(&contents, &state.build);
+    Response::builder()
+        .header(CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(html))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Adds `?v=<build>` to every local script and stylesheet reference. A browser
+/// holding an older copy of a file requests a new URL after an update instead
+/// of silently reusing the stale code.
+fn version_assets(html: &str, build: &str) -> String {
+    const ATTRIBUTES: [&str; 2] = ["src=\"", "href=\""];
+    let mut out = String::with_capacity(html.len() + 256);
+    let mut cursor = 0;
+    while cursor < html.len() {
+        let rest = &html[cursor..];
+        let next = ATTRIBUTES
+            .iter()
+            .filter_map(|attribute| rest.find(attribute).map(|index| (index, *attribute)))
+            .min_by_key(|(index, _)| *index);
+        let Some((index, attribute)) = next else {
+            out.push_str(rest);
+            break;
+        };
+        let value_start = cursor + index + attribute.len();
+        let Some(length) = html[value_start..].find('"') else {
+            out.push_str(&html[cursor..]);
+            break;
+        };
+        let value_end = value_start + length;
+        out.push_str(&html[cursor..value_start]);
+        let value = &html[value_start..value_end];
+        out.push_str(value);
+        if should_version_asset(value) {
+            out.push_str("?v=");
+            out.push_str(build);
+        }
+        out.push('"');
+        cursor = value_end + 1;
+    }
+    out
+}
+
+fn should_version_asset(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('#')
+        && !value.starts_with('/')
+        && !value.contains("://")
+        && !value.starts_with("data:")
+        && !value.contains('?')
+        && (value.ends_with(".js") || value.ends_with(".css"))
+}
+
 async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), String> {
     let (connection, path) = db::initialize_at(&data_dir, None, false)?;
     let database = Arc::new(db::Database::default());
     database.attach(connection, path);
 
+    let build = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+
     let state = WebState {
         database: database.clone(),
         print_docs: Arc::new(Mutex::new(HashMap::new())),
         transfers: Transfers::default(),
+        ui_dir: ui_dir.clone(),
+        build: build.clone(),
     };
     let app = Router::new()
+        .route("/", get(serve_page))
+        .route("/index.html", get(serve_page))
+        .route("/voucher.html", get(serve_page))
+        .route("/account-groups.html", get(serve_page))
+        .route("/account-definition.html", get(serve_page))
+        .route("/bulk-voucher-delete.html", get(serve_page))
+        .route("/print.html", get(serve_page))
         .route("/api/health", get(health))
         .route("/api/command", post(command))
         .route("/api/backup/{token}", get(download_backup))
@@ -499,6 +597,7 @@ async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), Stri
             post(upload_excel).layer(DefaultBodyLimit::max(MAX_EXCEL_BYTES)),
         )
         .fallback_service(ServeDir::new(&ui_dir).append_index_html_on_directories(true))
+        .layer(axum::middleware::from_fn(disable_caching))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port))
@@ -513,7 +612,10 @@ async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), Stri
     eprintln!("[hesabdari-web] ui directory: {}", ui_dir.display());
     eprintln!("[hesabdari-web] database: {}", database.path_string());
     if std::env::var_os("HESABDARI_NO_OPEN").is_none() {
-        open_browser(&url);
+        // A unique query opens a fresh tab even when the browser still has the
+        // previous session's tab for this address, so a rebuilt UI is never
+        // hidden behind an old page that is already in memory.
+        open_browser(&format!("{url}?v={build}"));
     }
 
     axum::serve(listener, app)
@@ -526,6 +628,7 @@ async fn health(State(state): State<WebState>) -> Json<Value> {
         "ok": true,
         "mode": "local-web",
         "version": env!("CARGO_PKG_VERSION"),
+        "build": state.build.as_str(),
         "databasePath": state.database.path_string(),
     }))
 }
@@ -3282,5 +3385,27 @@ mod tests {
             "trial-balance",
         )
         .is_err());
+    }
+
+    #[test]
+    fn pages_version_their_local_scripts_and_stylesheets() {
+        let html =
+            "<link rel=\"stylesheet\" href=\"styles.css\"><script src=\"js/core.js\"></script>";
+        assert_eq!(
+            version_assets(html, "42"),
+            "<link rel=\"stylesheet\" href=\"styles.css?v=42\"><script src=\"js/core.js?v=42\"></script>"
+        );
+    }
+
+    #[test]
+    fn page_versioning_leaves_other_references_alone() {
+        let html = concat!(
+            "<use href=\"#i-logo\"/>",
+            "<a href=\"https://example.com/x.js\"></a>",
+            "<script src=\"data:text/javascript,1\"></script>",
+            "<img src=\"logo.png\">",
+            "<link href=\"styles.css?v=1\">"
+        );
+        assert_eq!(version_assets(html, "42"), html);
     }
 }

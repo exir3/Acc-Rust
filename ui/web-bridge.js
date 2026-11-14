@@ -13,6 +13,38 @@
   // For example, the print preview saves its HTML with a browser download.
   window.__HESABDARI_WEB__ = true;
 
+  // The server stamps every asset URL with the build it is serving. A tab that
+  // is still open when the app is rebuilt reloads itself instead of running
+  // the previous form implementation from memory.
+  (function watchBuild() {
+    const script = document.currentScript;
+    if (!script || !script.src) return;
+    let build = '';
+    try {
+      build = new URL(script.src, window.location.href).searchParams.get('v') || '';
+    } catch (_) {
+      return;
+    }
+    if (!build) return;
+
+    async function check() {
+      if (document.visibilityState === 'hidden') return;
+      try {
+        const response = await fetch('api/health', { cache: 'no-store' });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data && data.build && data.build !== build) window.location.reload();
+      } catch (_) {
+        // The server is not running; keep the page as it is.
+      }
+    }
+
+    window.addEventListener('focus', () => { void check(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') void check();
+    });
+  })();
+
   const params = new URLSearchParams(window.location.search);
   const requestedPopup = params.get('popup') || '';
   if (requestedPopup === 'trial-balance') window.__IS_TRIAL_BALANCE_POPUP__ = true;

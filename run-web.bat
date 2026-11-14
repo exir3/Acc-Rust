@@ -60,7 +60,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "for ($i = 0; $i -lt 8; $
 if not errorlevel 1 (
     echo [1/1] The local web server is already running.
     echo       Address: %URL%
-    if not defined HESABDARI_NO_OPEN start "" "%URL%"
+    echo       If the app was rebuilt, close that server window and run
+    echo       this script again so the new build is served.
+    if not defined HESABDARI_NO_OPEN start "" "%URL%?v=%RANDOM%%RANDOM%"
     echo.
     echo Close the server window to stop it.
     goto :end

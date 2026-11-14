@@ -26,7 +26,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 axum = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "net"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "fs"], optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
 base64 = "0.22.1"
 serde = { version = "1", features = ["derive"] }
