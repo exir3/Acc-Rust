@@ -76,9 +76,18 @@ pub(crate) fn report_meta(
     from: &str,
     to: &str,
 ) -> Result<report::ReportMeta, String> {
-    let settings = state.database.get_settings()?;
-    let fiscal_year = state
-        .database
+    report_meta_for(&state.database, from, to)
+}
+
+/// Same metadata without a Tauri `State`, so the local web host can build the
+/// same printable documents from the shared database.
+pub(crate) fn report_meta_for(
+    database: &db::Database,
+    from: &str,
+    to: &str,
+) -> Result<report::ReportMeta, String> {
+    let settings = database.get_settings()?;
+    let fiscal_year = database
         .fiscal_year_label_for_range(from, to)?
         .unwrap_or(settings.fiscal_year);
     Ok(report::ReportMeta {

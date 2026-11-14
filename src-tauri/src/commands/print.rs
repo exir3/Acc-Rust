@@ -12,14 +12,17 @@ use crate::vouchers::{IntegrityReport, ReportScope};
 
 /// Official is the safe default for printed statements; temporary vouchers are
 /// included only when the caller explicitly asks for a working report.
-fn report_scope(scope: Option<String>) -> Result<ReportScope, String> {
+pub(crate) fn report_scope(scope: Option<String>) -> Result<ReportScope, String> {
     ReportScope::parse(scope.as_deref().unwrap_or("official"))
 }
 
 /// An official statement with integrity errors is not a printable final
 /// document. Working/temporary previews stay available so the user can review
 /// the same figures with the full health panel before fixing them.
-fn ensure_printable(scope: ReportScope, integrity: &IntegrityReport) -> Result<(), String> {
+pub(crate) fn ensure_printable(
+    scope: ReportScope,
+    integrity: &IntegrityReport,
+) -> Result<(), String> {
     if scope == ReportScope::Official && !integrity.ok {
         return Err(
             "گزارش رسمی به دلیل وجود خطای سلامت حسابداری قابل چاپ نیست؛ ابتدا خطاهای Integrity را برطرف کنید یا گزارش را در حالت کاری تهیه کنید."

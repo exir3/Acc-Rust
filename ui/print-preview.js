@@ -185,6 +185,22 @@ async function printReport() {
 
 async function saveHtml() {
   if (!state.doc) return;
+  if (window.__HESABDARI_WEB__) {
+    // The browser host cannot open a native save dialog; hand the same
+    // server-built HTML to the browser as a download instead.
+    const blob = new Blob([state.doc.html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const fileName = state.doc.fileName || 'report.html';
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus(`گزارش «${fileName}» در پوشهٔ دانلودهای مرورگر ذخیره شد.`, 'ok');
+    return;
+  }
   if (!invoke) {
     setStatus('ذخیره فایل فقط در نسخه دسکتاپ امکان‌پذیر است.', 'error');
     return;

@@ -4,16 +4,18 @@
 //! same Rust storage layer. The browser gets a small JSON command endpoint
 //! that mirrors the part of the Tauri command surface needed by the local-web
 //! slices so far: settings, the chart of accounts, fiscal years, the voucher
-//! list and trial balance, and the voucher form including save, permanent,
-//! delete and line transfer.
+//! list, the voucher form including save, permanent, delete and line transfer,
+//! the main report pages and their print previews.
 //!
 //! The listener is bound to `127.0.0.1` only. There is no authentication and no
 //! remote access; the server is meant for the same Windows session as the
 //! desktop application.
 
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -24,14 +26,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tower_http::services::ServeDir;
 
+use crate::commands::print::{ensure_printable, report_scope};
+use crate::commands::state::report_meta_for;
 use crate::db;
+use crate::report::{self, PrintDoc};
 use crate::vouchers::{self, ReportScope, VoucherInput, VoucherTransferInput};
 
 const DEFAULT_PORT: u16 = 4174;
 
+/// The local host builds print previews per request. Each document gets an
+/// opaque token that only the preview tab receives through its URL.
+static PRINT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const MAX_STORED_PRINT_DOCS: usize = 16;
+
 #[derive(Clone)]
 struct WebState {
     database: Arc<db::Database>,
+    print_docs: Arc<Mutex<HashMap<String, PrintDoc>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +88,97 @@ struct TrialBalanceArgs {
     account_to: Option<String>,
     show_zero: Option<bool>,
     multi_level: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JournalArgs {
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    to: String,
+    #[serde(default)]
+    search: String,
+    scope: Option<String>,
+    offset: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerArgs {
+    account_code: String,
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    to: String,
+    scope: Option<String>,
+    offset: Option<i64>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IncomeStatementArgs {
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    to: String,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BalanceSheetArgs {
+    as_of: String,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JournalPrintArgs {
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    to: String,
+    #[serde(default)]
+    search: String,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerPrintArgs {
+    account_code: String,
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    to: String,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrialBalancePrintArgs {
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    to: String,
+    scope: Option<String>,
+    account_from: Option<String>,
+    account_to: Option<String>,
+    show_zero: Option<bool>,
+    multi_level: Option<bool>,
+    balance_type: Option<String>,
+    show_account_code: Option<bool>,
+    show_account_name: Option<bool>,
+    show_print_date_time: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrintDocArgs {
+    token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +288,7 @@ async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), Stri
 
     let state = WebState {
         database: database.clone(),
+        print_docs: Arc::new(Mutex::new(HashMap::new())),
     };
     let app = Router::new()
         .route("/api/health", get(health))
@@ -226,9 +329,11 @@ async fn command(State(state): State<WebState>, Json(request): Json<CommandReque
     let CommandRequest { name, args, window } = request;
     let window = window.unwrap_or_else(|| "main".to_string());
     let database = state.database.clone();
+    let print_docs = state.print_docs.clone();
 
     let result =
-        tokio::task::spawn_blocking(move || dispatch(&database, &name, args, &window)).await;
+        tokio::task::spawn_blocking(move || dispatch(&database, &print_docs, &name, args, &window))
+            .await;
     match result {
         Ok(Ok(data)) => Json(CommandResponse {
             ok: true,
@@ -259,6 +364,7 @@ async fn command(State(state): State<WebState>, Json(request): Json<CommandReque
 
 fn dispatch(
     database: &db::Database,
+    print_docs: &Mutex<HashMap<String, PrintDoc>>,
     name: &str,
     args: Value,
     window: &str,
@@ -446,6 +552,145 @@ fn dispatch(
             )?;
             to_value(report)
         }
+        "get_journal" => {
+            require_window(window, &["main", "voucher-list", "trial-balance"])?;
+            let args: JournalArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let report = database.get_journal_page_scoped(
+                &args.from,
+                &args.to,
+                &args.search,
+                args.offset,
+                args.limit.or(Some(vouchers::DEFAULT_JOURNAL_PAGE_SIZE)),
+                scope,
+            )?;
+            to_value(report)
+        }
+        "get_ledger" => {
+            require_window(
+                window,
+                &["main", "voucher", "voucher-list", "trial-balance"],
+            )?;
+            let args: LedgerArgs = parse_args(args)?;
+            let report = database.get_ledger_page_scoped(
+                &args.account_code,
+                &args.from,
+                &args.to,
+                args.offset,
+                args.limit,
+                report_scope(args.scope)?,
+            )?;
+            to_value(report)
+        }
+        "get_income_statement" => {
+            require_window(window, &["main", "voucher-list", "trial-balance"])?;
+            let args: IncomeStatementArgs = parse_args(args)?;
+            to_value(database.get_income_statement_scoped(
+                &args.from,
+                &args.to,
+                report_scope(args.scope)?,
+            )?)
+        }
+        "get_balance_sheet" => {
+            require_window(window, &["main", "voucher-list", "trial-balance"])?;
+            let args: BalanceSheetArgs = parse_args(args)?;
+            to_value(database.get_balance_sheet_scoped(&args.as_of, report_scope(args.scope)?)?)
+        }
+        "open_voucher_preview" => {
+            require_window(window, &["main", "voucher", "voucher-list"])?;
+            let args: VoucherNumberArgs = parse_args(args)?;
+            let voucher = database
+                .get_voucher(args.number)?
+                .ok_or_else(|| "برای چاپ، ابتدا سند را ذخیره کنید.".to_string())?;
+            let integrity = database.integrity_report(
+                &voucher.date,
+                &voucher.date,
+                false,
+                ReportScope::Working,
+            )?;
+            let meta = report_meta_for(database, &voucher.date, &voucher.date)?;
+            let document = report::voucher_print_doc(&voucher, &meta, &integrity);
+            Ok(preview_window(print_docs, document))
+        }
+        "open_ledger_preview" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: LedgerPrintArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let ledger =
+                database.get_ledger_scoped(&args.account_code, &args.from, &args.to, scope)?;
+            let integrity = database.integrity_report(&ledger.from, &ledger.to, false, scope)?;
+            let meta = report_meta_for(database, &args.from, &args.to)?;
+            let document = report::ledger_print_doc(&ledger, &meta, &integrity);
+            Ok(preview_window(print_docs, document))
+        }
+        "open_journal_preview" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: JournalPrintArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let journal = database.get_journal_scoped(&args.from, &args.to, &args.search, scope)?;
+            let integrity = database.integrity_report(&journal.from, &journal.to, false, scope)?;
+            let meta = report_meta_for(database, &args.from, &args.to)?;
+            let document = report::journal_print_doc(&journal, &meta, &integrity);
+            Ok(preview_window(print_docs, document))
+        }
+        "open_trial_balance_preview" => {
+            require_window(window, &["main", "voucher", "trial-balance"])?;
+            let args: TrialBalancePrintArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let trial = database.get_trial_balance_filtered_scoped(
+                &args.from,
+                &args.to,
+                args.account_from.as_deref().unwrap_or(""),
+                args.account_to.as_deref().unwrap_or(""),
+                args.show_zero.unwrap_or(false),
+                args.multi_level.unwrap_or(true),
+                scope,
+            )?;
+            let integrity = database.integrity_report(&trial.from, &trial.to, false, scope)?;
+            ensure_printable(scope, &integrity)?;
+            let mut meta = report_meta_for(database, &args.from, &args.to)?;
+            meta.show_print_date_time = args.show_print_date_time.unwrap_or(true);
+            let document = report::trial_balance_print_doc(
+                &trial,
+                &meta,
+                args.balance_type.as_deref().unwrap_or("شش ستونی"),
+                args.multi_level.unwrap_or(true),
+                args.show_account_code.unwrap_or(true),
+                args.show_account_name.unwrap_or(true),
+            )?;
+            Ok(preview_window(print_docs, document))
+        }
+        "open_income_statement_preview" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: IncomeStatementArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let statement = database.get_income_statement_scoped(&args.from, &args.to, scope)?;
+            ensure_printable(scope, &statement.integrity)?;
+            let meta = report_meta_for(database, &args.from, &args.to)?;
+            Ok(preview_window(
+                print_docs,
+                report::income_statement_print_doc(&statement, &meta),
+            ))
+        }
+        "open_balance_sheet_preview" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: BalanceSheetArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let statement = database.get_balance_sheet_scoped(&args.as_of, scope)?;
+            ensure_printable(scope, &statement.integrity)?;
+            let meta = report_meta_for(database, &args.as_of, &args.as_of)?;
+            Ok(preview_window(
+                print_docs,
+                report::balance_sheet_print_doc(&statement, &meta)?,
+            ))
+        }
+        "get_print_doc" => {
+            if !window.starts_with("print-preview-") {
+                return Err("این فرمان در این پنجره مجاز نیست.".to_string());
+            }
+            let args: PrintDocArgs = parse_args(args)?;
+            to_value(stored_print_doc(print_docs, &args.token)?)
+        }
         "open_voucher_window" => {
             require_window(window, &["main", "voucher-list"])?;
             let args: OpenVoucherArgs = parse_args(args)?;
@@ -506,6 +751,37 @@ fn to_value<T: Serialize>(value: T) -> Result<Value, String> {
 
 fn web_window(url: &str, name: &str) -> Value {
     json!({ "webOpen": url, "webName": name })
+}
+
+/// Keeps the printable document on the server and returns only an opaque
+/// token. The preview tab asks for the stored HTML; the page never supplies it.
+fn store_print_doc(print_docs: &Mutex<HashMap<String, PrintDoc>>, document: PrintDoc) -> String {
+    let mut docs = print_docs
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if docs.len() >= MAX_STORED_PRINT_DOCS {
+        docs.clear();
+    }
+    let token = format!("doc-{}", PRINT_SEQUENCE.fetch_add(1, Ordering::Relaxed));
+    docs.insert(token.clone(), document);
+    token
+}
+
+fn stored_print_doc(
+    print_docs: &Mutex<HashMap<String, PrintDoc>>,
+    token: &str,
+) -> Result<PrintDoc, String> {
+    print_docs
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(token)
+        .cloned()
+        .ok_or_else(|| "گزارشی برای پیش‌نمایش آماده نیست.".to_string())
+}
+
+fn preview_window(print_docs: &Mutex<HashMap<String, PrintDoc>>, document: PrintDoc) -> Value {
+    let token = store_print_doc(print_docs, document);
+    web_window(&format!("/print.html?doc={token}"), "print-preview")
 }
 
 fn data_dir_from_env() -> Result<PathBuf, String> {
@@ -620,6 +896,16 @@ fn open_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dispatch(
+        database: &db::Database,
+        name: &str,
+        args: Value,
+        window: &str,
+    ) -> Result<Value, String> {
+        let print_docs = Mutex::new(HashMap::new());
+        super::dispatch(database, &print_docs, name, args, window)
+    }
 
     fn call(database: &db::Database, name: &str, args: Value) -> Result<Value, String> {
         dispatch(database, name, args, "main")
@@ -914,6 +1200,182 @@ mod tests {
             call(&database, "get_voucher_count", Value::Null).unwrap(),
             json!(1)
         );
+    }
+
+    fn save_cash_sale(database: &db::Database, number: i64, date: &str, amount: i64) -> Value {
+        dispatch(
+            database,
+            "save_voucher",
+            json!({
+                "input": {
+                    "id": null,
+                    "number": number,
+                    "date": date,
+                    "voucherType": vouchers::VOUCHER_TYPES[0],
+                    "description": "فروش نقدی",
+                    "fiscalYearId": null,
+                    "lines": [
+                        {
+                            "id": null,
+                            "accountCode": "110101",
+                            "detail1Code": null,
+                            "description": "صندوق",
+                            "debit": amount,
+                            "credit": 0,
+                        },
+                        {
+                            "id": null,
+                            "accountCode": "410101",
+                            "detail1Code": null,
+                            "description": "فروش",
+                            "debit": 0,
+                            "credit": amount,
+                        },
+                    ],
+                },
+                "expectedUpdatedAt": null,
+                "idempotencyKey": format!("report-save-{number}"),
+            }),
+            "voucher",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn report_pages_read_journal_ledger_income_and_balance() {
+        let database = crate::db::memory_database();
+        save_cash_sale(&database, 1, "1410/01/05", 1500);
+
+        let journal = call(
+            &database,
+            "get_journal",
+            json!({
+                "from": "1410/01/01",
+                "to": "1410/12/29",
+                "search": "",
+                "scope": "working",
+                "offset": 0,
+                "limit": 100,
+            }),
+        )
+        .unwrap();
+        assert_eq!(journal["rowCount"], json!(2));
+        assert_eq!(journal["rows"].as_array().unwrap().len(), 2);
+
+        let ledger = call(
+            &database,
+            "get_ledger",
+            json!({
+                "accountCode": "110101",
+                "from": "1410/01/01",
+                "to": "1410/12/29",
+                "scope": "working",
+                "offset": 0,
+                "limit": 100,
+            }),
+        )
+        .unwrap();
+        assert_eq!(ledger["accountCode"], "110101");
+        assert_eq!(ledger["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(ledger["closingDebit"], json!(1500));
+
+        let income = call(
+            &database,
+            "get_income_statement",
+            json!({
+                "from": "1410/01/01",
+                "to": "1410/12/29",
+                "scope": "working",
+            }),
+        )
+        .unwrap();
+        assert_eq!(income["revenueTotal"], json!(1500));
+
+        let balance = call(
+            &database,
+            "get_balance_sheet",
+            json!({ "asOf": "1410/12/29", "scope": "working" }),
+        )
+        .unwrap();
+        assert_eq!(balance["asOf"], "1410/12/29");
+        assert!(!balance["assets"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn print_previews_store_the_server_document_for_the_preview_window() {
+        let database = crate::db::memory_database();
+        save_cash_sale(&database, 1, "1410/01/05", 1500);
+        let print_docs = Mutex::new(HashMap::new());
+
+        let opened = super::dispatch(
+            &database,
+            &print_docs,
+            "open_voucher_preview",
+            json!({ "number": 1 }),
+            "voucher",
+        )
+        .unwrap();
+        assert_eq!(opened["webName"], "print-preview");
+        let url = opened["webOpen"].as_str().unwrap();
+        let token = url.rsplit("doc=").next().unwrap();
+
+        let document = super::dispatch(
+            &database,
+            &print_docs,
+            "get_print_doc",
+            json!({ "token": token }),
+            "print-preview-web",
+        )
+        .unwrap();
+        assert!(document["html"].as_str().unwrap().contains("سند حسابداری"));
+        assert!(document["fileName"].as_str().unwrap().ends_with(".html"));
+
+        // Only a preview tab receives the stored document.
+        assert!(super::dispatch(
+            &database,
+            &print_docs,
+            "get_print_doc",
+            json!({ "token": token }),
+            "main",
+        )
+        .is_err());
+
+        let trial = super::dispatch(
+            &database,
+            &print_docs,
+            "open_trial_balance_preview",
+            json!({
+                "from": "1410/01/01",
+                "to": "1410/12/29",
+                "scope": "working",
+                "accountFrom": "",
+                "accountTo": "",
+                "showZero": true,
+                "multiLevel": true,
+                "balanceType": "شش ستونی",
+                "showAccountCode": true,
+                "showAccountName": true,
+                "showPrintDateTime": true,
+            }),
+            "main",
+        )
+        .unwrap();
+        assert_eq!(trial["webName"], "print-preview");
+
+        let ledger = super::dispatch(
+            &database,
+            &print_docs,
+            "open_ledger_preview",
+            json!({
+                "accountCode": "110101",
+                "from": "1410/01/01",
+                "to": "1410/12/29",
+                "scope": "working",
+            }),
+            "voucher",
+        )
+        .unwrap();
+        assert_eq!(ledger["webName"], "print-preview");
     }
 
     #[test]

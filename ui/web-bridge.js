@@ -9,6 +9,10 @@
   const tauri = window.__TAURI__;
   if (tauri && tauri.core && typeof tauri.core.invoke === 'function') return;
 
+  // Marks pages that run on the loopback host instead of the desktop webview.
+  // For example, the print preview saves its HTML with a browser download.
+  window.__HESABDARI_WEB__ = true;
+
   const params = new URLSearchParams(window.location.search);
   const requestedPopup = params.get('popup') || '';
   if (requestedPopup === 'trial-balance') window.__IS_TRIAL_BALANCE_POPUP__ = true;
@@ -54,6 +58,12 @@
     open_voucher_window: { name: 'voucher', width: 1240, height: 800 },
     open_account_groups_window: { name: 'account-groups', width: 960, height: 760 },
     open_account_definition_window: { name: 'account-definition', width: 1040, height: 800 },
+    open_voucher_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_ledger_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_journal_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_trial_balance_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_income_statement_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_balance_sheet_preview: { name: 'print-preview', width: 900, height: 980 },
   };
 
   function pageLabel(popupName) {
@@ -216,10 +226,15 @@
     }
 
     try {
+      // The preview tab receives its document token in the URL; the server only
+      // hands the stored HTML to a window whose label is a print preview.
+      const requestArgs = command === 'get_print_doc'
+        ? { ...(args || {}), token: params.get('doc') || '' }
+        : (args || {});
       const response = await fetch('/api/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: command, args: args || {}, window: label }),
+        body: JSON.stringify({ name: command, args: requestArgs, window: label }),
       });
       const payload = await readPayload(response);
       if (!response.ok || !payload || payload.ok !== true) {
