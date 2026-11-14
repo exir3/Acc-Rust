@@ -75,7 +75,6 @@ style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; \
 script-src 'self'; connect-src 'self'; frame-src 'self'; base-uri 'none'; \
 form-action 'none'; object-src 'none'; frame-ancestors 'self'";
 
-
 #[derive(Clone)]
 struct WebState {
     database: Arc<db::Database>,
@@ -175,7 +174,6 @@ struct DownloadEntry {
     /// takes them. Backup files stay in the backups folder under its retention.
     delete_file: bool,
 }
-
 
 struct UploadEntry {
     path: PathBuf,
@@ -580,7 +578,8 @@ async fn guard_request(
     next: Next,
 ) -> Response {
     if let Err(status) = check_request(&guard, &request) {
-        let mut response = (status, "درخواست به سرور محلی از مبدأ مجاز ارسال نشده است.").into_response();
+        let mut response =
+            (status, "درخواست به سرور محلی از مبدأ مجاز ارسال نشده است.").into_response();
         apply_security_headers(&mut response);
         return response;
     }
@@ -1487,10 +1486,7 @@ fn dispatch(
             let statement = database.get_cogs_scoped(&args.from, &args.to, scope)?;
             ensure_printable(scope, &statement.integrity)?;
             let meta = report_meta_for(database, &statement.from_date, &statement.to_date)?;
-            preview_window(
-                print_docs,
-                report::cogs_print_doc(&statement, &meta),
-            )
+            preview_window(print_docs, report::cogs_print_doc(&statement, &meta))
         }
         "open_profit_appropriation_preview" => {
             require_window(window, &["main", "voucher"])?;
@@ -1511,10 +1507,7 @@ fn dispatch(
             let statement = database.get_cash_flow_scoped(&args.as_of, scope)?;
             ensure_printable(scope, &statement.integrity)?;
             let meta = report_meta_for(database, &args.as_of, &args.as_of)?;
-            preview_window(
-                print_docs,
-                report::cash_flow_print_doc(&statement, &meta),
-            )
+            preview_window(print_docs, report::cash_flow_print_doc(&statement, &meta))
         }
         "get_print_doc" => {
             if !window.starts_with("print-preview-") {
@@ -2167,7 +2160,10 @@ async fn receive_upload(
     if size == 0 {
         drop(file);
         let _ = tokio::fs::remove_file(&path).await;
-        return Err((StatusCode::BAD_REQUEST, "فایل انتخاب‌شده خالی است.".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "فایل انتخاب‌شده خالی است.".to_string(),
+        ));
     }
     if let Err(error) = file.flush().await {
         drop(file);
@@ -2186,11 +2182,7 @@ async fn receive_upload(
     })
 }
 
-async fn upload_restore(
-    State(state): State<WebState>,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
+async fn upload_restore(State(state): State<WebState>, headers: HeaderMap, body: Body) -> Response {
     let _permit = match state.transfers.restore_upload_gate.try_enter() {
         Some(permit) => permit,
         None => {
@@ -2231,21 +2223,21 @@ async fn upload_restore(
         sha256,
     } = upload;
     let check_path = path.clone();
-    let encrypted = match tokio::task::spawn_blocking(move || db::is_encrypted_backup(&check_path)).await
-    {
-        Ok(Ok(value)) => value,
-        Ok(Err(error)) => {
-            let _ = std::fs::remove_file(&path);
-            return transfer_error(StatusCode::BAD_REQUEST, &error);
-        }
-        Err(error) => {
-            let _ = std::fs::remove_file(&path);
-            return transfer_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("بررسی فایل پشتیبان ناموفق بود: {error}"),
-            );
-        }
-    };
+    let encrypted =
+        match tokio::task::spawn_blocking(move || db::is_encrypted_backup(&check_path)).await {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
+                let _ = std::fs::remove_file(&path);
+                return transfer_error(StatusCode::BAD_REQUEST, &error);
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&path);
+                return transfer_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("بررسی فایل پشتیبان ناموفق بود: {error}"),
+                );
+            }
+        };
     {
         let mut uploads = lock(&state.transfers.uploads);
         prune_uploads(&mut uploads);
@@ -2318,7 +2310,8 @@ async fn upload_excel(State(state): State<WebState>, headers: HeaderMap, body: B
         );
     };
     let directory = parent.join("excel-uploads");
-    let upload = match receive_upload(body, &directory, "excel", &extension, MAX_EXCEL_BYTES).await {
+    let upload = match receive_upload(body, &directory, "excel", &extension, MAX_EXCEL_BYTES).await
+    {
         Ok(upload) => upload,
         Err((status, message)) => return transfer_error(status, &message),
     };
@@ -2589,10 +2582,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(headers.contains_key("content-security-policy"));
-        assert_eq!(
-            headers.get("x-content-type-options").unwrap(),
-            "nosniff"
-        );
+        assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
 
         let (status, _, _) = send(
             app.clone(),
@@ -2629,7 +2619,13 @@ mod tests {
 
         let (status, _, _) = send(
             app.clone(),
-            test_request(Method::POST, "/api/command", &host, Some("null"), Some(command)),
+            test_request(
+                Method::POST,
+                "/api/command",
+                &host,
+                Some("null"),
+                Some(command),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
@@ -2665,13 +2661,7 @@ mod tests {
 
         let (status, _, body) = send(
             app.clone(),
-            test_request(
-                Method::GET,
-                "/",
-                &format!("localhost:{port}"),
-                None,
-                None,
-            ),
+            test_request(Method::GET, "/", &format!("localhost:{port}"), None, None),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -2684,14 +2674,8 @@ mod tests {
     async fn uploads_are_streamed_and_failed_requests_leave_no_partial_file() {
         let directory = crate::db::test_temp_dir("web-stream-upload");
 
-        let oversized = receive_upload(
-            Body::from(vec![7u8; 64]),
-            &directory,
-            "test",
-            "bin",
-            32,
-        )
-        .await;
+        let oversized =
+            receive_upload(Body::from(vec![7u8; 64]), &directory, "test", "bin", 32).await;
         match oversized {
             Err((status, _)) => assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE),
             Ok(_) => panic!("oversized upload was accepted"),
@@ -2699,15 +2683,9 @@ mod tests {
         assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
 
         let bytes = b"streamed workbook".to_vec();
-        let stored = receive_upload(
-            Body::from(bytes.clone()),
-            &directory,
-            "test",
-            "bin",
-            1024,
-        )
-        .await
-        .unwrap();
+        let stored = receive_upload(Body::from(bytes.clone()), &directory, "test", "bin", 1024)
+            .await
+            .unwrap();
         assert_eq!(std::fs::read(&stored.path).unwrap(), bytes);
         assert_eq!(stored.sha256, db::sha256_file(&stored.path).unwrap());
 
@@ -2737,26 +2715,14 @@ mod tests {
             );
         }
 
-        let first = serve_download(
-            &transfers,
-            "one-time-token",
-            "missing",
-            "unreadable",
-        )
-        .await;
+        let first = serve_download(&transfers, "one-time-token", "missing", "unreadable").await;
         assert_eq!(first.status(), StatusCode::OK);
         let body = axum::body::to_bytes(first.into_body(), 1024).await.unwrap();
         assert_eq!(&body[..], b"workbook");
         assert!(!path.exists());
         assert!(!lock(&transfers.downloads).contains_key("one-time-token"));
 
-        let second = serve_download(
-            &transfers,
-            "one-time-token",
-            "missing",
-            "unreadable",
-        )
-        .await;
+        let second = serve_download(&transfers, "one-time-token", "missing", "unreadable").await;
         assert_eq!(second.status(), StatusCode::NOT_FOUND);
 
         let _ = std::fs::remove_dir_all(&directory);
