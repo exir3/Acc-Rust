@@ -793,6 +793,17 @@ async function exitApplication() {
   if (!confirmed) return;
 
   try {
+    if (window.__HESABDARI_WEB__) {
+      // An app window can refuse to close itself. Tell the user how to close
+      // it instead of leaving the button looking broken.
+      window.close();
+      window.setTimeout(() => {
+        if (!window.closed) {
+          toast('برای بستن برنامه، پنجره را از دکمهٔ بستن ویندوز ببندید.', 'info');
+        }
+      }, 400);
+      return;
+    }
     const tauriWindow = window.__TAURI__ && window.__TAURI__.window;
     if (tauriWindow && typeof tauriWindow.getCurrentWindow === 'function') {
       await tauriWindow.getCurrentWindow().close();

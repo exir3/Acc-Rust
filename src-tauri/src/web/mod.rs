@@ -2055,6 +2055,25 @@ fn port_from_env() -> Result<u16, String> {
 fn open_browser(url: &str) {
     #[cfg(target_os = "windows")]
     {
+        // A normal browser tab keeps the address bar, tabs and bookmarks, and
+        // that chrome costs the form vertical space. Edge, Chrome and Brave
+        // can open the page as an app window: only the Windows title bar
+        // remains, like the desktop build.
+        if let Some(browser) = chromium_browser() {
+            match std::process::Command::new(&browser)
+                .arg(format!("--app={url}"))
+                .spawn()
+            {
+                Ok(_) => {
+                    eprintln!("[hesabdari-web] app window: {}", browser.display());
+                    return;
+                }
+                Err(error) => eprintln!(
+                    "[hesabdari-web] could not open {}: {error}",
+                    browser.display()
+                ),
+            }
+        }
         if let Err(error) = std::process::Command::new("cmd")
             .args(["/C", "start", "", url])
             .spawn()
@@ -2073,6 +2092,30 @@ fn open_browser(url: &str) {
             eprintln!("[hesabdari-web] could not open the browser: {error}");
         }
     }
+}
+
+/// Chromium-based browsers accept `--app=<url>` and draw the page without a
+/// browser toolbar. Edge ships with Windows, so one is almost always found.
+#[cfg(target_os = "windows")]
+fn chromium_browser() -> Option<PathBuf> {
+    const BROWSERS: [&str; 3] = [
+        "Microsoft/Edge/Application/msedge.exe",
+        "Google/Chrome/Application/chrome.exe",
+        "BraveSoftware/Brave-Browser/Application/brave.exe",
+    ];
+    for variable in ["ProgramFiles(x86)", "ProgramFiles", "LocalAppData"] {
+        let Some(root) = std::env::var_os(variable) else {
+            continue;
+        };
+        let root = PathBuf::from(root);
+        for browser in BROWSERS {
+            let candidate = root.join(browser);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

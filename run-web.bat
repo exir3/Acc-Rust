@@ -62,7 +62,7 @@ if not errorlevel 1 (
     echo       Address: %URL%
     echo       If the app was rebuilt, close that server window and run
     echo       this script again so the new build is served.
-    if not defined HESABDARI_NO_OPEN start "" "%URL%?v=%RANDOM%%RANDOM%"
+    if not defined HESABDARI_NO_OPEN powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\open-web-ui.ps1" "%URL%?v=%RANDOM%%RANDOM%"
     echo.
     echo Close the server window to stop it.
     goto :end
