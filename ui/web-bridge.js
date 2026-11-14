@@ -64,6 +64,10 @@
     open_trial_balance_preview: { name: 'print-preview', width: 900, height: 980 },
     open_income_statement_preview: { name: 'print-preview', width: 900, height: 980 },
     open_balance_sheet_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_equity_changes_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_cogs_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_profit_appropriation_preview: { name: 'print-preview', width: 900, height: 980 },
+    open_cash_flow_preview: { name: 'print-preview', width: 900, height: 980 },
   };
 
   function pageLabel(popupName) {

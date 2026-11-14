@@ -5,7 +5,7 @@
 //! that mirrors the part of the Tauri command surface needed by the local-web
 //! slices so far: settings, the chart of accounts, fiscal years, the voucher
 //! list, the voucher form including save, permanent, delete and line transfer,
-//! the main report pages and their print previews.
+//! the main and supplementary report pages, and their print previews.
 //!
 //! The listener is bound to `127.0.0.1` only. There is no authentication and no
 //! remote access; the server is meant for the same Windows session as the
@@ -131,6 +131,23 @@ struct IncomeStatementArgs {
 #[serde(rename_all = "camelCase")]
 struct BalanceSheetArgs {
     as_of: String,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AsOfArgs {
+    as_of: String,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RangeArgs {
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    to: String,
     scope: Option<String>,
 }
 
@@ -596,6 +613,28 @@ fn dispatch(
             let args: BalanceSheetArgs = parse_args(args)?;
             to_value(database.get_balance_sheet_scoped(&args.as_of, report_scope(args.scope)?)?)
         }
+        "get_equity_changes_statement" => {
+            require_window(window, &["main", "voucher-list", "trial-balance"])?;
+            let args: AsOfArgs = parse_args(args)?;
+            to_value(database.get_equity_changes_scoped(&args.as_of, report_scope(args.scope)?)?)
+        }
+        "get_cogs_statement" => {
+            require_window(window, &["main", "voucher-list", "trial-balance"])?;
+            let args: RangeArgs = parse_args(args)?;
+            to_value(database.get_cogs_scoped(&args.from, &args.to, report_scope(args.scope)?)?)
+        }
+        "get_profit_appropriation_statement" => {
+            require_window(window, &["main", "voucher-list", "trial-balance"])?;
+            let args: AsOfArgs = parse_args(args)?;
+            to_value(
+                database.get_profit_appropriation_scoped(&args.as_of, report_scope(args.scope)?)?,
+            )
+        }
+        "get_cash_flow_statement" => {
+            require_window(window, &["main", "voucher-list", "trial-balance"])?;
+            let args: AsOfArgs = parse_args(args)?;
+            to_value(database.get_cash_flow_scoped(&args.as_of, report_scope(args.scope)?)?)
+        }
         "open_voucher_preview" => {
             require_window(window, &["main", "voucher", "voucher-list"])?;
             let args: VoucherNumberArgs = parse_args(args)?;
@@ -682,6 +721,54 @@ fn dispatch(
             Ok(preview_window(
                 print_docs,
                 report::balance_sheet_print_doc(&statement, &meta)?,
+            ))
+        }
+        "open_equity_changes_preview" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: AsOfArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let statement = database.get_equity_changes_scoped(&args.as_of, scope)?;
+            ensure_printable(scope, &statement.integrity)?;
+            let meta = report_meta_for(database, &args.as_of, &args.as_of)?;
+            Ok(preview_window(
+                print_docs,
+                report::equity_changes_print_doc(&statement, &meta),
+            ))
+        }
+        "open_cogs_preview" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: RangeArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let statement = database.get_cogs_scoped(&args.from, &args.to, scope)?;
+            ensure_printable(scope, &statement.integrity)?;
+            let meta = report_meta_for(database, &statement.from_date, &statement.to_date)?;
+            Ok(preview_window(
+                print_docs,
+                report::cogs_print_doc(&statement, &meta),
+            ))
+        }
+        "open_profit_appropriation_preview" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: AsOfArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let statement = database.get_profit_appropriation_scoped(&args.as_of, scope)?;
+            ensure_printable(scope, &statement.integrity)?;
+            let meta = report_meta_for(database, &args.as_of, &args.as_of)?;
+            Ok(preview_window(
+                print_docs,
+                report::appropriation_print_doc(&statement, &meta),
+            ))
+        }
+        "open_cash_flow_preview" => {
+            require_window(window, &["main", "voucher"])?;
+            let args: AsOfArgs = parse_args(args)?;
+            let scope = report_scope(args.scope)?;
+            let statement = database.get_cash_flow_scoped(&args.as_of, scope)?;
+            ensure_printable(scope, &statement.integrity)?;
+            let meta = report_meta_for(database, &args.as_of, &args.as_of)?;
+            Ok(preview_window(
+                print_docs,
+                report::cash_flow_print_doc(&statement, &meta),
             ))
         }
         "get_print_doc" => {
@@ -1376,6 +1463,96 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ledger["webName"], "print-preview");
+    }
+
+    #[test]
+    fn supplementary_statements_and_their_previews_use_the_shared_reports() {
+        let database = crate::db::memory_database();
+        save_cash_sale(&database, 1, "1410/01/05", 1500);
+        let print_docs = Mutex::new(HashMap::new());
+
+        let equity = call(
+            &database,
+            "get_equity_changes_statement",
+            json!({ "asOf": "1410/12/29", "scope": "working" }),
+        )
+        .unwrap();
+        assert_eq!(equity["toDate"], json!("1410/12/29"));
+        assert!(!equity["statement"].as_str().unwrap().is_empty());
+
+        let cogs = call(
+            &database,
+            "get_cogs_statement",
+            json!({
+                "from": "1410/01/01",
+                "to": "1410/12/29",
+                "scope": "working",
+            }),
+        )
+        .unwrap();
+        assert_eq!(cogs["toDate"], json!("1410/12/29"));
+
+        let appropriation = call(
+            &database,
+            "get_profit_appropriation_statement",
+            json!({ "asOf": "1410/12/29", "scope": "working" }),
+        )
+        .unwrap();
+        assert_eq!(appropriation["toDate"], json!("1410/12/29"));
+
+        let cash_flow = call(
+            &database,
+            "get_cash_flow_statement",
+            json!({ "asOf": "1410/12/29", "scope": "working" }),
+        )
+        .unwrap();
+        assert_eq!(cash_flow["toDate"], json!("1410/12/29"));
+
+        let previews = [
+            (
+                "open_equity_changes_preview",
+                json!({ "asOf": "1410/12/29", "scope": "working" }),
+                "صورت تغییرات حقوق مالکانه",
+            ),
+            (
+                "open_cogs_preview",
+                json!({
+                    "from": "1410/01/01",
+                    "to": "1410/12/29",
+                    "scope": "working",
+                }),
+                "بهای تمام‌شدهٔ کالای فروش‌رفته",
+            ),
+            (
+                "open_profit_appropriation_preview",
+                json!({ "asOf": "1410/12/29", "scope": "working" }),
+                "صورت تخصیص سود",
+            ),
+            (
+                "open_cash_flow_preview",
+                json!({ "asOf": "1410/12/29", "scope": "working" }),
+                "صورت جریان‌های نقدی",
+            ),
+        ];
+
+        for (command, args, expected_title) in previews {
+            let opened = super::dispatch(&database, &print_docs, command, args, "main").unwrap();
+            assert_eq!(opened["webName"], "print-preview");
+            let url = opened["webOpen"].as_str().unwrap();
+            let token = url
+                .strip_prefix("/print.html?doc=")
+                .expect("preview token in the url");
+            let document = super::dispatch(
+                &database,
+                &print_docs,
+                "get_print_doc",
+                json!({ "token": token }),
+                "print-preview-web",
+            )
+            .unwrap();
+            assert!(document["html"].as_str().unwrap().contains(expected_title));
+            assert!(document["fileName"].as_str().unwrap().ends_with(".html"));
+        }
     }
 
     #[test]
