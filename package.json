@@ -14,6 +14,7 @@
     "lint:js": "eslint ui scripts tests playwright.config.mjs eslint.config.js",
     "test": "node --test tests/account-picker-core.test.mjs tests/voucher-core.test.mjs tests/ui-report-wiring.test.mjs",
     "test:e2e": "playwright test",
+    "test:web:http": "node scripts/smoke-web.mjs",
     "test:smoke:windows": "node scripts/smoke-windows.mjs",
     "check:signoff": "node scripts/check-report-signoff.mjs"
   },

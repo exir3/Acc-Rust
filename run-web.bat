@@ -55,10 +55,21 @@ echo.
 
 REM --- If this server is already up, just open it -------------
 REM  Building while the running exe is still open would fail on
-REM  Windows, so an existing healthy server is reused.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "for ($i = 0; $i -lt 8; $i++) { try { $response = Invoke-WebRequest -UseBasicParsing -Uri '%URL%api/health' -TimeoutSec 1; if ($response.StatusCode -eq 200) { exit 0 } } catch { }; Start-Sleep -Milliseconds 400 }; exit 1"
+REM  Windows, so an existing healthy server is reused. Only a
+REM  health payload from this app counts; another service that
+REM  happens to answer on the same port must not be treated as
+REM  ours (exit code 10).
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$reuse = $false; $foreign = $false; for ($i = 0; $i -lt 8; $i++) { try { $response = Invoke-WebRequest -UseBasicParsing -Uri '%URL%api/health' -TimeoutSec 1; if ($response.StatusCode -eq 200) { $health = $response.Content | ConvertFrom-Json; if ($health.ok -eq $true -and $health.mode -eq 'local-web') { $reuse = $true } else { $foreign = $true }; break } } catch { }; Start-Sleep -Milliseconds 400 }; if ($reuse) { exit 0 }; if ($foreign) { exit 10 }; exit 1"
+if errorlevel 10 (
+    echo [ERROR] Port %PORT% is already used by a different service.
+    echo         Its /api/health response is not the Hesabdari local web
+    echo         server, so this script will not reuse or replace it.
+    echo         Close that service, or set HESABDARI_WEB_PORT to a free
+    echo         port and run this script again.
+    goto :fail
+)
 if not errorlevel 1 (
-    echo [1/1] The local web server is already running.
+    echo [1/1] A Hesabdari local web server is already running.
     echo       Address: %URL%
     echo       If the app was rebuilt, close that server window and run
     echo       this script again so the new build is served.

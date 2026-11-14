@@ -58,7 +58,13 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+
+      - name: Build local web server for HTTP smoke test
+        run: cargo build --manifest-path src-tauri/Cargo.toml --features web --bin hesabdari-web
+
+      - name: Smoke test local web server over HTTP
+        run: npm run test:web:http
 
   ui-e2e:
     runs-on: windows-latest

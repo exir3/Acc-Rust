@@ -16,19 +16,25 @@
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, Path as UrlPath, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::body::Body;
+use axum::extract::{Path as UrlPath, State};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, HOST, ORIGIN,
+};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use tower_http::services::ServeDir;
 
 use crate::commands::print::{ensure_printable, report_scope};
@@ -40,25 +46,40 @@ use crate::vouchers::{self, ReportScope, VoucherInput, VoucherTransferInput};
 
 const DEFAULT_PORT: u16 = 4174;
 
-/// The local host builds print previews per request. Each document gets an
-/// opaque token that only the preview tab receives through its URL.
-static PRINT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+/// Browsers may keep a print preview tab open for a while. Documents stay
+/// available for this long, and the oldest one is evicted when the cap is hit.
+const PRINT_DOC_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 const MAX_STORED_PRINT_DOCS: usize = 16;
 
 /// Backups and restore uploads are handed to the browser through one-time
 /// links instead of exposing arbitrary paths on the loopback server.
 const DOWNLOAD_TTL: Duration = Duration::from_secs(10 * 60);
 const UPLOAD_TTL: Duration = Duration::from_secs(15 * 60);
-const MAX_RESTORE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_RESTORE_BYTES: u64 = 512 * 1024 * 1024;
 /// Excel workbooks are capped well below the backup limit because the parser
 /// already rejects anything larger than 32 MB; the upload limit mirrors it.
-const MAX_EXCEL_BYTES: usize = 32 * 1024 * 1024;
+const MAX_EXCEL_BYTES: u64 = 32 * 1024 * 1024;
 const EXCEL_EXTENSIONS: &[&str] = &["xlsx", "xlsm", "xls", "xlsb", "ods"];
+
+/// A restore replaces the whole database, so only one upload may be in flight.
+/// Excel parsing is independent and may overlap two browser tabs.
+const MAX_CONCURRENT_RESTORE_UPLOADS: usize = 1;
+const MAX_CONCURRENT_EXCEL_UPLOADS: usize = 2;
+
+/// The browser build has no user authentication. These headers are the same
+/// browser-side policies the desktop WebView already receives, and the
+/// request guard below refuses foreign Host/Origin values before any command
+/// reaches the accounting storage.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; \
+script-src 'self'; connect-src 'self'; frame-src 'self'; base-uri 'none'; \
+form-action 'none'; object-src 'none'; frame-ancestors 'self'";
+
 
 #[derive(Clone)]
 struct WebState {
     database: Arc<db::Database>,
-    print_docs: Arc<Mutex<HashMap<String, PrintDoc>>>,
+    print_docs: Arc<Mutex<HashMap<String, StoredPrintDoc>>>,
     transfers: Transfers,
     ui_dir: PathBuf,
     build: String,
@@ -67,13 +88,71 @@ struct WebState {
 /// State shared by every request. Besides the one-time download and upload
 /// maps, it keeps the parsed Excel sessions between preview and confirmation,
 /// exactly like the desktop `AppState` slots.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Transfers {
     downloads: Arc<Mutex<HashMap<String, DownloadEntry>>>,
     uploads: Arc<Mutex<HashMap<String, UploadEntry>>>,
     excel_uploads: Arc<Mutex<HashMap<String, ExcelUploadEntry>>>,
     restore_in_progress: Arc<Mutex<bool>>,
+    restore_upload_gate: Arc<UploadGate>,
+    excel_upload_gate: Arc<UploadGate>,
     sessions: Arc<Sessions>,
+}
+
+impl Default for Transfers {
+    fn default() -> Self {
+        Self {
+            downloads: Arc::new(Mutex::new(HashMap::new())),
+            uploads: Arc::new(Mutex::new(HashMap::new())),
+            excel_uploads: Arc::new(Mutex::new(HashMap::new())),
+            restore_in_progress: Arc::new(Mutex::new(false)),
+            restore_upload_gate: Arc::new(UploadGate::new(MAX_CONCURRENT_RESTORE_UPLOADS)),
+            excel_upload_gate: Arc::new(UploadGate::new(MAX_CONCURRENT_EXCEL_UPLOADS)),
+            sessions: Arc::new(Sessions::default()),
+        }
+    }
+}
+
+/// Counts in-flight uploads so a burst of large files cannot exhaust disk or
+/// memory even when each individual request is within its byte limit.
+struct UploadGate {
+    active: AtomicUsize,
+    limit: usize,
+}
+
+impl UploadGate {
+    fn new(limit: usize) -> Self {
+        Self {
+            active: AtomicUsize::new(0),
+            limit,
+        }
+    }
+
+    fn try_enter(self: &Arc<Self>) -> Option<UploadPermit> {
+        let mut active = self.active.load(Ordering::Acquire);
+        loop {
+            if active >= self.limit {
+                return None;
+            }
+            match self.active.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(UploadPermit(self.clone())),
+                Err(current) => active = current,
+            }
+        }
+    }
+}
+
+struct UploadPermit(Arc<UploadGate>);
+
+impl Drop for UploadPermit {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Default)]
@@ -83,11 +162,20 @@ struct Sessions {
     bulk_import_cancel: AtomicBool,
 }
 
+struct StoredPrintDoc {
+    document: PrintDoc,
+    created_at: SystemTime,
+}
+
 struct DownloadEntry {
     path: PathBuf,
     file_name: Option<String>,
     created_at: SystemTime,
+    /// Excel exports are throwaway files and must be removed after the browser
+    /// takes them. Backup files stay in the backups folder under its retention.
+    delete_file: bool,
 }
+
 
 struct UploadEntry {
     path: PathBuf,
@@ -477,6 +565,101 @@ pub fn run() -> Result<(), String> {
     runtime.block_on(serve(data_dir, ui_dir, port))
 }
 
+/// Request guard shared by every route. The listener is loopback-only, but a
+/// browser can still be pointed at that loopback address through DNS
+/// rebinding. Checking the exact Host and Origin values makes the browser's
+/// own origin boundary part of the server's boundary as well.
+#[derive(Clone)]
+struct HttpGuard {
+    port: u16,
+}
+
+async fn guard_request(
+    State(guard): State<HttpGuard>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if let Err(status) = check_request(&guard, &request) {
+        let mut response = (status, "درخواست به سرور محلی از مبدأ مجاز ارسال نشده است.").into_response();
+        apply_security_headers(&mut response);
+        return response;
+    }
+    let mut response = next.run(request).await;
+    apply_security_headers(&mut response);
+    response
+}
+
+fn check_request(guard: &HttpGuard, request: &axum::extract::Request) -> Result<(), StatusCode> {
+    let Some(host) = header_text(request.headers(), HOST.as_str()) else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+    if !is_allowed_host(host, guard.port) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    if let Some(origin) = request.headers().get(ORIGIN) {
+        let origin = origin.to_str().map_err(|_| StatusCode::FORBIDDEN)?;
+        if !is_allowed_origin(origin, guard.port) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    // State-changing browser requests must carry an Origin header. A missing
+    // Origin is only acceptable for read-only methods; same-origin fetch()
+    // always sends it, so the real UI is unaffected.
+    let method = request.method();
+    let safe = matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS);
+    if !safe && request.headers().get(ORIGIN).is_none() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Browser metadata is defence in depth, not a replacement for Host/Origin.
+    // "none" is a top-level navigation typed into the address bar; the app
+    // window and its iframes are same-origin.
+    if let Some(site) = header_text(request.headers(), "sec-fetch-site") {
+        if !matches!(site, "same-origin" | "none") {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+    Ok(())
+}
+
+fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|value| value.to_str().ok())
+}
+
+fn is_allowed_host(host: &str, port: u16) -> bool {
+    ["127.0.0.1", "localhost"].iter().any(|name| {
+        host.eq_ignore_ascii_case(&format!("{name}:{port}"))
+            || (port == 80 && host.eq_ignore_ascii_case(name))
+    })
+}
+
+fn is_allowed_origin(origin: &str, port: u16) -> bool {
+    ["127.0.0.1", "localhost"].iter().any(|name| {
+        origin.eq_ignore_ascii_case(&format!("http://{name}:{port}"))
+            || (port == 80 && origin.eq_ignore_ascii_case(&format!("http://{name}")))
+    })
+}
+
+fn apply_security_headers(response: &mut Response) {
+    let headers = response.headers_mut();
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+    );
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    headers.insert(
+        "permissions-policy",
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=(), usb=()"),
+    );
+}
+
 /// The UI is read from disk on every request, so a browser must not reuse an
 /// old copy after the app is rebuilt. This is a loopback page for one user;
 /// fresh files are worth more than any cache hit.
@@ -559,10 +742,36 @@ fn should_version_asset(value: &str) -> bool {
         && (value.ends_with(".js") || value.ends_with(".css"))
 }
 
+fn router(state: WebState, port: u16) -> Router {
+    let ui_dir = state.ui_dir.clone();
+    Router::new()
+        .route("/", get(serve_page))
+        .route("/index.html", get(serve_page))
+        .route("/voucher.html", get(serve_page))
+        .route("/account-groups.html", get(serve_page))
+        .route("/account-definition.html", get(serve_page))
+        .route("/bulk-voucher-delete.html", get(serve_page))
+        .route("/print.html", get(serve_page))
+        .route("/api/health", get(health))
+        .route("/api/command", post(command))
+        .route("/api/backup/{token}", get(download_backup))
+        .route("/api/excel/{token}", get(download_excel))
+        .route("/api/restore/upload", post(upload_restore))
+        .route("/api/excel/upload", post(upload_excel))
+        .fallback_service(ServeDir::new(&ui_dir).append_index_html_on_directories(true))
+        .layer(axum::middleware::from_fn_with_state(
+            HttpGuard { port },
+            guard_request,
+        ))
+        .layer(axum::middleware::from_fn(disable_caching))
+        .with_state(state)
+}
+
 async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), String> {
     let (connection, path) = db::initialize_at(&data_dir, None, false)?;
     let database = Arc::new(db::Database::default());
     database.attach(connection, path);
+    cleanup_stale_transfer_files(&data_dir);
 
     let build = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -576,29 +785,6 @@ async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), Stri
         ui_dir: ui_dir.clone(),
         build: build.clone(),
     };
-    let app = Router::new()
-        .route("/", get(serve_page))
-        .route("/index.html", get(serve_page))
-        .route("/voucher.html", get(serve_page))
-        .route("/account-groups.html", get(serve_page))
-        .route("/account-definition.html", get(serve_page))
-        .route("/bulk-voucher-delete.html", get(serve_page))
-        .route("/print.html", get(serve_page))
-        .route("/api/health", get(health))
-        .route("/api/command", post(command))
-        .route("/api/backup/{token}", get(download_backup))
-        .route("/api/excel/{token}", get(download_excel))
-        .route(
-            "/api/restore/upload",
-            post(upload_restore).layer(DefaultBodyLimit::max(MAX_RESTORE_BYTES)),
-        )
-        .route(
-            "/api/excel/upload",
-            post(upload_excel).layer(DefaultBodyLimit::max(MAX_EXCEL_BYTES)),
-        )
-        .fallback_service(ServeDir::new(&ui_dir).append_index_html_on_directories(true))
-        .layer(axum::middleware::from_fn(disable_caching))
-        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port))
         .await
@@ -608,10 +794,17 @@ async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), Stri
         .map_err(|error| format!("خواندن آدرس سرور وب محلی ناموفق بود: {error}"))?;
     let url = format!("http://{address}/");
 
+    let transfers = state.transfers.clone();
+    let app = router(state, address.port());
+    tokio::spawn(cleanup_loop(data_dir, transfers));
+
     eprintln!("[hesabdari-web] local web mode: {url}");
     eprintln!("[hesabdari-web] ui directory: {}", ui_dir.display());
     eprintln!("[hesabdari-web] database: {}", database.path_string());
-    if std::env::var_os("HESABDARI_NO_OPEN").is_none() {
+    let suppress_open = std::env::var_os("HESABDARI_NO_OPEN")
+        .map(|value| !value.is_empty())
+        .unwrap_or(false);
+    if !suppress_open {
         // A unique query opens a fresh tab even when the browser still has the
         // previous session's tab for this address, so a rebuilt UI is never
         // hidden behind an old page that is already in memory.
@@ -623,13 +816,60 @@ async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), Stri
         .map_err(|error| format!("سرور وب محلی متوقف شد: {error}"))
 }
 
+/// Removes expired transfer files even when no later request happens to touch
+/// the same directory. The maps are pruned on access too; this loop is what
+/// makes the documented TTL a real deadline instead of best-effort cleanup.
+async fn cleanup_loop(data_dir: PathBuf, transfers: Transfers) {
+    let mut interval = tokio::time::interval(Duration::from_secs(60));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        cleanup_stale_transfer_files(&data_dir);
+        {
+            let mut downloads = lock(&transfers.downloads);
+            prune_downloads(&mut downloads);
+        }
+        {
+            let mut uploads = lock(&transfers.uploads);
+            prune_uploads(&mut uploads);
+        }
+        {
+            let mut uploads = lock(&transfers.excel_uploads);
+            prune_excel_uploads(&mut uploads);
+        }
+    }
+}
+
+fn cleanup_stale_transfer_files(data_dir: &Path) {
+    cleanup_directory(&data_dir.join("restore-uploads"), UPLOAD_TTL);
+    cleanup_directory(&data_dir.join("excel-uploads"), UPLOAD_TTL);
+    cleanup_directory(&data_dir.join("exports"), DOWNLOAD_TTL);
+}
+
+fn cleanup_directory(directory: &Path, ttl: Duration) {
+    let Ok(items) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for item in items.flatten() {
+        let stale = item
+            .metadata()
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|modified| modified.elapsed().ok())
+            .map(|age| age > ttl)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_file(item.path());
+        }
+    }
+}
+
 async fn health(State(state): State<WebState>) -> Json<Value> {
     Json(json!({
         "ok": true,
         "mode": "local-web",
         "version": env!("CARGO_PKG_VERSION"),
         "build": state.build.as_str(),
-        "databasePath": state.database.path_string(),
     }))
 }
 
@@ -674,7 +914,7 @@ async fn command(State(state): State<WebState>, Json(request): Json<CommandReque
 
 fn dispatch(
     database: &db::Database,
-    print_docs: &Mutex<HashMap<String, PrintDoc>>,
+    print_docs: &Mutex<HashMap<String, StoredPrintDoc>>,
     transfers: &Transfers,
     name: &str,
     args: Value,
@@ -1154,7 +1394,7 @@ fn dispatch(
             )?;
             let meta = report_meta_for(database, &voucher.date, &voucher.date)?;
             let document = report::voucher_print_doc(&voucher, &meta, &integrity);
-            Ok(preview_window(print_docs, document))
+            preview_window(print_docs, document)
         }
         "open_ledger_preview" => {
             require_window(window, &["main", "voucher"])?;
@@ -1165,7 +1405,7 @@ fn dispatch(
             let integrity = database.integrity_report(&ledger.from, &ledger.to, false, scope)?;
             let meta = report_meta_for(database, &args.from, &args.to)?;
             let document = report::ledger_print_doc(&ledger, &meta, &integrity);
-            Ok(preview_window(print_docs, document))
+            preview_window(print_docs, document)
         }
         "open_journal_preview" => {
             require_window(window, &["main", "voucher"])?;
@@ -1175,7 +1415,7 @@ fn dispatch(
             let integrity = database.integrity_report(&journal.from, &journal.to, false, scope)?;
             let meta = report_meta_for(database, &args.from, &args.to)?;
             let document = report::journal_print_doc(&journal, &meta, &integrity);
-            Ok(preview_window(print_docs, document))
+            preview_window(print_docs, document)
         }
         "open_trial_balance_preview" => {
             require_window(window, &["main", "voucher", "trial-balance"])?;
@@ -1202,7 +1442,7 @@ fn dispatch(
                 args.show_account_code.unwrap_or(true),
                 args.show_account_name.unwrap_or(true),
             )?;
-            Ok(preview_window(print_docs, document))
+            preview_window(print_docs, document)
         }
         "open_income_statement_preview" => {
             require_window(window, &["main", "voucher"])?;
@@ -1211,10 +1451,10 @@ fn dispatch(
             let statement = database.get_income_statement_scoped(&args.from, &args.to, scope)?;
             ensure_printable(scope, &statement.integrity)?;
             let meta = report_meta_for(database, &args.from, &args.to)?;
-            Ok(preview_window(
+            preview_window(
                 print_docs,
                 report::income_statement_print_doc(&statement, &meta),
-            ))
+            )
         }
         "open_balance_sheet_preview" => {
             require_window(window, &["main", "voucher"])?;
@@ -1223,10 +1463,10 @@ fn dispatch(
             let statement = database.get_balance_sheet_scoped(&args.as_of, scope)?;
             ensure_printable(scope, &statement.integrity)?;
             let meta = report_meta_for(database, &args.as_of, &args.as_of)?;
-            Ok(preview_window(
+            preview_window(
                 print_docs,
                 report::balance_sheet_print_doc(&statement, &meta)?,
-            ))
+            )
         }
         "open_equity_changes_preview" => {
             require_window(window, &["main", "voucher"])?;
@@ -1235,10 +1475,10 @@ fn dispatch(
             let statement = database.get_equity_changes_scoped(&args.as_of, scope)?;
             ensure_printable(scope, &statement.integrity)?;
             let meta = report_meta_for(database, &args.as_of, &args.as_of)?;
-            Ok(preview_window(
+            preview_window(
                 print_docs,
                 report::equity_changes_print_doc(&statement, &meta),
-            ))
+            )
         }
         "open_cogs_preview" => {
             require_window(window, &["main", "voucher"])?;
@@ -1247,10 +1487,10 @@ fn dispatch(
             let statement = database.get_cogs_scoped(&args.from, &args.to, scope)?;
             ensure_printable(scope, &statement.integrity)?;
             let meta = report_meta_for(database, &statement.from_date, &statement.to_date)?;
-            Ok(preview_window(
+            preview_window(
                 print_docs,
                 report::cogs_print_doc(&statement, &meta),
-            ))
+            )
         }
         "open_profit_appropriation_preview" => {
             require_window(window, &["main", "voucher"])?;
@@ -1259,10 +1499,10 @@ fn dispatch(
             let statement = database.get_profit_appropriation_scoped(&args.as_of, scope)?;
             ensure_printable(scope, &statement.integrity)?;
             let meta = report_meta_for(database, &args.as_of, &args.as_of)?;
-            Ok(preview_window(
+            preview_window(
                 print_docs,
                 report::appropriation_print_doc(&statement, &meta),
-            ))
+            )
         }
         "open_cash_flow_preview" => {
             require_window(window, &["main", "voucher"])?;
@@ -1271,10 +1511,10 @@ fn dispatch(
             let statement = database.get_cash_flow_scoped(&args.as_of, scope)?;
             ensure_printable(scope, &statement.integrity)?;
             let meta = report_meta_for(database, &args.as_of, &args.as_of)?;
-            Ok(preview_window(
+            preview_window(
                 print_docs,
                 report::cash_flow_print_doc(&statement, &meta),
-            ))
+            )
         }
         "get_print_doc" => {
             if !window.starts_with("print-preview-") {
@@ -1376,6 +1616,9 @@ fn dispatch(
     }
 }
 
+/// Checks the UI flow label the browser sends with each command. This is a
+/// usability guard against a form running a command that belongs to another
+/// window; it is not authentication, because the label is client-supplied.
 fn require_window(window: &str, allowed: &[&str]) -> Result<(), String> {
     if allowed.contains(&window) {
         Ok(())
@@ -1406,33 +1649,63 @@ fn web_window(url: &str, name: &str) -> Value {
 
 /// Keeps the printable document on the server and returns only an opaque
 /// token. The preview tab asks for the stored HTML; the page never supplies it.
-fn store_print_doc(print_docs: &Mutex<HashMap<String, PrintDoc>>, document: PrintDoc) -> String {
-    let mut docs = print_docs
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+/// A full map evicts only the oldest document, so other open preview windows
+/// keep working.
+fn store_print_doc(
+    print_docs: &Mutex<HashMap<String, StoredPrintDoc>>,
+    document: PrintDoc,
+) -> Result<String, String> {
+    let mut docs = lock(print_docs);
+    let now = SystemTime::now();
+    prune_print_docs(&mut docs, now);
     if docs.len() >= MAX_STORED_PRINT_DOCS {
-        docs.clear();
+        if let Some(oldest) = docs
+            .iter()
+            .min_by_key(|(_, entry)| entry.created_at)
+            .map(|(token, _)| token.clone())
+        {
+            docs.remove(&oldest);
+        }
     }
-    let token = format!("doc-{}", PRINT_SEQUENCE.fetch_add(1, Ordering::Relaxed));
-    docs.insert(token.clone(), document);
-    token
+    let token = format!("doc-{}", db::random_hex(16)?);
+    docs.insert(
+        token.clone(),
+        StoredPrintDoc {
+            document,
+            created_at: now,
+        },
+    );
+    Ok(token)
+}
+
+fn prune_print_docs(docs: &mut HashMap<String, StoredPrintDoc>, now: SystemTime) {
+    docs.retain(|_, entry| {
+        now.duration_since(entry.created_at)
+            .map(|age| age <= PRINT_DOC_TTL)
+            .unwrap_or(false)
+    });
 }
 
 fn stored_print_doc(
-    print_docs: &Mutex<HashMap<String, PrintDoc>>,
+    print_docs: &Mutex<HashMap<String, StoredPrintDoc>>,
     token: &str,
 ) -> Result<PrintDoc, String> {
-    print_docs
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(token)
-        .cloned()
+    let mut docs = lock(print_docs);
+    prune_print_docs(&mut docs, SystemTime::now());
+    docs.get(token)
+        .map(|entry| entry.document.clone())
         .ok_or_else(|| "گزارشی برای پیش‌نمایش آماده نیست.".to_string())
 }
 
-fn preview_window(print_docs: &Mutex<HashMap<String, PrintDoc>>, document: PrintDoc) -> Value {
-    let token = store_print_doc(print_docs, document);
-    web_window(&format!("/print.html?doc={token}"), "print-preview")
+fn preview_window(
+    print_docs: &Mutex<HashMap<String, StoredPrintDoc>>,
+    document: PrintDoc,
+) -> Result<Value, String> {
+    let token = store_print_doc(print_docs, document)?;
+    Ok(web_window(
+        &format!("/print.html?doc={token}"),
+        "print-preview",
+    ))
 }
 
 fn lock<T>(slot: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -1485,6 +1758,8 @@ fn backup_download(
                 path: path.clone(),
                 file_name: Some(file_name.clone()),
                 created_at: SystemTime::now(),
+                // Backups live in their own retained folder.
+                delete_file: false,
             },
         );
     }
@@ -1534,6 +1809,8 @@ fn excel_download(
                 path,
                 file_name: Some(file_name.clone()),
                 created_at: SystemTime::now(),
+                // The browser is the only consumer of an Excel export.
+                delete_file: true,
             },
         );
     }
@@ -1547,9 +1824,14 @@ fn excel_download(
 fn prune_downloads(entries: &mut HashMap<String, DownloadEntry>) {
     let now = SystemTime::now();
     entries.retain(|_, entry| {
-        now.duration_since(entry.created_at)
+        let fresh = now
+            .duration_since(entry.created_at)
             .map(|age| age <= DOWNLOAD_TTL)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if !fresh && entry.delete_file {
+            let _ = std::fs::remove_file(&entry.path);
+        }
+        fresh
     });
 }
 
@@ -1624,7 +1906,15 @@ fn pending_upload(
 fn remove_upload(uploads: &Mutex<HashMap<String, UploadEntry>>, path: &Path) {
     let mut entries = lock(uploads);
     entries.retain(|_, entry| entry.path != path);
+    // Opening a backup read-only can create WAL side files next to the upload.
+    // The upload and those side files are all disposable once the restore has
+    // finished, and leaving them behind would violate the documented cleanup.
     let _ = std::fs::remove_file(path);
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(sidecar));
+    }
 }
 
 /// Keeps `restore_in_progress` set for the whole restore, including early
@@ -1723,24 +2013,32 @@ async fn serve_download(
     missing: &str,
     unreadable: &str,
 ) -> Response {
+    // Removing the token before reading the body is what makes the link
+    // one-time: a second request (or a parallel tab) cannot use it again.
     let entry = {
         let mut downloads = lock(&transfers.downloads);
         prune_downloads(&mut downloads);
-        downloads
-            .get(token)
-            .map(|entry| (entry.path.clone(), entry.file_name.clone()))
+        downloads.remove(token)
     };
-    let Some((path, file_name)) = entry else {
+    let Some(entry) = entry else {
         return transfer_error(StatusCode::NOT_FOUND, missing);
     };
-    let file_name = file_name.unwrap_or_else(|| {
-        path.file_name()
+    let file_name = entry.file_name.unwrap_or_else(|| {
+        entry
+            .path
+            .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("hesabdari-export")
             .to_string()
     });
-    match tokio::task::spawn_blocking(move || std::fs::read(&path)).await {
+    let read_path = entry.path.clone();
+    let cleanup_path = entry.path.clone();
+    let delete_file = entry.delete_file;
+    match tokio::task::spawn_blocking(move || std::fs::read(&read_path)).await {
         Ok(Ok(bytes)) => {
+            if delete_file {
+                let _ = std::fs::remove_file(&cleanup_path);
+            }
             let mut response = Response::new(Body::from(bytes));
             response.headers_mut().insert(
                 CONTENT_TYPE,
@@ -1755,7 +2053,12 @@ async fn serve_download(
             }
             response
         }
-        _ => transfer_error(StatusCode::NOT_FOUND, unreadable),
+        _ => {
+            if delete_file {
+                let _ = std::fs::remove_file(&cleanup_path);
+            }
+            transfer_error(StatusCode::NOT_FOUND, unreadable)
+        }
     }
 }
 
@@ -1777,13 +2080,131 @@ fn content_disposition(file_name: &str) -> Option<axum::http::HeaderValue> {
     .ok()
 }
 
+struct StoredUpload {
+    token: String,
+    path: PathBuf,
+    sha256: String,
+}
+
+fn declared_too_large(headers: &HeaderMap, max_bytes: u64) -> bool {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|length| length > max_bytes)
+        .unwrap_or(false)
+}
+
+/// Streams the request body to a temporary file under `directory` instead of
+/// buffering it in memory. The byte counter enforces the limit while the data
+/// arrives, so a missing or forged Content-Length cannot bypass it. A failed
+/// or disconnected request removes the partial file.
+async fn receive_upload(
+    body: Body,
+    directory: &Path,
+    prefix: &str,
+    extension: &str,
+    max_bytes: u64,
+) -> Result<StoredUpload, (StatusCode, String)> {
+    if let Err(error) = tokio::fs::create_dir_all(directory).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("ساخت پوشهٔ دریافت فایل ناموفق بود: {error}"),
+        ));
+    }
+    // Uploads left behind by a crashing or closed tab must not accumulate.
+    cleanup_directory(directory, UPLOAD_TTL);
+
+    let token = db::random_hex(16).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("ساخت شناسهٔ دریافت فایل ناموفق بود: {error}"),
+        )
+    })?;
+    let path = directory.join(format!("{prefix}-{token}.{extension}"));
+    let mut file = tokio::fs::File::create(&path).await.map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("ساخت فایل موقت ناموفق بود: {error}"),
+        )
+    })?;
+
+    let mut hasher = Sha256::new();
+    let mut size = 0u64;
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                drop(file);
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("دریافت فایل ناقص ماند: {error}"),
+                ));
+            }
+        };
+        size += chunk.len() as u64;
+        if size > max_bytes {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "حجم فایل از سقف مجاز بیشتر است.".to_string(),
+            ));
+        }
+        hasher.update(&chunk);
+        if let Err(error) = file.write_all(&chunk).await {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("ذخیرهٔ فایل موقت ناموفق بود: {error}"),
+            ));
+        }
+    }
+
+    if size == 0 {
+        drop(file);
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err((StatusCode::BAD_REQUEST, "فایل انتخاب‌شده خالی است.".to_string()));
+    }
+    if let Err(error) = file.flush().await {
+        drop(file);
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("نوشتن فایل موقت ناموفق بود: {error}"),
+        ));
+    }
+    drop(file);
+
+    Ok(StoredUpload {
+        token,
+        path,
+        sha256: db::to_hex(hasher.finalize().as_slice()),
+    })
+}
+
 async fn upload_restore(
     State(state): State<WebState>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Body,
 ) -> Response {
-    if body.is_empty() {
-        return transfer_error(StatusCode::BAD_REQUEST, "فایل پشتیبان خالی است.");
+    let _permit = match state.transfers.restore_upload_gate.try_enter() {
+        Some(permit) => permit,
+        None => {
+            return transfer_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "یک بازیابی دیگر در حال دریافت است؛ تا پایان آن صبر کنید.",
+            )
+        }
+    };
+    if declared_too_large(&headers, MAX_RESTORE_BYTES) {
+        return transfer_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "حجم فایل پشتیبان از سقف ۵۱۲ مگابایت بیشتر است.",
+        );
     }
     let file_name = headers
         .get("x-file-name")
@@ -1799,48 +2220,30 @@ async fn upload_restore(
         );
     };
     let directory = parent.join("restore-uploads");
-    let Ok(token) = db::random_hex(16) else {
-        return transfer_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "ساخت شناسهٔ بازیابی ناموفق بود.",
-        );
-    };
-    let path = directory.join(format!("restore-{token}.upload"));
-    let bytes = body.to_vec();
-    let target = path.clone();
-    let stored = tokio::task::spawn_blocking(move || -> Result<(String, bool), String> {
-        std::fs::create_dir_all(&directory)
-            .map_err(|error| format!("ساخت پوشهٔ بازیابی ناموفق بود: {error}"))?;
-        // Uploads left behind by a crashing or closed tab must not accumulate.
-        if let Ok(items) = std::fs::read_dir(&directory) {
-            for item in items.flatten() {
-                let stale = item
-                    .metadata()
-                    .ok()
-                    .and_then(|meta| meta.modified().ok())
-                    .and_then(|modified| modified.elapsed().ok())
-                    .map(|age| age > UPLOAD_TTL)
-                    .unwrap_or(false);
-                if stale {
-                    let _ = std::fs::remove_file(item.path());
-                }
-            }
-        }
-        std::fs::write(&target, &bytes)
-            .map_err(|error| format!("ذخیرهٔ فایل پشتیبان ناموفق بود: {error}"))?;
-        let file_sha256 = db::sha256_file(&target)?;
-        let encrypted = db::is_encrypted_backup(&target)?;
-        Ok((file_sha256, encrypted))
-    })
-    .await;
-    let (file_sha256, encrypted) = match stored {
+    let upload =
+        match receive_upload(body, &directory, "restore", "upload", MAX_RESTORE_BYTES).await {
+            Ok(upload) => upload,
+            Err((status, message)) => return transfer_error(status, &message),
+        };
+    let StoredUpload {
+        token,
+        path,
+        sha256,
+    } = upload;
+    let check_path = path.clone();
+    let encrypted = match tokio::task::spawn_blocking(move || db::is_encrypted_backup(&check_path)).await
+    {
         Ok(Ok(value)) => value,
-        Ok(Err(error)) => return transfer_error(StatusCode::BAD_REQUEST, &error),
+        Ok(Err(error)) => {
+            let _ = std::fs::remove_file(&path);
+            return transfer_error(StatusCode::BAD_REQUEST, &error);
+        }
         Err(error) => {
+            let _ = std::fs::remove_file(&path);
             return transfer_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("خواندن فایل پشتیبان ناموفق بود: {error}"),
-            )
+                &format!("بررسی فایل پشتیبان ناموفق بود: {error}"),
+            );
         }
     };
     {
@@ -1851,7 +2254,7 @@ async fn upload_restore(
             UploadEntry {
                 path,
                 encrypted,
-                file_sha256,
+                file_sha256: sha256,
                 created_at: SystemTime::now(),
             },
         );
@@ -1874,9 +2277,21 @@ fn transfer_error(status: StatusCode, message: &str) -> Response {
 /// Receives a workbook chosen in the browser. Only the extension and size are
 /// checked here; the Excel parser performs its own archive and dimension
 /// validation before reading any data.
-async fn upload_excel(State(state): State<WebState>, headers: HeaderMap, body: Bytes) -> Response {
-    if body.is_empty() {
-        return transfer_error(StatusCode::BAD_REQUEST, "فایل اکسل خالی است.");
+async fn upload_excel(State(state): State<WebState>, headers: HeaderMap, body: Body) -> Response {
+    let _permit = match state.transfers.excel_upload_gate.try_enter() {
+        Some(permit) => permit,
+        None => {
+            return transfer_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "دریافت فایل‌های اکسل هم‌زمان بیش از حد مجاز است؛ کمی بعد دوباره تلاش کنید.",
+            )
+        }
+    };
+    if declared_too_large(&headers, MAX_EXCEL_BYTES) {
+        return transfer_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "حجم فایل اکسل از سقف ۳۲ مگابایت بیشتر است.",
+        );
     }
     let file_name = headers
         .get("x-file-name")
@@ -1903,47 +2318,15 @@ async fn upload_excel(State(state): State<WebState>, headers: HeaderMap, body: B
         );
     };
     let directory = parent.join("excel-uploads");
-    let Ok(token) = db::random_hex(16) else {
-        return transfer_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "ساخت شناسهٔ فایل اکسل ناموفق بود.",
-        );
+    let upload = match receive_upload(body, &directory, "excel", &extension, MAX_EXCEL_BYTES).await {
+        Ok(upload) => upload,
+        Err((status, message)) => return transfer_error(status, &message),
     };
-    let path = directory.join(format!("excel-{token}.{extension}"));
-    let bytes = body.to_vec();
-    let target = path.clone();
-    let stored = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        std::fs::create_dir_all(&directory)
-            .map_err(|error| format!("ساخت پوشهٔ فایل‌های اکسل ناموفق بود: {error}"))?;
-        // Uploads left behind by a closed tab must not accumulate.
-        if let Ok(items) = std::fs::read_dir(&directory) {
-            for item in items.flatten() {
-                let stale = item
-                    .metadata()
-                    .ok()
-                    .and_then(|meta| meta.modified().ok())
-                    .and_then(|modified| modified.elapsed().ok())
-                    .map(|age| age > UPLOAD_TTL)
-                    .unwrap_or(false);
-                if stale {
-                    let _ = std::fs::remove_file(item.path());
-                }
-            }
-        }
-        std::fs::write(&target, &bytes)
-            .map_err(|error| format!("ذخیرهٔ فایل اکسل ناموفق بود: {error}"))
-    })
-    .await;
-    match stored {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return transfer_error(StatusCode::BAD_REQUEST, &error),
-        Err(error) => {
-            return transfer_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("ذخیرهٔ فایل اکسل ناموفق بود: {error}"),
-            )
-        }
-    }
+    let StoredUpload {
+        token,
+        path,
+        sha256: _,
+    } = upload;
     {
         let mut uploads = lock(&state.transfers.excel_uploads);
         prune_excel_uploads(&mut uploads);
@@ -2121,6 +2504,299 @@ fn chromium_browser() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tower::ServiceExt;
+
+    fn test_print_doc(index: usize) -> PrintDoc {
+        PrintDoc {
+            html: format!("<html><body>doc-{index}</body></html>"),
+            title: format!("doc-{index}"),
+            subtitle: String::new(),
+            file_name: format!("doc-{index}.html"),
+            paper_width_mm: 210.0,
+            paper_height_mm: 297.0,
+            margin_top_mm: 0.0,
+            margin_right_mm: 0.0,
+            margin_bottom_mm: 0.0,
+            margin_left_mm: 0.0,
+        }
+    }
+
+    fn test_router(port: u16) -> (Router, PathBuf) {
+        let directory = crate::db::test_temp_dir("web-router");
+        std::fs::write(
+            directory.join("index.html"),
+            "<!doctype html><html><body>test page</body></html>",
+        )
+        .unwrap();
+        let state = WebState {
+            database: Arc::new(crate::db::memory_database()),
+            print_docs: Arc::new(Mutex::new(HashMap::new())),
+            transfers: Transfers::default(),
+            ui_dir: directory.clone(),
+            build: "test-build".to_string(),
+        };
+        (router(state, port), directory)
+    }
+
+    fn test_request(
+        method: Method,
+        uri: &str,
+        host: &str,
+        origin: Option<&str>,
+        body: Option<&str>,
+    ) -> axum::extract::Request {
+        let mut builder = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(HOST, host);
+        if let Some(origin) = origin {
+            builder = builder.header(ORIGIN, origin);
+        }
+        if body.is_some() {
+            builder = builder.header(CONTENT_TYPE, "application/json");
+        }
+        builder
+            .body(Body::from(body.unwrap_or("").to_string()))
+            .unwrap()
+    }
+
+    async fn send(
+        app: Router,
+        request: axum::extract::Request,
+    ) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, headers, body)
+    }
+
+    #[tokio::test]
+    async fn http_guard_rejects_foreign_hosts_origins_and_fetch_sites() {
+        let port = 4174;
+        let (app, directory) = test_router(port);
+        let host = format!("127.0.0.1:{port}");
+        let origin = format!("http://127.0.0.1:{port}");
+        let command = r#"{"name":"get_settings","args":null,"window":"main"}"#;
+
+        let (status, headers, _) = send(
+            app.clone(),
+            test_request(Method::GET, "/api/health", &host, None, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(headers.contains_key("content-security-policy"));
+        assert_eq!(
+            headers.get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
+
+        let (status, _, _) = send(
+            app.clone(),
+            test_request(Method::GET, "/api/health", "attacker.example", None, None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, _, _) = send(
+            app.clone(),
+            test_request(
+                Method::GET,
+                "/api/health",
+                &format!("127.0.0.1:{}", port + 1),
+                None,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, _, _) = send(
+            app.clone(),
+            test_request(
+                Method::POST,
+                "/api/command",
+                &host,
+                Some("http://attacker.example"),
+                Some(command),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, _, _) = send(
+            app.clone(),
+            test_request(Method::POST, "/api/command", &host, Some("null"), Some(command)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, _, _) = send(
+            app.clone(),
+            test_request(Method::POST, "/api/command", &host, None, Some(command)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, _, body) = send(
+            app.clone(),
+            test_request(
+                Method::POST,
+                "/api/command",
+                &host,
+                Some(&origin),
+                Some(command),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["ok"], true);
+
+        let mut cross_site = test_request(Method::GET, "/api/health", &host, None, None);
+        cross_site
+            .headers_mut()
+            .insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+        let (status, _, _) = send(app.clone(), cross_site).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (status, _, body) = send(
+            app.clone(),
+            test_request(
+                Method::GET,
+                "/",
+                &format!("localhost:{port}"),
+                None,
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(String::from_utf8_lossy(&body).contains("test page"));
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[tokio::test]
+    async fn uploads_are_streamed_and_failed_requests_leave_no_partial_file() {
+        let directory = crate::db::test_temp_dir("web-stream-upload");
+
+        let oversized = receive_upload(
+            Body::from(vec![7u8; 64]),
+            &directory,
+            "test",
+            "bin",
+            32,
+        )
+        .await;
+        match oversized {
+            Err((status, _)) => assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE),
+            Ok(_) => panic!("oversized upload was accepted"),
+        }
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+
+        let bytes = b"streamed workbook".to_vec();
+        let stored = receive_upload(
+            Body::from(bytes.clone()),
+            &directory,
+            "test",
+            "bin",
+            1024,
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&stored.path).unwrap(), bytes);
+        assert_eq!(stored.sha256, db::sha256_file(&stored.path).unwrap());
+
+        let empty = receive_upload(Body::from(Vec::new()), &directory, "test", "bin", 1024).await;
+        assert!(empty.is_err());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[tokio::test]
+    async fn download_tokens_are_single_use_and_remove_excel_exports() {
+        let directory = crate::db::test_temp_dir("web-download");
+        let path = directory.join("export-test.xlsx");
+        std::fs::write(&path, b"workbook").unwrap();
+        let transfers = Transfers::default();
+        {
+            let mut downloads = lock(&transfers.downloads);
+            downloads.insert(
+                "one-time-token".to_string(),
+                DownloadEntry {
+                    path: path.clone(),
+                    file_name: Some("report.xlsx".to_string()),
+                    created_at: SystemTime::now(),
+                    delete_file: true,
+                },
+            );
+        }
+
+        let first = serve_download(
+            &transfers,
+            "one-time-token",
+            "missing",
+            "unreadable",
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(first.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"workbook");
+        assert!(!path.exists());
+        assert!(!lock(&transfers.downloads).contains_key("one-time-token"));
+
+        let second = serve_download(
+            &transfers,
+            "one-time-token",
+            "missing",
+            "unreadable",
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn print_previews_evict_only_the_oldest_document() {
+        let print_docs = Mutex::new(HashMap::new());
+        let mut tokens = Vec::new();
+        for index in 0..=MAX_STORED_PRINT_DOCS {
+            tokens.push(store_print_doc(&print_docs, test_print_doc(index)).unwrap());
+        }
+
+        assert_eq!(lock(&print_docs).len(), MAX_STORED_PRINT_DOCS);
+        assert!(stored_print_doc(&print_docs, &tokens[0]).is_err());
+        assert_eq!(
+            stored_print_doc(&print_docs, &tokens[1]).unwrap().title,
+            "doc-1"
+        );
+        assert_eq!(
+            stored_print_doc(&print_docs, &tokens[MAX_STORED_PRINT_DOCS])
+                .unwrap()
+                .title,
+            format!("doc-{MAX_STORED_PRINT_DOCS}")
+        );
+    }
+
+    #[test]
+    fn expired_print_documents_are_removed_on_access() {
+        let print_docs = Mutex::new(HashMap::new());
+        let token = store_print_doc(&print_docs, test_print_doc(1)).unwrap();
+        {
+            let mut docs = lock(&print_docs);
+            docs.get_mut(&token).unwrap().created_at = SystemTime::now()
+                .checked_sub(PRINT_DOC_TTL + Duration::from_secs(1))
+                .unwrap();
+        }
+        assert!(stored_print_doc(&print_docs, &token).is_err());
+        assert!(lock(&print_docs).is_empty());
+    }
 
     fn dispatch(
         database: &db::Database,
