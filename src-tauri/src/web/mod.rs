@@ -5,7 +5,8 @@
 //! that mirrors the part of the Tauri command surface needed by the local-web
 //! slices so far: settings, the chart of accounts, fiscal years, the voucher
 //! list, the voucher form including save, permanent, delete and line transfer,
-//! the main and supplementary report pages, and their print previews.
+//! the main and supplementary report pages, their print previews, and the
+//! browser backup/restore transfer endpoints.
 //!
 //! The listener is bound to `127.0.0.1` only. There is no authentication and no
 //! remote access; the server is meant for the same Windows session as the
@@ -13,12 +14,15 @@
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::body::{Body, Bytes};
+use axum::extract::{DefaultBodyLimit, Path as UrlPath, State};
+use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -39,10 +43,36 @@ const DEFAULT_PORT: u16 = 4174;
 static PRINT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const MAX_STORED_PRINT_DOCS: usize = 16;
 
+/// Backups and restore uploads are handed to the browser through one-time
+/// links instead of exposing arbitrary paths on the loopback server.
+const DOWNLOAD_TTL: Duration = Duration::from_secs(10 * 60);
+const UPLOAD_TTL: Duration = Duration::from_secs(15 * 60);
+const MAX_RESTORE_BYTES: usize = 512 * 1024 * 1024;
+
 #[derive(Clone)]
 struct WebState {
     database: Arc<db::Database>,
     print_docs: Arc<Mutex<HashMap<String, PrintDoc>>>,
+    transfers: Transfers,
+}
+
+#[derive(Clone, Default)]
+struct Transfers {
+    downloads: Arc<Mutex<HashMap<String, DownloadEntry>>>,
+    uploads: Arc<Mutex<HashMap<String, UploadEntry>>>,
+    restore_in_progress: Arc<Mutex<bool>>,
+}
+
+struct DownloadEntry {
+    path: PathBuf,
+    created_at: SystemTime,
+}
+
+struct UploadEntry {
+    path: PathBuf,
+    encrypted: bool,
+    file_sha256: String,
+    created_at: SystemTime,
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,6 +229,25 @@ struct PrintDocArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct PasswordArgs {
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RestoreArgs {
+    token: String,
+    password: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditLogArgs {
+    limit: Option<i64>,
+    offset: Option<i64>,
+    entity_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateFiscalYearArgs {
     title: String,
@@ -306,10 +355,16 @@ async fn serve(data_dir: PathBuf, ui_dir: PathBuf, port: u16) -> Result<(), Stri
     let state = WebState {
         database: database.clone(),
         print_docs: Arc::new(Mutex::new(HashMap::new())),
+        transfers: Transfers::default(),
     };
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/command", post(command))
+        .route("/api/backup/{token}", get(download_backup))
+        .route(
+            "/api/restore/upload",
+            post(upload_restore).layer(DefaultBodyLimit::max(MAX_RESTORE_BYTES)),
+        )
         .fallback_service(ServeDir::new(&ui_dir).append_index_html_on_directories(true))
         .with_state(state);
 
@@ -347,10 +402,12 @@ async fn command(State(state): State<WebState>, Json(request): Json<CommandReque
     let window = window.unwrap_or_else(|| "main".to_string());
     let database = state.database.clone();
     let print_docs = state.print_docs.clone();
+    let transfers = state.transfers.clone();
 
-    let result =
-        tokio::task::spawn_blocking(move || dispatch(&database, &print_docs, &name, args, &window))
-            .await;
+    let result = tokio::task::spawn_blocking(move || {
+        dispatch(&database, &print_docs, &transfers, &name, args, &window)
+    })
+    .await;
     match result {
         Ok(Ok(data)) => Json(CommandResponse {
             ok: true,
@@ -382,6 +439,7 @@ async fn command(State(state): State<WebState>, Json(request): Json<CommandReque
 fn dispatch(
     database: &db::Database,
     print_docs: &Mutex<HashMap<String, PrintDoc>>,
+    transfers: &Transfers,
     name: &str,
     args: Value,
     window: &str,
@@ -778,6 +836,58 @@ fn dispatch(
             let args: PrintDocArgs = parse_args(args)?;
             to_value(stored_print_doc(print_docs, &args.token)?)
         }
+        "get_audit_logs" => {
+            require_window(window, &["main"])?;
+            let args: AuditLogArgs = parse_args(args)?;
+            to_value(database.list_audit_logs(
+                args.limit,
+                args.offset,
+                args.entity_type.as_deref(),
+            )?)
+        }
+        "backup_database" => {
+            require_window(window, &["main"])?;
+            let (path, file_name) = create_backup(database, None)?;
+            backup_download(transfers, path, file_name)
+        }
+        "backup_database_encrypted" => {
+            require_window(window, &["main"])?;
+            let args: PasswordArgs = parse_args(args)?;
+            db::validate_portable_password(&args.password)?;
+            let (path, file_name) = create_backup(database, Some(&args.password))?;
+            backup_download(transfers, path, file_name)
+        }
+        "restore_database_file" => {
+            require_window(window, &["main"])?;
+            let args: RestoreArgs = parse_args(args)?;
+            let _restore_guard = begin_restore(&transfers.restore_in_progress)?;
+            let upload = pending_upload(&transfers.uploads, &args.token)?;
+            let current_hash = db::sha256_file(&upload.path)?;
+            if current_hash != upload.file_sha256 {
+                return Err(
+                    "فایل پشتیبان پس از انتخاب تغییر کرده است و بازیابی انجام نشد.".to_string(),
+                );
+            }
+            let password = if upload.encrypted {
+                Some(
+                    args.password
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| {
+                            "این پشتیبان رمزنگاری‌شده است؛ رمز عبور را وارد کنید.".to_string()
+                        })?,
+                )
+            } else {
+                None
+            };
+            let database_path = PathBuf::from(database.path_string());
+            let safety_path = match password.as_deref() {
+                Some(password) => database.restore_encrypted_from(&upload.path, password)?,
+                None => database.restore_from(&upload.path)?,
+            };
+            remove_upload(&transfers.uploads, &upload.path);
+            let _ = db::prune_restore_safety_files(&database_path);
+            Ok(Value::String(safety_path.to_string_lossy().to_string()))
+        }
         "open_voucher_window" => {
             require_window(window, &["main", "voucher-list"])?;
             let args: OpenVoucherArgs = parse_args(args)?;
@@ -869,6 +979,311 @@ fn stored_print_doc(
 fn preview_window(print_docs: &Mutex<HashMap<String, PrintDoc>>, document: PrintDoc) -> Value {
     let token = store_print_doc(print_docs, document);
     web_window(&format!("/print.html?doc={token}"), "print-preview")
+}
+
+fn lock<T>(slot: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn create_backup(
+    database: &db::Database,
+    password: Option<&str>,
+) -> Result<(PathBuf, String), String> {
+    let database_path = PathBuf::from(database.path_string());
+    let backup_dir = database_path
+        .parent()
+        .ok_or_else(|| "مسیر پوشه پایگاه داده پیدا نشد.".to_string())?
+        .join("backups");
+    std::fs::create_dir_all(&backup_dir)
+        .map_err(|error| format!("ساخت پوشه پشتیبان ناموفق بود: {error}"))?;
+    let stamp = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("زمان سیستم معتبر نیست: {error}"))?
+        .as_nanos();
+    let file_name = match password {
+        Some(_) => format!("hesabdari-backup-{stamp}.{}", db::PORTABLE_EXTENSION),
+        None => format!("hesabdari-backup-{stamp}.sqlite3"),
+    };
+    let path = backup_dir.join(&file_name);
+    match password {
+        Some(password) => database.backup_encrypted_to(&path, password)?,
+        None => database.backup_to(&path)?,
+    }
+    let _ = db::prune_backup_files(&backup_dir);
+    Ok((path, file_name))
+}
+
+/// Hands a freshly written backup to the browser once without exposing an
+/// arbitrary file path on the server. The desktop UI still receives a path,
+/// so the bridge downloads `webDownload` and returns `path` to the caller.
+fn backup_download(
+    transfers: &Transfers,
+    path: PathBuf,
+    file_name: String,
+) -> Result<Value, String> {
+    let token = format!("backup-{}", db::random_hex(16)?);
+    {
+        let mut downloads = lock(&transfers.downloads);
+        prune_downloads(&mut downloads);
+        downloads.insert(
+            token.clone(),
+            DownloadEntry {
+                path: path.clone(),
+                created_at: SystemTime::now(),
+            },
+        );
+    }
+    Ok(json!({
+        "path": path.to_string_lossy(),
+        "fileName": file_name,
+        "webDownload": format!("/api/backup/{token}"),
+    }))
+}
+
+fn prune_downloads(entries: &mut HashMap<String, DownloadEntry>) {
+    let now = SystemTime::now();
+    entries.retain(|_, entry| {
+        now.duration_since(entry.created_at)
+            .map(|age| age <= DOWNLOAD_TTL)
+            .unwrap_or(false)
+    });
+}
+
+fn prune_uploads(entries: &mut HashMap<String, UploadEntry>) {
+    let now = SystemTime::now();
+    entries.retain(|_, entry| {
+        let fresh = now
+            .duration_since(entry.created_at)
+            .map(|age| age <= UPLOAD_TTL)
+            .unwrap_or(false);
+        if !fresh {
+            let _ = std::fs::remove_file(&entry.path);
+        }
+        fresh
+    });
+}
+
+fn pending_upload(
+    uploads: &Mutex<HashMap<String, UploadEntry>>,
+    token: &str,
+) -> Result<UploadEntry, String> {
+    let mut entries = lock(uploads);
+    prune_uploads(&mut entries);
+    let entry = entries
+        .get(token)
+        .ok_or_else(|| "فایل پشتیبان انتخاب‌شده منقضی شده است؛ دوباره انتخاب کنید.".to_string())?;
+    Ok(UploadEntry {
+        path: entry.path.clone(),
+        encrypted: entry.encrypted,
+        file_sha256: entry.file_sha256.clone(),
+        created_at: entry.created_at,
+    })
+}
+
+fn remove_upload(uploads: &Mutex<HashMap<String, UploadEntry>>, path: &Path) {
+    let mut entries = lock(uploads);
+    entries.retain(|_, entry| entry.path != path);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Keeps `restore_in_progress` set for the whole restore, including early
+/// errors, so two browser tabs cannot replace the database at the same time.
+struct RestoreInProgress<'a>(&'a Mutex<bool>);
+
+impl Drop for RestoreInProgress<'_> {
+    fn drop(&mut self) {
+        *lock(self.0) = false;
+    }
+}
+
+fn begin_restore(slot: &Mutex<bool>) -> Result<RestoreInProgress<'_>, String> {
+    let mut running = lock(slot);
+    if *running {
+        return Err("یک بازیابی دیگر در حال انجام است؛ تا پایان آن صبر کنید.".to_string());
+    }
+    *running = true;
+    Ok(RestoreInProgress(slot))
+}
+
+fn decode_file_name(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2]))
+            {
+                decoded.push(high * 16 + low);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// The uploaded name is display metadata only; the server stores the bytes
+/// under its own token. Strip path separators and control characters anyway.
+fn sanitize_upload_name(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .filter(|ch| !ch.is_control() && *ch != '/' && *ch != '\\')
+        .take(120)
+        .collect();
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        "backup".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+async fn download_backup(
+    State(state): State<WebState>,
+    UrlPath(token): UrlPath<String>,
+) -> Response {
+    let entry = {
+        let mut downloads = lock(&state.transfers.downloads);
+        prune_downloads(&mut downloads);
+        downloads.get(&token).map(|entry| entry.path.clone())
+    };
+    let Some(path) = entry else {
+        return transfer_error(
+            StatusCode::NOT_FOUND,
+            "پشتیبان درخواستی در دسترس نیست؛ دوباره پشتیبان بگیرید.",
+        );
+    };
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("hesabdari-backup")
+        .to_string();
+    match tokio::task::spawn_blocking(move || std::fs::read(&path)).await {
+        Ok(Ok(bytes)) => {
+            let mut response = Response::new(Body::from(bytes));
+            response.headers_mut().insert(
+                CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/octet-stream"),
+            );
+            response.headers_mut().insert(
+                CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            );
+            if let Ok(value) =
+                axum::http::HeaderValue::from_str(&format!("attachment; filename=\"{file_name}\""))
+            {
+                response.headers_mut().insert(CONTENT_DISPOSITION, value);
+            }
+            response
+        }
+        _ => transfer_error(StatusCode::NOT_FOUND, "فایل پشتیبان پیدا نشد."),
+    }
+}
+
+async fn upload_restore(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if body.is_empty() {
+        return transfer_error(StatusCode::BAD_REQUEST, "فایل پشتیبان خالی است.");
+    }
+    let file_name = headers
+        .get("x-file-name")
+        .and_then(|value| value.to_str().ok())
+        .map(decode_file_name)
+        .map(|value| sanitize_upload_name(&value))
+        .unwrap_or_else(|| "backup".to_string());
+    let database_path = PathBuf::from(state.database.path_string());
+    let Some(parent) = database_path.parent() else {
+        return transfer_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "مسیر پوشه پایگاه داده پیدا نشد.",
+        );
+    };
+    let directory = parent.join("restore-uploads");
+    let Ok(token) = db::random_hex(16) else {
+        return transfer_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ساخت شناسهٔ بازیابی ناموفق بود.",
+        );
+    };
+    let path = directory.join(format!("restore-{token}.upload"));
+    let bytes = body.to_vec();
+    let target = path.clone();
+    let stored = tokio::task::spawn_blocking(move || -> Result<(String, bool), String> {
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("ساخت پوشهٔ بازیابی ناموفق بود: {error}"))?;
+        // Uploads left behind by a crashing or closed tab must not accumulate.
+        if let Ok(items) = std::fs::read_dir(&directory) {
+            for item in items.flatten() {
+                let stale = item
+                    .metadata()
+                    .ok()
+                    .and_then(|meta| meta.modified().ok())
+                    .and_then(|modified| modified.elapsed().ok())
+                    .map(|age| age > UPLOAD_TTL)
+                    .unwrap_or(false);
+                if stale {
+                    let _ = std::fs::remove_file(item.path());
+                }
+            }
+        }
+        std::fs::write(&target, &bytes)
+            .map_err(|error| format!("ذخیرهٔ فایل پشتیبان ناموفق بود: {error}"))?;
+        let file_sha256 = db::sha256_file(&target)?;
+        let encrypted = db::is_encrypted_backup(&target)?;
+        Ok((file_sha256, encrypted))
+    })
+    .await;
+    let (file_sha256, encrypted) = match stored {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => return transfer_error(StatusCode::BAD_REQUEST, &error),
+        Err(error) => {
+            return transfer_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("خواندن فایل پشتیبان ناموفق بود: {error}"),
+            )
+        }
+    };
+    {
+        let mut uploads = lock(&state.transfers.uploads);
+        prune_uploads(&mut uploads);
+        uploads.insert(
+            token.clone(),
+            UploadEntry {
+                path,
+                encrypted,
+                file_sha256,
+                created_at: SystemTime::now(),
+            },
+        );
+    }
+    Json(json!({
+        "ok": true,
+        "data": {
+            "token": token,
+            "encrypted": encrypted,
+            "fileName": file_name,
+        },
+    }))
+    .into_response()
+}
+
+fn transfer_error(status: StatusCode, message: &str) -> Response {
+    (status, Json(json!({ "ok": false, "error": message }))).into_response()
 }
 
 fn data_dir_from_env() -> Result<PathBuf, String> {
@@ -991,7 +1406,8 @@ mod tests {
         window: &str,
     ) -> Result<Value, String> {
         let print_docs = Mutex::new(HashMap::new());
-        super::dispatch(database, &print_docs, name, args, window)
+        let transfers = Transfers::default();
+        super::dispatch(database, &print_docs, &transfers, name, args, window)
     }
 
     fn call(database: &db::Database, name: &str, args: Value) -> Result<Value, String> {
@@ -1393,10 +1809,12 @@ mod tests {
         let database = crate::db::memory_database();
         save_cash_sale(&database, 1, "1410/01/05", 1500);
         let print_docs = Mutex::new(HashMap::new());
+        let transfers = Transfers::default();
 
         let opened = super::dispatch(
             &database,
             &print_docs,
+            &transfers,
             "open_voucher_preview",
             json!({ "number": 1 }),
             "voucher",
@@ -1409,6 +1827,7 @@ mod tests {
         let document = super::dispatch(
             &database,
             &print_docs,
+            &transfers,
             "get_print_doc",
             json!({ "token": token }),
             "print-preview-web",
@@ -1421,6 +1840,7 @@ mod tests {
         assert!(super::dispatch(
             &database,
             &print_docs,
+            &transfers,
             "get_print_doc",
             json!({ "token": token }),
             "main",
@@ -1430,6 +1850,7 @@ mod tests {
         let trial = super::dispatch(
             &database,
             &print_docs,
+            &transfers,
             "open_trial_balance_preview",
             json!({
                 "from": "1410/01/01",
@@ -1452,6 +1873,7 @@ mod tests {
         let ledger = super::dispatch(
             &database,
             &print_docs,
+            &transfers,
             "open_ledger_preview",
             json!({
                 "accountCode": "110101",
@@ -1470,6 +1892,7 @@ mod tests {
         let database = crate::db::memory_database();
         save_cash_sale(&database, 1, "1410/01/05", 1500);
         let print_docs = Mutex::new(HashMap::new());
+        let transfers = Transfers::default();
 
         let equity = call(
             &database,
@@ -1536,7 +1959,8 @@ mod tests {
         ];
 
         for (command, args, expected_title) in previews {
-            let opened = super::dispatch(&database, &print_docs, command, args, "main").unwrap();
+            let opened =
+                super::dispatch(&database, &print_docs, &transfers, command, args, "main").unwrap();
             assert_eq!(opened["webName"], "print-preview");
             let url = opened["webOpen"].as_str().unwrap();
             let token = url
@@ -1545,6 +1969,7 @@ mod tests {
             let document = super::dispatch(
                 &database,
                 &print_docs,
+                &transfers,
                 "get_print_doc",
                 json!({ "token": token }),
                 "print-preview-web",
@@ -1553,6 +1978,187 @@ mod tests {
             assert!(document["html"].as_str().unwrap().contains(expected_title));
             assert!(document["fileName"].as_str().unwrap().ends_with(".html"));
         }
+    }
+
+    #[test]
+    fn browser_backup_creates_a_download_and_plain_restore_replaces_the_database() {
+        let directory = crate::db::test_temp_dir("web-backup");
+        let database_path = directory.join("hesabdari.sqlite3");
+        let database = crate::db::file_database(&database_path);
+        save_cash_sale(&database, 1, "1410/01/05", 1500);
+        let print_docs = Mutex::new(HashMap::new());
+        let transfers = Transfers::default();
+
+        let backup = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "backup_database",
+            Value::Null,
+            "main",
+        )
+        .unwrap();
+        let backup_path = PathBuf::from(backup["path"].as_str().unwrap());
+        assert!(backup_path.exists());
+        assert!(backup_path.starts_with(directory.join("backups")));
+        assert!(backup["fileName"].as_str().unwrap().ends_with(".sqlite3"));
+        let download = backup["webDownload"].as_str().unwrap();
+        let download_token = download
+            .strip_prefix("/api/backup/")
+            .expect("download token in the url");
+        {
+            let downloads = lock(&transfers.downloads);
+            assert_eq!(downloads.get(download_token).unwrap().path, backup_path);
+        }
+
+        // A backup created with one voucher must bring that voucher back.
+        save_cash_sale(&database, 2, "1410/01/06", 700);
+        assert_eq!(database.voucher_count().unwrap(), 2);
+        let upload_token = "restore-plain-test".to_string();
+        {
+            let mut uploads = lock(&transfers.uploads);
+            uploads.insert(
+                upload_token.clone(),
+                UploadEntry {
+                    path: backup_path.clone(),
+                    encrypted: false,
+                    file_sha256: db::sha256_file(&backup_path).unwrap(),
+                    created_at: SystemTime::now(),
+                },
+            );
+        }
+        let safety = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "restore_database_file",
+            json!({ "token": upload_token, "password": null }),
+            "main",
+        )
+        .unwrap();
+        assert!(safety.as_str().unwrap().contains("before-restore"));
+        assert_eq!(database.voucher_count().unwrap(), 1);
+        assert!(!lock(&transfers.uploads).contains_key(&upload_token));
+
+        // Backup and restore are limited to the main window.
+        assert!(super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "backup_database",
+            Value::Null,
+            "voucher",
+        )
+        .is_err());
+        assert!(super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "restore_database_file",
+            json!({ "token": "missing" }),
+            "trial-balance",
+        )
+        .is_err());
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn encrypted_browser_backup_requires_its_password_and_rejects_stale_uploads() {
+        let directory = crate::db::test_temp_dir("web-backup-encrypted");
+        let database_path = directory.join("hesabdari.sqlite3");
+        let database = crate::db::file_database(&database_path);
+        save_cash_sale(&database, 1, "1410/01/05", 1500);
+        let print_docs = Mutex::new(HashMap::new());
+        let transfers = Transfers::default();
+        let password = "correct-horse";
+
+        let backup = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "backup_database_encrypted",
+            json!({ "password": password }),
+            "main",
+        )
+        .unwrap();
+        let backup_path = PathBuf::from(backup["path"].as_str().unwrap());
+        assert!(db::is_encrypted_backup(&backup_path).unwrap());
+        assert!(backup["fileName"].as_str().unwrap().ends_with(".hacc"));
+        let stale_path = directory.join("stale.hacc");
+        std::fs::copy(&backup_path, &stale_path).unwrap();
+
+        let upload_token = "restore-encrypted-test".to_string();
+        {
+            let mut uploads = lock(&transfers.uploads);
+            uploads.insert(
+                upload_token.clone(),
+                UploadEntry {
+                    path: backup_path.clone(),
+                    encrypted: true,
+                    file_sha256: db::sha256_file(&backup_path).unwrap(),
+                    created_at: SystemTime::now(),
+                },
+            );
+        }
+        assert!(super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "restore_database_file",
+            json!({ "token": upload_token.clone(), "password": null }),
+            "main",
+        )
+        .is_err());
+        assert!(super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "restore_database_file",
+            json!({ "token": upload_token.clone(), "password": "wrong-password" }),
+            "main",
+        )
+        .is_err());
+        // A wrong password keeps the selection, so the correct one can retry.
+        super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "restore_database_file",
+            json!({ "token": upload_token, "password": password }),
+            "main",
+        )
+        .unwrap();
+
+        // Expired uploads are refused and their temporary file is removed.
+        let stale_token = "restore-stale-test".to_string();
+        {
+            let mut uploads = lock(&transfers.uploads);
+            uploads.insert(
+                stale_token.clone(),
+                UploadEntry {
+                    path: stale_path.clone(),
+                    encrypted: true,
+                    file_sha256: db::sha256_file(&stale_path).unwrap(),
+                    created_at: SystemTime::now()
+                        .checked_sub(UPLOAD_TTL + Duration::from_secs(1))
+                        .unwrap(),
+                },
+            );
+        }
+        let error = super::dispatch(
+            &database,
+            &print_docs,
+            &transfers,
+            "restore_database_file",
+            json!({ "token": stale_token, "password": password }),
+            "main",
+        )
+        .unwrap_err();
+        assert!(error.contains("منقضی"));
+        assert!(!stale_path.exists());
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

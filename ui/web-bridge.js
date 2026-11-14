@@ -208,8 +208,66 @@
     }
   }
 
+  // The browser cannot use the desktop file dialog for restore, so the bridge
+  // picks a file locally and uploads it to the loopback server. The server
+  // keeps only a token and hash; the UI never supplies a path.
+  function pickRestoreFile() {
+    return new Promise((resolve) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.hacc,.sqlite3,.db,application/octet-stream';
+      input.style.display = 'none';
+      document.body.appendChild(input);
+      let settled = false;
+      const finish = (file) => {
+        if (settled) return;
+        settled = true;
+        input.remove();
+        resolve(file);
+      };
+      input.addEventListener('change', () => {
+        finish(input.files && input.files.length ? input.files[0] : null);
+      });
+      input.addEventListener('cancel', () => finish(null));
+      input.click();
+    });
+  }
+
+  async function uploadRestoreBackup() {
+    const file = await pickRestoreFile();
+    if (!file) return null;
+    const response = await fetch('/api/restore/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-File-Name': encodeURIComponent(file.name || 'backup'),
+      },
+      body: file,
+    });
+    const payload = await readPayload(response);
+    if (!response.ok || !payload || payload.ok !== true) {
+      const message = payload && typeof payload.error === 'string'
+        ? payload.error
+        : 'بارگذاری فایل پشتیبان ناموفق بود.';
+      throw new Error(message);
+    }
+    return payload.data ?? null;
+  }
+
+  // The server writes the backup in the data folder and returns a one-time
+  // link. The browser downloads that link; the UI still receives a path.
+  function downloadBackup(data) {
+    const link = document.createElement('a');
+    link.href = data.webDownload;
+    if (data.fileName) link.download = data.fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
   async function invoke(command, args) {
     if (command === 'take_voucher_request') return takeVoucherRequest();
+    if (command === 'choose_restore_backup') return uploadRestoreBackup();
 
     const target = windowCommands[command];
     const opensVoucher = command === 'open_voucher_window';
@@ -249,6 +307,10 @@
       }
 
       const data = payload.data ?? null;
+      if (data && typeof data.webDownload === 'string') {
+        downloadBackup(data);
+        return data.path || data.fileName || null;
+      }
       if (data && typeof data.webOpen === 'string') {
         if (reuseVoucherTab) {
           const existing = openWindow('', data.webName, popupFeatures(target));
@@ -277,6 +339,11 @@
         broadcast('vouchers-changed');
       } else if (command === 'create_account') {
         broadcast('accounts-changed');
+      } else if (command === 'restore_database_file') {
+        // Other tabs must drop their stale chart, voucher lists and reports.
+        broadcast('database-restored');
+        broadcast('accounts-changed');
+        broadcast('vouchers-changed');
       }
       return data;
     } catch (error) {
